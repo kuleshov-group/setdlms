@@ -2,7 +2,7 @@
 name: Todo
 about: Genera todo for the project
 title: ''
-labels: ''
+labels: todo
 assignees: ''
 
 ---
