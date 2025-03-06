@@ -1,0 +1,8 @@
+#file: noinspection LongLine
+# OmegaConf resolvers will be used to create the dictionary that contains tokenizer config params
+_target_: src.denoiser.Denoiser  # Not actually used, just serves as a placeholder to put `_target_` as first key
+config:
+  _target_: src.denoiser.DenoiserConfig
+  _recursive_: false  # Prevents backbone and noise from being instantiated when `hydra.utils.instantiate` is called
+  length: ???
+  tokenization_config: ${oc.create:${make_tokenization_config:${tokenizer}}}

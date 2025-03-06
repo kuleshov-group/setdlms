@@ -1,0 +1,8 @@
+fsdp:
+  sharding_strategy: "FULL_SHARD"
+  cpu_offload: false # Not supported yet
+  mixed_precision: "DEFAULT"
+  backward_prefetch: "BACKWARD_POST"
+  activation_checkpointing: false
+  activation_cpu_offload: false
+  verbose: true

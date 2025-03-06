@@ -1,0 +1,3 @@
+optimizer_monitor:
+  _target_: composer.callbacks.OptimizerMonitor
+  log_optimizer_metrics: True

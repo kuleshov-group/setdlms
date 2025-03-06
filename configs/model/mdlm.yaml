@@ -1,0 +1,7 @@
+defaults:
+  - d3pm@_here_
+  - _self_
+
+_target_: src.denoiser.MDLM
+config:
+  T: 0  # 0 indicates continuous time vs. finite-time (D3PM), T > 0.

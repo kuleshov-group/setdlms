@@ -1,0 +1,28 @@
+[project]
+name = "dllm"
+version = "0.1.0"
+description = "Diffusion Language Models"
+readme = "README.md"
+requires-python = ">=3.10"
+#dependencies = [
+#  "torch>=2.4.0",
+#  "transformers[torch]>=4.48.1",
+#]
+
+#[tool.setuptools]
+## This is necessary when multiple top-level directories are present
+#packages = [""]
+
+[dependency-groups]
+dev = ["pytest>=8.3.4", "pytype>=2024.10.11", "mosaicml>=0.28.0"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "Q", "I"]
+
+[tool.black]
+line-length = 88
+target-version = ['py312']

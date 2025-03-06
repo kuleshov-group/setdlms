@@ -1,0 +1,11 @@
+#file: noinspection LongLine
+# Sets defaults for composer scripts
+defaults:
+  - /composer/algorithms@_global_.algorithms: [ema, low_precision_layernorm]
+  - /composer/callbacks@_global_.callbacks: [lr_monitor, memory_monitor, optimizer_monitor, runtime_estimator, speed_monitor]
+  - /composer/loggers@_global_.loggers: [wandb]
+  - /composer/lr_scheduler@_global_.lr_scheduler: constant_with_warmup
+  - /composer/metrics@_global_.metrics: [loss, nll, bpd, perplexity]
+  - /composer/optimizer@_global_.optimizer: decoupled_adamw
+  - /composer/compile@_global_.trainer.compile_config: pytorch_defaults
+  - /composer/parallelism@_global_.trainer.parallelism_config: fsdp

@@ -1,0 +1,2 @@
+# Slight hack: Empty file gets parsed as `{}` when passed as `compile_config`.
+# Will therefore use pytorch defaults per composer docs.

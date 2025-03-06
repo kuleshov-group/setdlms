@@ -1,0 +1,52 @@
+#file: noinspection LongLine
+defaults:
+  - _self_
+  - composer/composer_config@_global_  # Pull in defaults from composer
+  - composer/trainer@trainer
+  - collator: denoising
+  - dataset@train_dataset: c4_streaming
+  - dataset@eval_dataset: c4_streaming
+  - model: mdlm
+  - model/backbone@model.config.backbone_config: dit
+  - noise@model.config.noise_config: loglinear
+  - tokenizer: autotokenizer
+
+run_name: ???
+seed: 1
+backend: ${set_backend:}
+pretrained_model_name_or_path: null
+
+train_dataloader:
+  _target_: torch.utils.data.DataLoader
+  # Note: batch_size is **per device** (this is "macro" batch size if using grad accum)
+  batch_size: ${div_up:${training.global_batch_size}, ${get_world_size:}}
+  num_workers: ${eval:"len(__import__('os').sched_getaffinity(0))"}
+  pin_memory: True
+
+eval_dataloader:
+  _target_: torch.utils.data.DataLoader
+  # Note: batch_size is **per device**
+  batch_size: ${div_up:${training.eval_global_batch_size}, ${get_world_size:}}
+  num_workers: ${train_dataloader.num_workers}
+  pin_memory: ${train_dataloader.pin_memory}
+
+training:
+  autoresume: true
+  load_path: null  # Path to checkpoint from which to load
+  ema: 0.9999
+  global_batch_size: 512
+  eval_global_batch_size: ${.global_batch_size}
+  # Parameters for sampling t
+  antithetic_sampling: True
+  sampling_eps: 1e-3
+  restricted_t_range: null  # Set to tuple of floats in range [0, 1] to bias sampling
+
+checkpointing:
+  # Use custom `save_dir` if, e.g., saving to S3 bucket, otherwise leave this parameter as is
+  save_dir: ${cwd:}/checkpoints  # With hydra.job.chdir=true, this will be ${hydra.run.dir}/checkpoints
+
+hydra:
+  run:
+    dir: ./outputs/${hydra:runtime.choices.dataset@train_dataset}/${now:%Y.%m.%d}/${now:%H%M%S}
+  job:
+    chdir: true

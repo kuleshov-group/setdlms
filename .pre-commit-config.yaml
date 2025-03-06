@@ -1,0 +1,69 @@
+# https://pre-commit.com/
+# Adapted from Xarray's pre-commit hooks: https://github.com/pydata/xarray/blob/main/.pre-commit-config.yaml
+ci:
+  autoupdate_schedule: monthly
+  autoupdate_commit_msg: "Update pre-commit hooks"
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-docstring-first
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: requirements-txt-fixer
+      - id: trailing-whitespace
+  - repo: https://github.com/pre-commit/pygrep-hooks
+    rev: v1.10.0
+    hooks:
+      # - id: python-check-blanket-noqa  # checked by ruff
+      # - id: python-check-blanket-type-ignore  # checked by ruff
+      # - id: python-check-mock-methods  # checked by ruff
+      - id: python-no-log-warn
+      # - id: python-use-type-annotations  # too many false positives
+      # - id: rst-backticks  # It looks like we're using Google-style docstrings
+      # - id: rst-directive-colons
+      # - id: rst-inline-touching-normal
+      - id: text-unicode-replacement-char
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.9.9
+    hooks:
+      - id: ruff
+        args: ["--fix", "--show-fixes", "--exit-non-zero-on-fix"]
+        files: "\\.pyi?$"  # Only runs on .py and .pyi files
+      - id: ruff-format
+  - repo: https://github.com/hakancelikdev/unimport
+    rev: 1.2.1
+    hooks:
+      - id: unimport
+        args: [ "--remove" ]
+  - repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+        args: [ "--profile", "black" ]
+  - repo: https://github.com/keewis/blackdoc
+    rev: v0.3.9
+    hooks:
+      - id: blackdoc
+        additional_dependencies: ["black==24.8.0"]
+  - repo: https://github.com/ComPWA/taplo-pre-commit
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
+        args: ["--option", "array_auto_collapse=false"]
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.23
+    hooks:
+      - id: validate-pyproject
+        additional_dependencies: ["validate-pyproject-schema-store[all]"]
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.5
+    hooks:
+      - id: forbid-tabs
+      - id: remove-tabs

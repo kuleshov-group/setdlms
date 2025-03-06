@@ -1,0 +1,2 @@
+perplexity:
+  _target_: src.tasks.metrics.Perplexity

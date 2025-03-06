@@ -1,0 +1,9 @@
+# TODO
+_target_: composer.optim.scheduler.CosineAnnealingWithWarmupScheduler
+warmup_duration: 0.1
+max_duration: 1.0
+min_lr: 0.0
+warmup_mode: linear
+warmup_num_steps: null
+warmup_start_value: null
+warmup_end_value: null

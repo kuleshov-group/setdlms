@@ -1,0 +1,24 @@
+name: dllm-dev
+channels:
+  - pytorch
+  - anaconda
+  - nvidia
+  - defaults
+dependencies:
+  - cuda-nvcc=12.4.1
+  - python=3.12
+  - pytorch=2.5.1
+  - pytorch-cuda=12.4
+  - pip
+  - pip:
+      - datasets
+      - einops
+      - fire
+      - hydra-core
+      - ipdb
+      - mosaicml
+      - mosaicml-streaming
+      - pre-commit
+      - ruff
+      - transformers
+      - wandb

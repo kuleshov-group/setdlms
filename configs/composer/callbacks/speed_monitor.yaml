@@ -1,0 +1,4 @@
+speed_monitor:
+  _target_: composer.callbacks.SpeedMonitor
+  gpu_flops_available: null
+  window_size: 500

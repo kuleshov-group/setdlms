@@ -1,0 +1,8 @@
+defaults:
+  - denoiser@_here_
+  - _self_
+
+_target_: src.denoiser.D3PM
+config:
+  _target_: src.denoiser.D3PMConfig
+  T: 1000  # T > 0 indicates finite-time vs. continuous time (e.g., MDLM, UDLM), T = 0.

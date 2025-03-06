@@ -1,0 +1,32 @@
+# Composer Trainer
+# Need to pass the following at runtime:
+#  - model
+#  - optimizer (composer.optim),
+#  - loggers (list[composer.loggers]),
+#  - algorithms (list[composer.algorithms]),
+#  - scheduler (composer.optim.scheduler),
+#  - callbacks (list[composer.callbacks]),
+#  - compile_config (dict),
+#  - parallelism_config (dict)
+_target_: composer.Trainer
+run_name: ${run_name}
+seed: ${seed}
+device: ${backend}
+train_subset_num_batches: -1
+eval_subset_num_batches: -1
+max_duration: '1000000ba'
+eval_interval: '2000ba'
+progress_bar: false
+log_to_console: true
+console_log_interval: '100ba'
+precision: 'amp_bf16'
+device_train_microbatch_size: ${div_up:${training.global_batch_size}, ${eval:${get_world_size:} * ${train_dataloader.batch_size}}}
+save_folder: ${checkpointing.save_dir}
+save_interval: 1000ba
+save_num_checkpoints_to_keep: -1
+save_overwrite: false
+load_path: ${training.load_path}
+load_weights_only: false
+autoresume: ${training.autoresume}
+python_log_level: null
+dist_timeout: 300.0
