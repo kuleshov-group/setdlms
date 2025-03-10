@@ -439,7 +439,9 @@ class MDLM(D3PM):
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
         ).squeeze(-1)
 
-        loss = -log_p_theta * denoiser_inputs.alpha_t / denoiser_inputs.alpha_t_prime
+        loss = (
+            -log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
+        )
 
         nlls = loss * denoiser_inputs.attention_mask
         count = denoiser_inputs.attention_mask.sum()
