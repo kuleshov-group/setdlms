@@ -5,7 +5,7 @@ channels:
   - nvidia
   - defaults
 dependencies:
-  - cuda-nvcc=12.4.1
+  - nvidia/label/cuda-12.4.1::cuda-nvcc
   - python=3.12
   - pytorch=2.5.1
   - pytorch-cuda=12.4
