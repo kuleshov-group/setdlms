@@ -1,4 +1,5 @@
 __pycache__/
+.hf_cache
 .idea
 .pytest_cache/
 outputs/
