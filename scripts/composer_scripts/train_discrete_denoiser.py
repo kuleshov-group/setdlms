@@ -46,9 +46,6 @@ def main(cfg: DictConfig) -> None:
     train_dataset = hydra.utils.instantiate(
         cfg.train_dataset,
         tokenizer=tokenizer,
-        split="train",
-        shuffle=True,
-        batch_size=cfg.train_dataloader.batch_size,
     )
     train_dataloader = hydra.utils.instantiate(
         cfg.train_dataloader,
@@ -58,13 +55,9 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Val dataloader
-    # TODO: different datasets use different split name for eval, need way to get name
     eval_dataset = hydra.utils.instantiate(
         cfg.eval_dataset,
         tokenizer=tokenizer,
-        split="val",
-        shuffle=False,
-        batch_size=cfg.eval_dataloader.batch_size,
     )
     eval_dataloader = hydra.utils.instantiate(
         cfg.eval_dataloader,
