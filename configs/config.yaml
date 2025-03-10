@@ -1,20 +1,21 @@
 #file: noinspection LongLine
 defaults:
-  - _self_
   - composer/composer_config@_global_  # Pull in defaults from composer
   - composer/trainer@trainer
-  - collator: denoising
-  - dataset@train_dataset: c4_streaming
-  - dataset@eval_dataset: c4_streaming
-  - model: mdlm
-  - model/backbone@model.config.backbone_config: dit
-  - noise@model.config.noise_config: loglinear
   - tokenizer: autotokenizer
+  - collator: denoising
+  - dataset@train_dataset: ???
+  - dataset@eval_dataset: ???
+  - noise@model.config.noise_config: loglinear
+  - model: mdlm
+  - model/backbone@model.config.backbone_config: ???
+  - _self_
 
 run_name: ???
+model.config.length: ???
 seed: 1
 backend: ${set_backend:}
-pretrained_model_name_or_path: null
+pretrained_model_name_or_path: null  # Use for pretrained backbone
 
 train_dataloader:
   _target_: torch.utils.data.DataLoader
@@ -34,6 +35,7 @@ training:
   autoresume: true
   load_path: null  # Path to checkpoint from which to load
   ema: 0.9999
+  lr: 3e-4  # Peak learning rate
   global_batch_size: 512
   eval_global_batch_size: ${.global_batch_size}
   # Parameters for sampling t

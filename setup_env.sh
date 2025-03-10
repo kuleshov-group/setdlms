@@ -30,3 +30,6 @@ export PYTHONPATH="${PWD}:${HF_HOME}/modules"
 
 # HF Login
 huggingface-cli login --token ${HUGGINGFACE_TOKEN} --add-to-git-credential
+
+# Enforce verbose Hydra error logging
+export HYDRA_FULL_ERROR=1

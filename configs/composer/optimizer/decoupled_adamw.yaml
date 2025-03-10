@@ -1,5 +1,5 @@
 _target_: composer.optim.DecoupledAdamW
-lr: 5e-4  # Peak learning rate
+lr: ${training.lr}  # Peak learning rate
 betas:
   - 0.9
   - 0.98
