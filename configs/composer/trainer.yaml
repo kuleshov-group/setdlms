@@ -22,7 +22,7 @@ console_log_interval: '100ba'
 precision: 'amp_bf16'
 device_train_microbatch_size: ${div_up:${training.global_batch_size}, ${eval:${get_world_size:} * ${train_dataloader.batch_size}}}
 save_folder: ${checkpointing.save_dir}
-save_interval: 1000ba
+save_interval: '100000ba'
 save_num_checkpoints_to_keep: -1
 save_overwrite: false
 load_path: ${training.load_path}

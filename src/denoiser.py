@@ -298,6 +298,10 @@ class D3PMConfig(DenoiserConfig):
     """Configuration class for D3PM models."""
 
     model_type = "d3pm"
+    auto_map = {
+        "AutoConfig": "denoiser.D3PMConfig",
+        "AutoModel": "denoiser.D3PM",
+    }
 
     def __init__(
         self,
@@ -319,6 +323,8 @@ class D3PM(Denoiser):
 
     This class implements the Denoiser interface for D3PM models.
     """
+
+    config_class = D3PMConfig
 
     def __init__(self, config: D3PMConfig):
         super().__init__(config)
@@ -400,10 +406,22 @@ class D3PM(Denoiser):
         pass  # TODO
 
 
+class MDLMConfig(D3PMConfig):
+    """Configuration class for MDLM models."""
+
+    model_type = "mdlm"
+    auto_map = {
+        "AutoConfig": "denoiser.MDLMConfig",
+        "AutoModel": "denoiser.MDLM",
+    }
+
+
 class MDLM(D3PM):
     """Denoiser class for MDLM models."""
 
-    def __init__(self, config: D3PMConfig):
+    config_class = MDLMConfig
+
+    def __init__(self, config: MDLMConfig):
         super().__init__(config)
         self.neg_infinity = -1e12
 

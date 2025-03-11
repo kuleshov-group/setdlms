@@ -1,8 +1,3 @@
-# Copied from:
-#  https://github.com/AnswerDotAI/ModernBERT/blob/main/src/callbacks/dataloader_speed.py
-# Copyright 2024 onwards Answer.AI, LightOn, and contributors
-# License: Apache-2.0
-
 import time
 
 from composer.core import Callback, State
@@ -12,7 +7,13 @@ __all__ = ["DataloaderSpeedMonitor"]
 
 
 class DataloaderSpeedMonitor(Callback):
-    """Measure how long it takes to return a batch from the dataloader."""
+    """Measure how long it takes to return a batch from the dataloader.
+
+    Copied from:
+        https://github.com/AnswerDotAI/ModernBERT/blob/main/src/callbacks/dataloader_speed.py
+        Copyright 2024 onwards Answer.AI, LightOn, and contributors
+        License: Apache-2.0
+    """  # noqa: E501
 
     def before_dataloader(self, state: State, logger: Logger) -> None:
         del logger  # unused
