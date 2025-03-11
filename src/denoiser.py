@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
+from tqdm import tqdm
 
 import hydra.utils
 import torch
@@ -401,9 +402,74 @@ class D3PM(Denoiser):
         token_nll = batch_nll / count
 
         return LossAndNllOutput(loss=token_nll, nlls=nlls)
+    
+    def _sample_prior(self, device, batch_size, length):
+        raise NotImplementedError
+    
+    def _compute_posterior(self, log_x_theta, alpha_t, alpha_s):
+        raise NotImplementedError
+    
+    def _sample_categorical(self, categorical_probs):
+        categorical_probs = categorical_probs.to(torch.float64)
+        gumbel_norm = (
+            1e-10
+            - (torch.rand_like(categorical_probs) + 1e-10).log()).to(categorical_probs.dtype)
+        return (categorical_probs / gumbel_norm).argmax(dim=-1)
 
-    def generate_samples(self):
-        pass  # TODO
+    def generate_samples(self, device, batch_size, length, num_steps, nucleus_p=1.0, eps=1e-5):
+        xt = self._sample_prior(device, batch_size, length)
+        timesteps = torch.linspace(1, eps, num_steps + 1, device=device)
+        dt = (1 - eps) / num_steps
+        pbar = tqdm(range(num_steps), desc='Sampling', leave=False)
+        NFEs = 0
+        cache = None
+        for i in pbar:
+            if cache is None:
+                t = timesteps[i]
+                if self.T > 0:
+                    t = (t * self.T).to(torch.int)
+                    t = t / self.T
+                    t += (1 / self.T)
+                if cache is None:
+                    NFEs += 1
+                # alpha_t and alpha_s should be scalars
+                alpha_t, _ = self.noise_schedule(t)
+                alpha_s, _ = self.noise_schedule(t - dt)
+                # prepare backbone inputs
+                attention_mask = torch.ones_like(xt, dtype=torch.float)
+                denoiser_inputs = DenoiserInput(
+                    xt=xt,
+                    attention_mask=attention_mask,
+                    alpha_t=alpha_t
+                )
+                backbone_output = self._backbone_forward(denoiser_inputs)
+                if isinstance(backbone_output, ModelOutput) and hasattr(
+                    backbone_output, "logits"
+                ):
+                    backbone_output = backbone_output.logits
+                log_x_theta = self._forward(
+                    backbone_output,
+                    denoiser_inputs,
+                ) # should be the log(x_\theta) with the shape of (B, Seq, Vocab)
+                x_theta = log_x_theta.exp()
+                if nucleus_p < 1:
+                    sorted_probs, sorted_indices = torch.sort(x_theta, descending=True, dim=-1)
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                    top_p_mask = cumulative_probs <= nucleus_p
+                    top_p_mask[..., 0] = True
+                    nucleus_probs = sorted_probs * top_p_mask
+                    nucleus_probs /= nucleus_probs.sum(dim=-1, keepdim=True)
+                    x_theta = torch.zeros_like(x_theta).scatter_(-1, sorted_indices, nucleus_probs)
+            else:
+                x_theta = cache
+            q_xs = self._compute_posterior(x_theta, alpha_t, alpha_s)
+            xs = self._sample_categorical(q_xs)
+            pbar.set_postfix(NFEs=NFEs, prob_check=(q_xs.sum() / xt.numel()).item(), nan_check=bool(q_xs.isnan().sum() > 0))
+            cache = x_theta
+            if (not torch.allclose(xs, xt)):
+                cache = None
+            xt = xs
+        return xt        
 
 
 class MDLMConfig(D3PMConfig):
@@ -467,7 +533,14 @@ class MDLM(D3PM):
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
         return LossAndNllOutput(loss=token_nll, nlls=nlls)
-
+    
+    def _sample_prior(self, device, batch_size, length):
+        return self.mask_token_id * torch.ones((batch_size, length), dtype=torch.int64, device=device)
+    
+    def _compute_posterior(self, x_theta, alpha_t, alpha_s):
+        q_xs = x_theta * (alpha_s - alpha_t) / (1 - alpha_t)
+        q_xs[:, :, self.mask_token_id] = (1 - alpha_s) / (1 - alpha_t)
+        return q_xs
 
 # TODO
 # class UDLM(D3PM):
@@ -476,6 +549,6 @@ class MDLM(D3PM):
 # TODO
 # class SEDD(Denoiser):
 
-
+    
 # TODO
 # class DFM(Denoiser):
