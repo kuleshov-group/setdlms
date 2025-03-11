@@ -4,6 +4,7 @@ import hydra
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
 from omegaconf import DictConfig, OmegaConf
+from streaming import StreamingDataset
 
 from scripts.utils import (
     format_number,
@@ -49,12 +50,17 @@ def main(cfg: DictConfig) -> None:
         cfg.train_dataset,
         tokenizer=tokenizer,
     )
+    train_sampler = (
+        dist.get_sampler(train_dataset, shuffle=True, drop_last=True)
+        if not isinstance(train_dataset, StreamingDataset)
+        else None
+    )
     train_dataloader = hydra.utils.instantiate(
         cfg.train_dataloader,
         _convert_="partial",
         dataset=train_dataset,
         collate_fn=collator,
-        sampler=dist.get_sampler(train_dataset, shuffle=True, drop_last=True),
+        sampler=train_sampler,
     )
     time.sleep(30)  # Needed for multi-node training
 
@@ -63,12 +69,17 @@ def main(cfg: DictConfig) -> None:
         cfg.eval_dataset,
         tokenizer=tokenizer,
     )
+    eval_sampler = (
+        dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
+        if not isinstance(eval_dataset, StreamingDataset)
+        else None
+    )
     eval_dataloader = hydra.utils.instantiate(
         cfg.eval_dataloader,
         _convert_="partial",
         dataset=eval_dataset,
         collate_fn=collator,
-        sampler=dist.get_sampler(eval_dataset, shuffle=False, drop_last=False),
+        sampler=eval_sampler,
     )
     time.sleep(30)  # Needed for multi-node training
 
