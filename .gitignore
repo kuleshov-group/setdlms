@@ -1,6 +1,8 @@
 __pycache__/
 .hf_cache
 .idea
+.ipynb_checkpoints/
 .pytest_cache/
+.ruff_cache/
 outputs/
 watch_folder
