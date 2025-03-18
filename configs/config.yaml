@@ -14,7 +14,7 @@ defaults:
 run_name: ???
 seed: 1
 backend: ${set_backend:}
-pretrained_model_name_or_path: null  # Use for pretrained backbone
+pretrained_model_name_or_path: null  # Use for pretrained backbones
 
 train_dataloader:
   _target_: torch.utils.data.DataLoader
