@@ -11,7 +11,7 @@ from composer.core import Callback, State, Timestamp
 from composer.loggers import Logger
 from composer.utils import PartialFilePath, dist, get_save_filename
 
-from src.utils import push_to_hub, snapshot_repo_to_tmp_dir
+from src.utils import fsspec_exists, push_to_hub, snapshot_repo_to_tmp_dir
 
 log = logging.getLogger(__name__)
 __all__ = ["DataloaderSpeedMonitor"]
@@ -165,7 +165,8 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
     def close(self, state: State, logger: Logger) -> None:
         """Clean up tmp repo snapshot"""
         if dist.get_global_rank() == 0:
-            shutil.rmtree(self.project_root)
+            if fsspec_exists(self.project_root):
+                shutil.rmtree(self.project_root)
         dist.barrier()
         super().close(state, logger)
 
