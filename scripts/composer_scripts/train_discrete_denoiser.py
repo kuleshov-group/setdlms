@@ -23,6 +23,8 @@ def main(cfg: DictConfig) -> None:
 
     # Tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
+    if getattr(tokenizer, "pad_token", None) is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     # Model
     model = hydra.utils.instantiate(
