@@ -185,7 +185,7 @@ class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
 
         self.metric_to_monitor = metric_to_monitor
         self.train_or_eval = metric_to_monitor.split("/")[0]
-        self.metric_name = metric_to_monitor.split("/")[1]
+        self.metric_name = "/".join(metric_to_monitor.split("/")[1:])
         self.mode = mode
         self.best_value = None
 
@@ -194,17 +194,17 @@ class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
         self.num_checkpoints_to_keep = 1
 
     @staticmethod
-    def _validate_metric_name(metric_name: str) -> None:
+    def _validate_metric_name(metric_to_monitor: str) -> None:
         invalid_name = False
-        split_name = metric_name.split("/")
-        if len(split_name) != 2:
+        split_name = metric_to_monitor.split("/")
+        if len(split_name) < 2:
             invalid_name = True
         if split_name[0] not in ["train", "eval"]:
             invalid_name = True
 
         if invalid_name:
             raise ValueError(
-                f"Invalid metric name {metric_name}. "
+                f"Invalid metric name {metric_to_monitor}. "
                 "Expected format is <train|eval>/<metric_name>."
             )
 
