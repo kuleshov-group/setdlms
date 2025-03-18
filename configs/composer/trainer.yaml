@@ -16,12 +16,14 @@ train_subset_num_batches: -1
 eval_subset_num_batches: -1
 max_duration: '1000000ba'
 eval_interval: '2000ba'
-progress_bar: false
-log_to_console: true
+progress_bar: true
+log_to_console: false
 console_log_interval: '100ba'
 precision: 'amp_bf16'
 device_train_microbatch_size: ${div_up:${training.global_batch_size}, ${eval:${get_world_size:} * ${train_dataloader.batch_size}}}
 save_folder: ${checkpointing.save_dir}
+save_filename: 'ep{epoch}-ba{batch}-rank{rank}.pt'
+save_latest_filename: 'latest-rank{rank}.pt'
 save_interval: '100000ba'
 save_num_checkpoints_to_keep: -1
 save_overwrite: false

@@ -1,4 +1,17 @@
+import hashlib
+import logging
+import os
+import re
+import shutil
+import time
+from pathlib import Path
+from tempfile import TemporaryDirectory, gettempdir
+
 import fsspec
+from huggingface_hub import HfApi
+from transformers import PreTrainedModel, PreTrainedTokenizer
+
+log = logging.getLogger(__name__)
 
 
 def fsspec_exists(filename):
@@ -17,3 +30,246 @@ def fsspec_mkdirs(dirname, exist_ok=True):
     """Mkdirs in manner compatible with fsspec."""
     fs, _ = fsspec.core.url_to_fs(dirname)
     fs.makedirs(dirname, exist_ok=exist_ok)
+
+
+def snapshot_repo(
+    run_id: str | None = None,
+) -> str:
+    """Snapshot a repo to a local (tmp) directory.
+
+    Args:
+        run_id (optional: str): Run ID (e.g., wandb uuid), to be used in creating hash
+            for the local (tmp) directory
+            If None, timestamp is used.
+    """
+
+    def _snapshot_files(src_path: Path, dest_path: Path, ignore: list[str]) -> None:
+        """Helper method that recursively copies files from src_path to dest_path.
+        Ignores files matching the patterns in ignore (list).
+        """
+        if any([re.search(ignore_file, str(src_path)) for ignore_file in ignore]):
+            return
+        if os.path.isdir(src_path):
+            dest_path.mkdir(parents=True, exist_ok=True)
+            for sp in fsspec_listdir(src_path):
+                _snapshot_files(
+                    src_path / sp, dest_path / Path(sp).resolve().name, ignore
+                )
+        if os.path.isdir(src_path):
+            return
+        # else: src_path is a file
+        shutil.copy2(src_path, dest_path)
+
+    # Get .gitignore list
+    project_root = Path(__file__).resolve().parent.parent
+    with open(project_root / ".gitignore", "r", encoding="utf-8") as gf:
+        ignore_list = [line.strip() for line in gf.readlines()]
+    ignore_list.extend(
+        [ignore_file[:-1] for ignore_file in ignore_list if ignore_file.endswith("/")]
+    )
+
+    # Construct a unique ID for temporary directory
+    root = gettempdir()
+    log.debug(root)
+    hash_key = hashlib.blake2s(
+        (run_id if run_id is not None else str(int(time.time()))).encode("utf-8"),
+        digest_size=8,
+    ).hexdigest()
+    tmp_dir = os.path.join(root, f"tmp{hash_key}")
+    if fsspec_exists(tmp_dir):
+        raise ValueError(
+            f"Cannot create snapshot. Temporary directory {tmp_dir} already exists. "
+            "Please remove it or use a different run_id."
+        )
+    fsspec_mkdirs(tmp_dir)
+    log.debug(tmp_dir)
+    _snapshot_files(project_root, Path(tmp_dir).resolve(), ignore_list)
+    log.debug(f"Snapshot saved to {tmp_dir}")
+    return tmp_dir
+
+
+def _flatten_and_copy(src_path: Path, dest_path: Path, ignore: list[str]) -> None:
+    """Copy file contents and flatten relative imports.
+
+    Ignores __init__.py files.
+    Recursively applies to directories and flattens file names from `/` to `_`
+    """
+
+    def _copy_file_contents_and_flatten_relative_imports(src, dest):
+        """Helper method that copies file contents and flattens relative imports.
+
+        All instances of `src.` are replaced with `.` and all `.` (after the first one)
+            in relative imports are replaced with `_`.
+        """
+        with open(src, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        modified_lines = []
+        for line in lines:
+            # Match lines starting with "import ."
+            if re.match(r"^\s*import\s+\.(\S+)\s*$", line):
+                # Replace all remaining '.' with '_'
+                modified_line = re.sub(
+                    r"import \.([\w.]+)",
+                    lambda m: f"import {m.group(1).replace('.', '_')}",
+                    line,
+                )
+            # Match lines starting with "from ."
+            elif re.match(r"^\s*from\s+\.(\S+)\s+import", line):
+                # Replace all remaining '.' with '_'
+                modified_line = re.sub(
+                    r"from \.([\w.]+)",
+                    lambda m: f"from {m.group(1).replace('.', '_')}",
+                    line,
+                )
+            # Match lines starting with "import src."
+            elif re.match(r"^\s*import\s+src\.(\S+)\s*$", line):
+                # Replace 'import src.' with 'import .'
+                modified_line = re.sub(r"^\s*import\s+src\.", "import .", line)
+                # Replace all remaining '.' with '_'
+                modified_line = re.sub(
+                    r"^import \.([\w.]+)",
+                    lambda m: f"import .{m.group(1).replace('.', '_')}",
+                    modified_line,
+                )
+            # Match lines starting with "from src."
+            elif re.match(r"^\s*from\s+src\.(\S+)\s+import", line):
+                # Replace 'from src.' with 'from .'
+                modified_line = re.sub(r"^\s*from\s+src\.", "from .", line)
+                # Replace all remaining '.' with '_'
+                modified_line = re.sub(
+                    r"^from \.([\w.]+)",
+                    lambda m: f"from .{m.group(1).replace('.', '_')}",
+                    modified_line,
+                )
+            else:
+                modified_line = line
+            modified_lines.append(modified_line.encode("utf-8"))
+        with open(
+            dest,
+            "wb",
+        ) as f:
+            f.writelines(modified_lines)
+
+    if any([re.search(ignore_file, str(src_path)) for ignore_file in ignore]):
+        log.debug("Skipping:", src_path)
+        return
+    if os.path.isdir(src_path):
+        for sp in fsspec_listdir(src_path):
+            _flatten_and_copy(
+                src_path / sp,
+                Path(f"{str(dest_path)}_{Path(sp).resolve().name}"),
+                ignore,
+            )
+    if os.path.isdir(src_path):
+        return
+    # Copy contents; replace `.` in relative imports with `_` and remove `src.` prefix
+    # (e.g. `src.backbone.dit` -> `.backbone_dit`)
+    log.debug(f"Copying {src_path} to {dest_path}")
+    _copy_file_contents_and_flatten_relative_imports(src_path, dest_path)
+
+
+def push_to_hub(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
+    repo_id: str = "kuleshov-group/dllm-dev",
+    commit_message: str = "Add model and code",
+    local: bool = False,
+    project_root: str | None = None,
+) -> None:
+    """Push / Save model and code to hub / local directory.
+
+    Enables model loading using `AutoModel.from_pretrained` paradigm.
+
+    Args:
+        model (PreTrainedModel): Model to push / save.
+        tokenizer (PreTrainedTokenizer): Tokenizer to push / save.
+        repo_id (str) Repository ID on Hugging Face Hub / Local directory.
+        commit_message (str): Commit message.
+        local (bool): If True, push to local directory instead of Hugging Face Hub.
+        project_root (optional: str): Path to the project root directory. If None, uses
+            the parent of __file__ path.
+            Use this parameter if, for example, pushing from a tmp copy of the repo.
+    """
+    # For some reason auto_map needs to be explicitly set again
+    model.config.auto_map = model.config.auto_map
+
+    # Update model config paths to remove `src` and flatten (replace `.` with `_`)
+    # in `_target_` (e.g. `src.backbone.dit` -> `backbone_dit`)
+    if re.match(r"^src\.", model.config.backbone_config["_target_"]):
+        model.config.backbone_config["_target_"] = re.sub(
+            r"^([\w.]+)\.",
+            lambda m: f"{m.group(1).replace('.', '_')}.",
+            re.sub(r"^src\.", "", model.config.backbone_config["_target_"]),
+        )
+    if re.match(r"^src\.", model.config.noise_config["_target_"]):
+        model.config.noise_config["_target_"] = re.sub(
+            r"^([\w.]+)\.",
+            lambda m: f"{m.group(1).replace('.', '_')}.",
+            re.sub(r"^src\.", "", model.config.noise_config["_target_"]),
+        )
+    log.debug("Updated model.config:")
+    log.debug(model.config)
+
+    if not repo_id:
+        raise ValueError("Argument `repo_id` is required")
+    if project_root is None:
+        project_root = Path(__file__).resolve().parent.parent
+    else:
+        project_root = Path(project_root).resolve()
+
+    # Set up destination
+    tmp_dir = TemporaryDirectory() if not local else None
+    dest_path = Path(repo_id) if local else Path(tmp_dir.name)
+    dest_path.mkdir(parents=True, exist_ok=True)
+
+    # Save/push model and tokenizer
+    log.debug(f"{'Saving' if local else 'Pushing'} model to {repo_id}")
+    if local:
+        model.save_pretrained(dest_path, safe_serialization=False)
+        tokenizer.save_pretrained(dest_path)
+    else:
+        model.push_to_hub(
+            repo_id,
+            private=True,
+            commit_message=commit_message,
+            safe_serialization=False,
+        )
+        tokenizer.push_to_hub(repo_id, private=True, commit_message=commit_message)
+
+    with open(project_root / ".gitignore", "r", encoding="utf-8") as gf:
+        ignore = [line.strip() for line in gf.readlines()]
+    ignore.extend(
+        [ignore_file[:-1] for ignore_file in ignore if ignore_file.endswith("/")]
+    )
+    ignore.append("__init__.py")
+    # Copy source files
+    paths_to_copy = {
+        project_root / ".gitignore": ".gitignore",
+        project_root / "src/denoiser.py": "denoiser.py",
+        project_root / "src/backbone": "backbone",
+        project_root / "src/noise_schedule": "noise_schedule",
+    }
+    for src_path, dest_name in paths_to_copy.items():
+        dest = dest_path / dest_name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _flatten_and_copy(src_path, dest, ignore)
+    # Add __init__.py
+    (dest_path / "__init__.py").touch()
+    # Upload to hub if not local
+    if not local:
+        api = HfApi()
+        log.debug(f"Creating repo or fetching URL for {repo_id}")
+        url = api.create_repo(repo_id=repo_id, exist_ok=True, private=True)
+        log.debug(f"Found repo at {url}")
+
+        log.debug(f"Uploading files to {repo_id} from {dest_path}")
+        commit_info = api.upload_folder(
+            folder_path=dest_path,
+            repo_id=repo_id,
+            commit_message=commit_message,
+        )
+        log.debug(f"Commit info: {commit_info}")
+        log.debug(f"Removing temporary directory {tmp_dir.name}")
+        tmp_dir.cleanup()
+
+    log.debug("Done")

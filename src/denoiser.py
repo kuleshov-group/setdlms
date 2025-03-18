@@ -1,14 +1,24 @@
 import copy
 import inspect
+import sys
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import hydra.utils
 import torch
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
+
+# Add the local directory (enables hydra.utils.instantiate for local imports)
+sys.path.append(str(Path(__file__).resolve().parent))
+
+# noinspection PyUnresolvedReferences
+# noqa: F401
+# Imports not used, but added here so that HF push_to_hub adds them to model repo
+# noinspection PyUnresolvedReferences
 
 
 @dataclass
@@ -201,7 +211,6 @@ class Denoiser(ABC, PreTrainedModel):
 
         Parameters:
             input_ids (torch.Tensor): Input tensor to the model.
-            labels (Optional[torch.Tensor]): Labels for the model.
             attention_mask (Optional[torch.Tensor]): Attention mask for the model.
             compute_loss (Optional[bool]): Flag to compute loss.
 
