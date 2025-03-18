@@ -5,10 +5,11 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
 import hydra.utils
 import torch
+from tqdm import tqdm
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
 
@@ -25,12 +26,12 @@ sys.path.append(str(Path(__file__).resolve().parent))
 class DenoiserInput(OrderedDict):
     """Input to the denoiser model."""
 
-    x0: torch.Tensor
-    xt: torch.Tensor
-    attention_mask: torch.Tensor | None = None
-    t: torch.Tensor | None = None
-    alpha_t: torch.Tensor | None = None
-    alpha_t_prime: torch.Tensor | None = None
+    xt: torch.Tensor  # (B, L) Tensor of token_ids
+    x0: Optional[torch.Tensor] = None  # (B, L) Tensor of token_ids (not used in gen.)
+    attention_mask: Optional[torch.Tensor] = None  # (B, L)
+    t: Optional[torch.Tensor] = None  # (B,)
+    alpha_t: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
+    alpha_t_prime: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
     # Placeholder in case future experiments require different inputs
     kwargs: dict[str, Any] | None = None
 
@@ -250,13 +251,45 @@ class Denoiser(ABC, PreTrainedModel):
             nlls=nlls,
         )
 
-    @abstractmethod
-    def generate_samples(self):  # TODO: clean up signature and docstring
-        """Generate samples starting from noise.
+    @staticmethod
+    def _sample_categorical(categorical_probs):
+        """Helper function to sample from a categorical distribution."""
+        categorical_probs = categorical_probs.to(torch.float64)
+        gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()).to(
+            categorical_probs.dtype
+        )
+        return (categorical_probs / gumbel_norm).argmax(dim=-1)
 
+    @abstractmethod
+    def generate_samples(  # TODO: clean up signature and docstring
+        self,
+        batch_size: int,
+        max_seq_len: int,
+        num_steps: int,
+        nucleus_p: float = 1.0,
+        eps: float = 1e-5,
+        device: str | None = None,
+        disable_cache: bool = False,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        """Generates sample from denoising model.
         # TODO: will need to enable infilling / starting from partially noised sequences
+
+        Args:
+            batch_size (int): Batch size.
+            max_seq_len (int): Maximum sequence length.
+            num_steps (int): Number of sampling steps.
+            nucleus_p (float, optional): Nucleus sampling probability.
+                Defaults to 1.0 (i.e., no nucleus sampling)
+            eps (float, optional): Minimum value for t. Defaults to 1e-5.
+            device (str | None, optional): Device to use for computation.
+                Defaults to None, which will select cuda (if available).
+            disable_cache (bool, optional): Whether to disable caching.
+                Defaults to False.
+        Returns:
+            torch.Tensor: Generated samples of token_ids (B, L).
         """
-        pass
+        raise NotImplementedError
 
 
 class AR(Denoiser):
@@ -280,8 +313,8 @@ class AR(Denoiser):
             attention_mask = torch.ones_like(input_ids, dtype=torch.float)
 
         return DenoiserInput(
-            x0=labels,
             xt=input_ids,
+            x0=labels,
             attention_mask=attention_mask,
         )
 
@@ -299,8 +332,18 @@ class AR(Denoiser):
 
         return LossAndNllOutput(loss=token_nll, nlls=nlls)
 
-    def generate_samples(self):
-        pass  # TODO
+    def generate_samples(
+        self,
+        batch_size: int,
+        max_seq_len: int,
+        num_steps: int,
+        nucleus_p: float = 1.0,
+        eps: float = 1e-5,
+        device: str | None = None,
+        disable_cache: bool = False,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        raise NotImplementedError
 
 
 class D3PMConfig(DenoiserConfig):
@@ -319,11 +362,13 @@ class D3PMConfig(DenoiserConfig):
         noise_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         T: int = 1000,
+        diffusion_type: str = "absorbing",  # absorbing, uniform, ...
         **kwargs,
     ):
         super().__init__(
             length, backbone_config, noise_config, tokenization_config, **kwargs
         )
+        self.diffusion_type = diffusion_type
         self.T = T
 
 
@@ -362,8 +407,8 @@ class D3PM(Denoiser):
         xt = self._sample_q_xt(input_ids, alpha_t)
 
         return DenoiserInput(
-            x0=input_ids,
             xt=xt,
+            x0=input_ids,
             attention_mask=attention_mask,
             t=t,
             alpha_t=alpha_t,
@@ -411,8 +456,121 @@ class D3PM(Denoiser):
 
         return LossAndNllOutput(loss=token_nll, nlls=nlls)
 
-    def generate_samples(self):
-        pass  # TODO
+    def _sample_prior(self, device, batch_size, length):
+        """Samples from prior / limiting distribution."""
+        raise NotImplementedError
+
+    def _compute_posterior(
+        self,
+        x: torch.Tensor,
+        alpha_t: torch.Tensor,
+        alpha_s: torch.Tensor,
+    ) -> torch.Tensor:
+        """Computes posterior / approximate posterior q(x_s | x_t, x),
+            where x represents clean sequence (as one-hots) or the output of the
+            denoising model.
+
+        Args:
+            x (torch.Tensor): True (one-hot) / predicted clean signal (B, L, V).
+            alpha_t (torch.Tensor): Noise schedule parameter at time t (B, 1, 1).
+            alpha_s (torch.Tensor): Noise schedule parameter at time s (B, 1, 1).
+        """
+        raise NotImplementedError
+
+    def _generate_unconditional(  # TODO add CBG and CFG generation
+        self,
+        alpha_t: torch.Tensor,
+        alpha_s: torch.Tensor,
+        nucleus_p: float,
+        denoiser_inputs: DenoiserInput | None = None,
+        cache: Dict[str, torch.Tensor] | None = None,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        if cache is None:
+            backbone_output = self._backbone_forward(denoiser_inputs)
+            if isinstance(backbone_output, ModelOutput) and hasattr(
+                backbone_output, "logits"
+            ):
+                backbone_output = backbone_output.logits
+            log_x_theta = self._forward(
+                backbone_output,
+                denoiser_inputs,
+            )  # should be the log(x_\theta) with the shape of (B, Seq, Vocab)
+            x_theta = log_x_theta.exp()
+            if nucleus_p < 1:
+                sorted_probs, sorted_indices = torch.sort(
+                    x_theta, descending=True, dim=-1
+                )
+                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                top_p_mask = cumulative_probs <= nucleus_p
+                top_p_mask[..., 0] = True
+                nucleus_probs = sorted_probs * top_p_mask
+                nucleus_probs /= nucleus_probs.sum(dim=-1, keepdim=True)
+                x_theta = torch.zeros_like(x_theta).scatter_(
+                    -1, sorted_indices, nucleus_probs
+                )
+        else:
+            x_theta = cache["x_theta"]
+        q_xs = self._compute_posterior(x_theta, alpha_t, alpha_s)
+        cache = {"x_theta": x_theta}
+        return q_xs, cache
+
+    def generate_samples(
+        self,
+        batch_size: int,
+        length: int,
+        num_steps: int,
+        nucleus_p: float = 1.0,
+        eps: float = 1e-5,
+        device: str | None = None,
+        disable_cache: bool = False,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        device = (
+            device
+            if device is not None
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        xt = self._sample_prior(device, batch_size, length)
+        timesteps = torch.linspace(1, eps, num_steps + 1, device=device)
+        dt = (1 - eps) / num_steps
+        pbar = tqdm(range(num_steps), desc="Sampling", leave=False)
+        NFEs = 0
+        cache = None
+        for i in pbar:
+            t = timesteps[i]
+            if self.T > 0:
+                t = (t * self.T).to(torch.int)
+                t = t / self.T
+                t += 1 / self.T
+            if cache is None:
+                NFEs += 1
+            # t is 0-dim tensor, reshape to (1, 1, 1) for broadcasting
+            alpha_t, _ = self.noise_schedule(t)[None, None, None]
+            alpha_s, _ = self.noise_schedule(t - dt)[None, None, None]
+            # prepare backbone inputs
+            attention_mask = (
+                torch.ones_like(xt, dtype=torch.float) if cache is None else None
+            )
+            denoiser_inputs = DenoiserInput(
+                xt=xt, attention_mask=attention_mask, alpha_t=alpha_t
+            )
+            q_xs, cache = self._generate_unconditional(
+                alpha_t=alpha_t,
+                alpha_s=alpha_s,
+                nucleus_p=nucleus_p,
+                denoiser_inputs=denoiser_inputs,
+                cache=cache,
+            )
+            xs = self._sample_categorical(q_xs)
+            pbar.set_postfix(
+                NFEs=NFEs,
+                prob_check=(q_xs.sum() / xt.numel()).item(),
+                nan_check=bool(q_xs.isnan().sum() > 0),
+            )
+            if not torch.allclose(xs, xt) or not disable_cache:
+                cache = None
+            xt = xs
+        return xt
 
 
 class MDLMConfig(D3PMConfig):
@@ -476,6 +634,16 @@ class MDLM(D3PM):
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
         return LossAndNllOutput(loss=token_nll, nlls=nlls)
+
+    def _sample_prior(self, device, batch_size, length):
+        return self.mask_token_id * torch.ones(
+            (batch_size, length), dtype=torch.int64, device=device
+        )
+
+    def _compute_posterior(self, x_theta, alpha_t, alpha_s):
+        q_xs = x_theta * (alpha_s - alpha_t) / (1 - alpha_t)
+        q_xs[:, :, self.mask_token_id] = (1 - alpha_s) / (1 - alpha_t)
+        return q_xs
 
 
 # TODO
