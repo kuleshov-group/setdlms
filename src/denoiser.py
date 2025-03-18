@@ -17,9 +17,17 @@ from transformers.modeling_outputs import ModelOutput
 sys.path.append(str(Path(__file__).resolve().parent))
 
 # noinspection PyUnresolvedReferences
-# noqa: F401
-# Imports not used, but added here so that HF push_to_hub adds them to model repo
+# Local imports not used, but added here so that HF push_to_hub adds them to model repo
 # noinspection PyUnresolvedReferences
+from src.backbone.dit import DIT  # noqa: F401
+from src.noise_schedule.noise_schedules import (  # noqa: F401
+    CosineNoise,
+    CosineSqrNoise,
+    GeometricNoise,
+    Linear,
+    LogLinearNoise,
+    NoOpNoise,
+)
 
 
 @dataclass
