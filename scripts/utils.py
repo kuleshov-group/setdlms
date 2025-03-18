@@ -18,7 +18,7 @@ def _make_tokenization_config(tokenizer_cfg: DictConfig) -> dict[str, Any]:
         else 8
     )
     return {
-        "vocab_size": tokenizer.vocab_size,
+        "vocab_size": len(tokenizer),
         "mask_token_id": tokenizer.mask_token_id,
         "bos_token_id": tokenizer.bos_token_id,
         "pad_token_id": tokenizer.pad_token_id,
