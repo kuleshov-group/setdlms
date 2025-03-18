@@ -32,8 +32,9 @@ def fsspec_mkdirs(dirname, exist_ok=True):
     fs.makedirs(dirname, exist_ok=exist_ok)
 
 
-def snapshot_repo(
+def snapshot_repo_to_tmp_dir(
     run_id: str | None = None,
+    tmp_dir_exists_ok: bool = False,
 ) -> str:
     """Snapshot a repo to a local (tmp) directory.
 
@@ -41,6 +42,8 @@ def snapshot_repo(
         run_id (optional: str): Run ID (e.g., wandb uuid), to be used in creating hash
             for the local (tmp) directory
             If None, timestamp is used.
+        tmp_dir_exists_ok (bool): Whether to throw an error (False) if tmp dir exists
+            already or re-use existing (True).
     """
 
     def _snapshot_files(src_path: Path, dest_path: Path, ignore: list[str]) -> None:
@@ -73,14 +76,17 @@ def snapshot_repo(
     log.debug(root)
     hash_key = hashlib.blake2s(
         (run_id if run_id is not None else str(int(time.time()))).encode("utf-8"),
-        digest_size=8,
+        digest_size=16,
     ).hexdigest()
     tmp_dir = os.path.join(root, f"tmp{hash_key}")
     if fsspec_exists(tmp_dir):
-        raise ValueError(
-            f"Cannot create snapshot. Temporary directory {tmp_dir} already exists. "
-            "Please remove it or use a different run_id."
-        )
+        if tmp_dir_exists_ok:
+            return tmp_dir
+        else:
+            raise ValueError(
+                f"Cannot create snapshot. Temporary directory {tmp_dir} already exists."
+                " Please remove it or use a different run_id."
+            )
     fsspec_mkdirs(tmp_dir)
     log.debug(tmp_dir)
     _snapshot_files(project_root, Path(tmp_dir).resolve(), ignore_list)
