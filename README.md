@@ -99,7 +99,7 @@ to use some pre-trained HuggingFace model,
 you can do so with the following command line overrides:
 ```bash
 model/backbone@model.config.backbone_config=automodel_for_masked_lm \
-model.config.backbone_config.pretrained_model_name_or_path=bert-base-uncased
+pretrained_model_name_or_path=bert-base-uncased
 ```
 This will set the model backbone to the one defined in
 [`automodel_for_masked_lm.yaml`](configs/model/backbone/automodel_for_masked_lm.yaml)

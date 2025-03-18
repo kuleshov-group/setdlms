@@ -1,0 +1,8 @@
+defaults:
+  - denoiser@_here_
+  - _self_
+
+_target_: src.denoiser.AR
+config:
+  _target_: src.denoiser.ARConfig
+  noise_config: null

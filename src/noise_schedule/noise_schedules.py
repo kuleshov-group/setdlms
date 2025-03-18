@@ -29,19 +29,6 @@ class Noise(ABC):
         pass
 
 
-class NoOpNoise(Noise):
-    """Dummy class used with AR."""
-
-    def __init__(self):
-        super().__init__()
-
-    def rate_noise(self, t):
-        pass
-
-    def total_noise(self, t):
-        pass
-
-
 class CosineNoise(Noise):
     def __init__(self, eps=1e-3):
         super().__init__()
