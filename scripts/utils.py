@@ -53,12 +53,13 @@ def register_useful_resolvers() -> None:
 
 
 def format_number(num):
+    if abs(num) >= 1_000_000_000:
+        return f"{num / 1_000_000_000:.1f}B"
     if abs(num) >= 1_000_000:
         return f"{num / 1_000_000:.1f}M"
-    elif abs(num) >= 1_000:
+    if abs(num) >= 1_000:
         return f"{num / 1_000:.1f}k"
-    else:
-        return str(num)
+    return str(num)
 
 
 def print_and_save_config(
