@@ -1,3 +1,5 @@
+import logging
+
 import hydra
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
@@ -9,6 +11,8 @@ from scripts.utils import (
     print_and_save_config,
     register_useful_resolvers,
 )
+
+log = logging.getLogger(__name__)
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -30,15 +34,15 @@ def main(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         metrics=list(hydra.utils.instantiate(cfg.metrics).values()),
     )
-    print(
+    log.info(
         f"Num. parameters: {format_number(sum(p.numel() for p in model.parameters()))}"
     )
 
     # Setup distributed
     if not dist.is_initialized():
-        print("Initializing dist")
+        log.info("Initializing dist")
         dist.initialize_dist()
-    print("All nodes connected")
+    log.info("All nodes connected")
 
     # Collator
     collator = hydra.utils.instantiate(cfg.collator, tokenizer=tokenizer)
