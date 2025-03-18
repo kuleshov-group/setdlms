@@ -26,7 +26,6 @@ from src.noise_schedule.noise_schedules import (  # noqa: F401
     GeometricNoise,
     Linear,
     LogLinearNoise,
-    NoOpNoise,
 )
 
 
@@ -107,6 +106,8 @@ class Denoiser(ABC, PreTrainedModel):
     This class defines the interface for AR, Diffusion, and Flow-based parametrizations.
     """
 
+    config_class = DenoiserConfig
+
     def __init__(
         self,
         config: DenoiserConfig,
@@ -125,7 +126,11 @@ class Denoiser(ABC, PreTrainedModel):
         self.bos_token_id = config.bos_token_id
         self.eos_token_id = config.eos_token_id
         self.backbone = hydra.utils.instantiate(config.backbone_config)
-        self.noise_schedule = hydra.utils.instantiate(config.noise_config)
+        self.noise_schedule = (
+            hydra.utils.instantiate(config.noise_config)
+            if config.noise_config is not None
+            else None
+        )
         self.time_conditioned_backbone = (
             "noise" in inspect.getfullargspec(self.backbone.forward).args
         )
@@ -300,10 +305,41 @@ class Denoiser(ABC, PreTrainedModel):
         raise NotImplementedError
 
 
+class ARConfig(DenoiserConfig):
+    """Configuration class for autoregressive (AR) models."""
+
+    model_type = "ar"
+    auto_map = {
+        "AutoConfig": "denoiser.ARConfig",
+        "AutoModel": "denoiser.AR",
+    }
+
+    def __init__(
+        self,
+        length: int | None = None,
+        backbone_config: dict[str, Any] | None = None,
+        tokenization_config: dict[str, Any] | None = None,
+        noise_config: None = None,
+        **kwargs,
+    ):
+        super().__init__(
+            length=length,
+            backbone_config=backbone_config,
+            noise_config=noise_config,
+            tokenization_config=tokenization_config,
+            **kwargs,
+        )
+
+
 class AR(Denoiser):
     """Denoiser class for autoregressive (AR) models."""
 
-    def __init__(self, config: Any):
+    config_class = ARConfig
+
+    def __init__(
+        self,
+        config: ARConfig,
+    ):
         super().__init__(config)
         self.time_conditioned_backbone = False
 
@@ -314,11 +350,12 @@ class AR(Denoiser):
         t: torch.FloatTensor | None = None,
     ) -> DenoiserInput:
         # Prepare inputs for autoregressive model
-        labels = copy.deepcopy(input_ids[..., 1:])
-
+        labels = copy.deepcopy(input_ids[..., 1:])[..., None]
         input_ids = input_ids[..., :-1]
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, dtype=torch.float)
+        elif attention_mask.shape != input_ids.shape:
+            attention_mask = attention_mask[..., :-1]
 
         return DenoiserInput(
             xt=input_ids,
@@ -351,6 +388,7 @@ class AR(Denoiser):
         disable_cache: bool = False,
         **kwargs: Any,
     ) -> torch.Tensor:
+        # TODO
         raise NotImplementedError
 
 
