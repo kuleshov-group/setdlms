@@ -6,3 +6,4 @@ hf_compatible_checkpointing:
   save_interval: ${trainer.save_interval}
   num_checkpoints_to_keep: ${trainer.save_num_checkpoints_to_keep}
   overwrite: ${trainer.save_overwrite}
+  disable_hf: false

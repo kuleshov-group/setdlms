@@ -3,14 +3,15 @@ import os
 import pathlib
 import shutil
 import time
-from typing import Any
+from typing import Any, Literal
 
+import torch
 from composer.callbacks import CheckpointSaver
 from composer.core import Callback, State, Timestamp
-from composer.loggers import Logger, WandBLogger
+from composer.loggers import Logger
 from composer.utils import PartialFilePath, dist, get_save_filename
 
-from src.utils import push_to_hub, snapshot_repo
+from src.utils import push_to_hub, snapshot_repo_to_tmp_dir
 
 log = logging.getLogger(__name__)
 __all__ = ["DataloaderSpeedMonitor"]
@@ -45,8 +46,9 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
 
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, disable_hf: bool = False, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        self.disable_hf = disable_hf
         self.project_root = ""
         self.hf_filename = PartialFilePath(
             f"HF_{self.filename.filename.split('.pt')[0]}", self.filename.folder
@@ -62,14 +64,35 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
 
     def fit_start(self, state: State, logger: Logger) -> None:
         super().fit_start(state, logger)
-        if dist.get_global_rank() == 0:
-            run_id = None
-            for logger in logger.destinations:
-                if isinstance(logger, WandBLogger):
-                    run_id = logger.run_url
-                    break
-            self.project_root = snapshot_repo(run_id=run_id)
+        if dist.get_global_rank() == 0 and not self.disable_hf:
+            self.project_root = snapshot_repo_to_tmp_dir(tmp_dir_exists_ok=True)
+            log.info(f"Created tmp repo for HF checkpointing at {self.project_root}")
         dist.barrier()  # Holds all the ranks until repo snapshot is done
+
+    def state_dict(self) -> dict[str, Any]:
+        state_dict = super().state_dict()
+
+        all_hf_checkpoints = []
+        for (
+            save_filename,
+            timestamp,
+        ) in self.all_saved_hf_checkpoints_to_timestamp.items():
+            all_hf_checkpoints.append((save_filename, timestamp.state_dict()))
+
+        state_dict["all_saved_hf_checkpoints_to_timestamp"] = all_hf_checkpoints
+        return state_dict
+
+    def load_state_dict(self, state: dict[str, Any]):
+        super().load_state_dict(state)
+        if "all_saved_hf_checkpoints_to_timestamp" in state:
+            for save_filename, timestamp_state in state[
+                "all_saved_hf_checkpoints_to_timestamp"
+            ]:
+                load_timestamp = Timestamp()
+                load_timestamp.load_state_dict(timestamp_state)
+                self.all_saved_hf_checkpoints_to_timestamp[save_filename] = (
+                    load_timestamp
+                )
 
     def _save_checkpoint(self, state: State, logger: Logger) -> None:
         """
@@ -79,8 +102,9 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
         # TODO: Check that HF saving works with state.fsdp_sharded_state_dict_enabled
         #  (or if we can ignore this scenario).
         # TODO: Do we need to implement HF uploading for remote uploading too?
-
-        super()._save_checkpoint(state, logger)  # Perform standard checkpointing
+        if self.disable_hf:
+            super()._save_checkpoint(state, logger)  # Perform standard checkpointing
+            return
 
         hf_filename_with_placeholders = self.hf_filename.format(
             state, keep_placeholders=True
@@ -103,6 +127,7 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
         log.debug(f"HF checkpoint locally saved to {saved_hf_path}")
 
         if not saved_hf_path:  # not all ranks save
+            super()._save_checkpoint(state, logger)  # Perform standard checkpointing
             return
 
         self.rank_saves_symlinks = (
@@ -135,3 +160,133 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
                 else:
                     if dist.get_global_rank() == 0:
                         shutil.rmtree(prefix_dir)
+        super()._save_checkpoint(state, logger)  # Perform standard checkpointing
+
+    def close(self, state: State, logger: Logger) -> None:
+        """Clean up tmp repo snapshot"""
+        if dist.get_global_rank() == 0:
+            shutil.rmtree(self.project_root)
+        dist.barrier()
+        super().close(state, logger)
+
+
+class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
+    """Save the best checkpoint based on a metric."""
+
+    def __init__(
+        self,
+        metric_to_monitor: str,
+        mode: Literal["min", "max"] = "min",
+        disable_hf: bool = False,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(disable_hf, *args, **kwargs)
+
+        self.metric_to_monitor = metric_to_monitor
+        self.train_or_eval = metric_to_monitor.split("/")[0]
+        self.metric_name = metric_to_monitor.split("/")[1]
+        self.mode = mode
+        self.best_value = None
+
+        self.latest_filename = None
+        self.latest_hf_filename = None
+        self.num_checkpoints_to_keep = 1
+
+    @staticmethod
+    def _validate_metric_name(metric_name: str) -> None:
+        invalid_name = False
+        split_name = metric_name.split("/")
+        if len(split_name) != 2:
+            invalid_name = True
+        if split_name[0] not in ["train", "eval"]:
+            invalid_name = True
+
+        if invalid_name:
+            raise ValueError(
+                f"Invalid metric name {metric_name}. "
+                "Expected format is <train|eval>/<metric_name>."
+            )
+
+    @property
+    def _metric_dict(self) -> dict[str, Any]:
+        return {
+            "metric_to_monitor": self.metric_to_monitor,
+            "mode": self.mode,
+            "best_value": self.best_value,
+        }
+
+    def _trigger_save(self, metric_value: float) -> bool:
+        if self.best_value is None:
+            return True
+        if self.mode == "min":
+            return metric_value < self.best_value
+        return metric_value > self.best_value  # self.mode == "max"
+
+    def eval_end(self, state: State, logger: Logger) -> None:
+        metrics = (
+            state.train_metric_values
+            if self.train_or_eval == "train"
+            else state.eval_metric_values
+        )
+        if self.metric_name not in [k.lower() for k in metrics.keys()]:
+            raise ValueError(
+                f"Metric {self.metric_name} not found in metrics {metrics.keys()}"
+            )
+        metrics = {
+            key.lower(): (value.item() if isinstance(value, torch.Tensor) else value)
+            for key, value in metrics.items()
+        }
+        metric_value = metrics[self.metric_name]
+        if self._trigger_save(metric_value):
+            filename_with_placeholders = self.filename.format(
+                state, keep_placeholders=True
+            )
+            save_filename = get_save_filename(state, filename_with_placeholders)
+            log.info(
+                f"Best {self.metric_name} attained: {metric_value}. "
+                f"Saving checkpoint to {save_filename}."
+            )
+            self.best_value = metrics[self.metric_name]
+            self._save_checkpoint(state, logger)
+
+    def batch_checkpoint(self, state: State, logger: Logger):
+        pass  # Force no saving
+
+    def epoch_checkpoint(self, state: State, logger: Logger):
+        pass
+
+    def iteration_checkpoint(self, state: State, logger: Logger):
+        pass
+
+    def state_dict(self) -> dict[str, Any]:
+        state_dict = super().state_dict()
+
+        # Add best checkpoint info to state_dict
+        all_checkpoints = []
+        for save_filename, timestamp in self.all_saved_checkpoints_to_timestamp.items():
+            all_checkpoints.append(
+                (save_filename, timestamp.state_dict(), self._metric_dict)
+            )
+
+        state_dict["all_saved_checkpoints_to_timestamp"] = all_checkpoints
+        return state_dict
+
+    def load_state_dict(self, state: dict[str, Any]):
+        if "all_saved_hf_checkpoints_to_timestamp" in state:
+            for save_filename, timestamp_state in state[
+                "all_saved_hf_checkpoints_to_timestamp"
+            ]:
+                load_timestamp = Timestamp()
+                load_timestamp.load_state_dict(timestamp_state)
+                self.all_saved_hf_checkpoints_to_timestamp[save_filename] = (
+                    load_timestamp
+                )
+        if "all_saved_checkpoints_to_timestamp" in state:
+            for save_filename, timestamp_state, metrics_dict in state[
+                "all_saved_checkpoints_to_timestamp"
+            ]:
+                load_timestamp = Timestamp()
+                load_timestamp.load_state_dict(timestamp_state)
+                self.all_saved_checkpoints_to_timestamp[save_filename] = load_timestamp
+                self.best_value = metrics_dict["best_value"]  # restore best_value

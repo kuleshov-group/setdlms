@@ -27,6 +27,7 @@ save_latest_filename: 'latest-rank{rank}.pt'
 save_interval: '100000ba'
 save_num_checkpoints_to_keep: -1
 save_overwrite: false
+save_metrics: false  # TODO: Does this need to be set to true for resumption of metrics?
 load_path: ${training.load_path}
 load_weights_only: false
 autoresume: ${training.autoresume}
