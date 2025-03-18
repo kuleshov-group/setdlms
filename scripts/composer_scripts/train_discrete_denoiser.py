@@ -1,5 +1,3 @@
-import time
-
 import hydra
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
@@ -62,7 +60,7 @@ def main(cfg: DictConfig) -> None:
         collate_fn=collator,
         sampler=train_sampler,
     )
-    time.sleep(30)  # Needed for multi-node training
+    # time.sleep(30)  # Needed for multi-node training
 
     # Val dataloader
     eval_dataset = hydra.utils.instantiate(
@@ -81,7 +79,7 @@ def main(cfg: DictConfig) -> None:
         collate_fn=collator,
         sampler=eval_sampler,
     )
-    time.sleep(30)  # Needed for multi-node training
+    # time.sleep(30)  # Needed for multi-node training
 
     # Optimizer
     optimizer = hydra.utils.instantiate(

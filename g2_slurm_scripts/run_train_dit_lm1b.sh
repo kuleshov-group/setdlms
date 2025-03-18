@@ -26,6 +26,4 @@ composer -n 8 scripts/composer_scripts/train_discrete_denoiser.py \
   dataset@eval_dataset=lm1b_preprocessed_eval \
   model/backbone@model.config.backbone_config=dit \
   model.config.length=128 \
-  trainer.progress_bar=true \
-  trainer.log_to_console=false \
   ~composer/parallelism@trainer.parallelism_config
