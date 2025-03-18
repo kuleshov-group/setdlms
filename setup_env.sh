@@ -14,22 +14,14 @@ if [ -z "${CONDA_PREFIX}" ]; then
   conda activate dllm-dev
 fi
 
-# Setup HF cache
-# shellcheck disable=SC1091
+# W&B / HF Setup
+source "/home/$(whoami)/setup_discdiff.sh"
 export HF_HOME="${PWD}/.hf_cache"
 echo "HuggingFace cache set to '${HF_HOME}'."
-
-
-# Setup W&B
-# shellcheck disable=SC1091
-source "/home/$(whoami)/setup_discdiff.sh"
-echo "Logging into W&B as '${WANDB_ENTITY}'."
 
 # Add root directory to PYTHONPATH to enable module imports
 export PYTHONPATH="${PWD}:${HF_HOME}/modules"
 
-# HF Login
-huggingface-cli login --token ${HUGGINGFACE_TOKEN} --add-to-git-credential
-
 # Enforce verbose Hydra error logging
 export HYDRA_FULL_ERROR=1
+# export TMPDIR="${PWD}/.tmp"  # TODO: currently this is causing OSErrors
