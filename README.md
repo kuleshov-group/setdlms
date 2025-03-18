@@ -25,12 +25,24 @@ Run the script using:
 source setup_env.sh
 ```
 
-You can also include this snippet in shell / slurm scripts to set up the environment on a compute node.
+You can also include this snippet in shell / slurm scripts to set up the environment on
+a compute node.
 
-In this script replace the following variables with your own tokens:
+In this script, we setup WandB and HuggingFace tokens by sourcing a script which is
+expected to be in the `/home/<YOUR_USER_NAME>/` directory.
+Copy the contents below into a shell script `/home/<YOUR_USER_NAME>/setup_discdiff.sh`
+and replace the placeholder tokens with your own:
 ```shell
-WANDB_API_KEY="<WANDB_API_KEY>"
-HUGGINGFACE_TOKEN="<HF_TOKEN>"
+# W&B / HF Setup
+export WANDB__SERVICE_WAIT=600
+export _WANDB_STARTUP_DEBUG="true"
+export WANDB_ENTITY="kuleshov-group"
+export WANDB_API_KEY="<WANDB_API_KEY>"
+echo "Logging into W&B as '${WANDB_ENTITY}'."
+
+# HF Setup
+export HUGGINGFACE_TOKEN="<HF_TOKEN>"
+huggingface-cli login --token ${HUGGINGFACE_TOKEN} --add-to-git-credential
 ```
 - WandB token can be found [here](https://wandb.ai/authorize).
 - HuggingFace token can be setup [here](https://huggingface.co/settings/tokens).
@@ -69,8 +81,8 @@ Filling in the relevant variables.
 ---
 
 Experiment configs are setup
-using [Hydra](https://hydra.cc/docs/intro/) and can be found in the [`configs`](./configs)
-directory.
+using [Hydra](https://hydra.cc/docs/intro/) and can be found in the
+[`configs`](./configs) directory.
 
 The main config is [`configs/config.yaml`](./configs/config.yaml).
 Here we use `hydra` defaults list to setup the experiment / run, but all of these can be
@@ -89,8 +101,10 @@ you can do so with the following command line overrides:
 model/backbone@model.config.backbone_config=automodel_for_masked_lm \
 model.config.backbone_config.pretrained_model_name_or_path=bert-base-uncased
 ```
-This will set the model backbone to the one defined in [`automodel_for_masked_lm.yaml`](configs/model/backbone/automodel_for_masked_lm.yaml)
-which will use `hydra.utils.instantiate` tools to initialize the backbone and the `@` syntax will move this parameter to `config.model.config.backbone_config`.
+This will set the model backbone to the one defined in
+[`automodel_for_masked_lm.yaml`](configs/model/backbone/automodel_for_masked_lm.yaml)
+which will use `hydra.utils.instantiate` tools to initialize the backbone and the `@`
+syntax will move this parameter to `config.model.config.backbone_config`
 and set the `pretrained_model_name_or_path` to `bert-base-uncased`.
 
 Another example,
