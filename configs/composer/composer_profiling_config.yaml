@@ -2,7 +2,15 @@
 # Sets defaults for composer scripts
 defaults:
   - composer_config
-  - overrides callbacks: [log_profiling_trace_to_wandb, hf_compatible_checkpointing, lr_monitor, memory_monitor, optimizer_monitor, runtime_estimator, save_best_checkpointing, speed_monitor]
+  - overrides callbacks:
+      - log_profiling_trace_to_wandb
+      - hf_compatible_checkpointing
+      - lr_monitor
+      - memory_monitor
+      - optimizer_monitor
+      - runtime_estimator
+      - save_best_checkpointing
+      - speed_monitor
   - profiler@trainer.profiler: profiler
   - _self_
 
