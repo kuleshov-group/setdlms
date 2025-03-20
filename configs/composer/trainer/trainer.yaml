@@ -16,7 +16,7 @@ device: ${backend}
 train_subset_num_batches: -1
 eval_subset_num_batches: -1
 max_duration: '1000000ba'
-eval_interval: '20000ba'
+eval_interval: '10000ba'
 progress_bar: true
 log_to_console: false
 console_log_interval: '100ba'

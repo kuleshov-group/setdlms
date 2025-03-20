@@ -4,7 +4,6 @@ defaults:
   - trainer: trainer
   - algorithms: [ema, low_precision_layernorm]
   - callbacks:
-      - log_profiling_trace_to_wandb
       - hf_compatible_checkpointing
       - lr_monitor
       - memory_monitor
