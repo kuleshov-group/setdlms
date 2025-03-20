@@ -7,13 +7,12 @@
 #SBATCH -t 960:00:00                  # Time limit (hh:mm:ss)
 #SBATCH --mem=64000                   # Server memory requested (per node)
 #SBATCH -N 1                          # Total number of nodes requested
-#SBATCH --ntasks-per-node=8
-#SBATCH --gres=gpu:8                  # Type/number of GPUs needed
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:4                  # Type/number of GPUs needed
 #SBATCH --open-mode=append            # Do not overwrite logs
 #SBATCH --requeue                     # Requeue upon preemption
 #SBATCH --mail-user=yzs2@cornell.edu  # Email
 #SBATCH --mail-type=END               # Request status by email
-
 
 # Setup environment
 cd ../ || exit  # Go to the root directory of the repo
@@ -26,5 +25,6 @@ composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denois
   dataset@eval_dataset=lm1b_preprocessed_eval \
   model/backbone@model.config.backbone_config=dit \
   model.config.length=128 \
-  training.global_batch_size=512 \
+  training.global_batch_size=$(( 8 * SLURM_GPUS_ON_NODE ))  \
+  composer=composer_profiling_config \
   ~composer.trainer.parallelism_config

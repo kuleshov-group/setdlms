@@ -1,0 +1,3 @@
+_target_: composer.profiler.JSONTraceHandler
+folder: ${cwd:}/composer_profiler
+overwrite: True

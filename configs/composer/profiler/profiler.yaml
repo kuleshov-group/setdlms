@@ -1,0 +1,13 @@
+defaults:
+  - trace_handlers: [json_trace_handler]
+
+_target_: composer.profiler.profiler.Profiler
+schedule:
+  _target_: composer.profiler.cyclic_schedule
+  wait: 0
+  warmup: 1
+  active: 4
+  repeat: 1
+torch_prof_folder: ${cwd:}/torch_profiler
+torch_prof_overwrite: true
+torch_prof_memory_filename: null

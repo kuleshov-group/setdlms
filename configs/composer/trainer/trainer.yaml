@@ -1,3 +1,4 @@
+#file: noinspection LongLine
 # Composer Trainer
 # Need to pass the following at runtime:
 #  - model
@@ -32,4 +33,4 @@ load_path: ${training.load_path}
 load_weights_only: false
 autoresume: ${training.autoresume}
 python_log_level: null
-dist_timeout: 300.0
+dist_timeout: 600.0

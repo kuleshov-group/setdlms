@@ -89,18 +89,18 @@ def main(cfg: DictConfig) -> None:
 
     # Optimizer
     optimizer = hydra.utils.instantiate(
-        cfg.optimizer,
+        cfg.composer.optimizer,
         _convert_="all",  # required for compatibility with fsdp
         params=model.parameters(),
     )
 
     # LR Scheduler
-    lr_scheduler = hydra.utils.instantiate(cfg.lr_scheduler)
+    lr_scheduler = hydra.utils.instantiate(cfg.composer.lr_scheduler)
 
     # Loggers
-    if cfg.loggers is not None:
+    if cfg.composer.loggers is not None:
         logger = hydra.utils.instantiate(
-            cfg.loggers,
+            cfg.composer.loggers,
             _recursive_=False,
             # Prevents config->DictConfig in trainer init; breaks WandB config logging
             _convert_="all",
@@ -110,14 +110,14 @@ def main(cfg: DictConfig) -> None:
         logger = None
 
     # Callbacks
-    callbacks = hydra.utils.instantiate(cfg.callbacks)
+    callbacks = hydra.utils.instantiate(cfg.composer.callbacks)
 
     # Algorithms
-    algorithms = hydra.utils.instantiate(cfg.algorithms)
+    algorithms = hydra.utils.instantiate(cfg.composer.algorithms)
 
     # Trainer
     trainer = hydra.utils.instantiate(
-        cfg.trainer,
+        cfg.composer.trainer,
         _convert_="all",
         model=model,
         train_dataloader=train_dataloader,
