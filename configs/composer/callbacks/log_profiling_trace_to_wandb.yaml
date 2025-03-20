@@ -1,0 +1,4 @@
+log_profiling_trace_to_wandb:
+  _target_: src.custom_composer.callbacks.LogProfilingTraceToWandb
+  composer_prof_folder: ${composer.trainer.profiler.trace_handlers.folder}
+  torch_prof_folder: ${composer.trainer.profiler.torch_prof_folder}

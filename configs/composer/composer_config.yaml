@@ -1,11 +1,12 @@
 #file: noinspection LongLine
 # Sets defaults for composer scripts
 defaults:
-  - /composer/algorithms@_global_.algorithms: [ema, low_precision_layernorm]
-  - /composer/callbacks@_global_.callbacks: [hf_compatible_checkpointing, lr_monitor, memory_monitor, optimizer_monitor, runtime_estimator, save_best_checkpointing, speed_monitor]
-  - /composer/loggers@_global_.loggers: wandb
-  - /composer/lr_scheduler@_global_.lr_scheduler: constant_with_warmup
-  - /composer/metrics@_global_.metrics: [loss, nll, bpd, perplexity]
-  - /composer/optimizer@_global_.optimizer: decoupled_adamw
-  - /composer/compile@_global_.trainer.compile_config: pytorch_defaults
-  - /composer/parallelism@_global_.trainer.parallelism_config: fsdp
+  - trainer: trainer
+  - algorithms: [ema, low_precision_layernorm]
+  - callbacks: [hf_compatible_checkpointing, lr_monitor, memory_monitor, optimizer_monitor, runtime_estimator, save_best_checkpointing, speed_monitor]
+  - loggers: wandb
+  - lr_scheduler: constant_with_warmup
+  - optimizer: decoupled_adamw
+  - compile@trainer.compile_config: pytorch_defaults
+  - parallelism@trainer.parallelism_config: fsdp
+  - _self_

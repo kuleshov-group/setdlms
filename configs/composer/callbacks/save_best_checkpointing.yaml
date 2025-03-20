@@ -1,6 +1,6 @@
 save_best_checkpointing:
   _target_: src.custom_composer.callbacks.SaveBestCheckpointing
-  folder: ${trainer.save_folder}
+  folder: ${composer.trainer.save_folder}
   filename: 'best-rank{rank}.pt'
   num_checkpoints_to_keep: 1
   metric_to_monitor: eval/loss  # <train|val>/<metric_name>

@@ -1,13 +1,13 @@
 #file: noinspection LongLine
 defaults:
-  - composer/composer_config@_global_  # Pull in defaults from composer
-  - composer/trainer@trainer
+  - composer: composer_config  # Pull in defaults from composer
   - tokenizer: autotokenizer
   - collator: denoising
   - dataset@train_dataset: ???
   - dataset@eval_dataset: ???
-  - noise@model.config.noise_config: loglinear
+  - metrics: [loss, nll, bpd, perplexity]
   - model: mdlm
+  - noise@model.config.noise_config: loglinear
   - model/backbone@model.config.backbone_config: ???
   - _self_
 

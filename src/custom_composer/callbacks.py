@@ -1,3 +1,4 @@
+import glob
 import logging
 import os
 import pathlib
@@ -6,6 +7,7 @@ import time
 from typing import Any, Literal
 
 import torch
+import wandb
 from composer.callbacks import CheckpointSaver
 from composer.core import Callback, State, Timestamp
 from composer.loggers import Logger
@@ -22,7 +24,7 @@ class DataloaderSpeedMonitor(Callback):
 
     Copied from:
         https://github.com/AnswerDotAI/ModernBERT/blob/main/src/callbacks/dataloader_speed.py
-        Copyright 2024 onwards Answer.AI, LightOn, and contributors
+        Copyright 2024 onwards Answe-r.AI, LightOn, and contributors
         License: Apache-2.0
     """  # noqa: E501
 
@@ -115,8 +117,12 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
         # Adapting `checkpoint.save_checkpoint / ._save_checkpoint` for HF
         if dist.get_global_rank() == 0:
             push_to_hub(
-                model=state.model.model,
-                tokenizer=state.model.tokenizer,
+                model=state.model.module.model
+                if hasattr(state.model, "module")
+                else state.model.model,
+                tokenizer=state.model.module.tokenizer
+                if hasattr(state.model, "module")
+                else state.model.tokenizer,
                 repo_id=save_hf_filename,
                 local=True,
                 project_root=self.project_root,
@@ -291,3 +297,31 @@ class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
                 load_timestamp.load_state_dict(timestamp_state)
                 self.all_saved_checkpoints_to_timestamp[save_filename] = load_timestamp
                 self.best_value = metrics_dict["best_value"]  # restore best_value
+
+
+class LogProfilingTraceToWandb(Callback):
+    """Log profiling trace to wandb.
+
+    See: https://wandb.ai/wandb/trace/reports/Using-the-PyTorch-Profiler-with-W-B--Vmlldzo5MDE3NjU
+    """  # noqa: E501
+
+    def __init__(
+        self,
+        composer_prof_folder: str,
+        torch_prof_folder: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.composer_prof_folder = composer_prof_folder
+        self.torch_prof_folder = torch_prof_folder
+
+    def fit_end(self, state: State, logger: Logger) -> None:
+        if dist.get_global_rank() == 0:
+            profile_art = wandb.Artifact(f"trace-{wandb.run.id}", type="profile")
+            for trace_file in glob.glob(f"{self.composer_prof_folder}/*.json"):
+                profile_art.add_file(trace_file, os.path.basename(trace_file))
+            for trace_file in glob.glob(f"{self.torch_prof_folder}/*.pt.trace.json"):
+                profile_art.add_file(trace_file, os.path.basename(trace_file))
+            wandb.run.log_artifact(profile_art).wait()
+        dist.barrier()

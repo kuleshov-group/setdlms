@@ -1,9 +1,9 @@
 hf_compatible_checkpointing:
   _target_: src.custom_composer.callbacks.HuggingFaceCompatibleCheckpointing
-  folder: ${trainer.save_folder}
-  filename: ${trainer.save_filename}
-  latest_filename: ${trainer.save_latest_filename}
-  save_interval: ${trainer.save_interval}
-  num_checkpoints_to_keep: ${trainer.save_num_checkpoints_to_keep}
-  overwrite: ${trainer.save_overwrite}
+  folder: ${composer.trainer.save_folder}
+  filename: ${composer.trainer.save_filename}
+  latest_filename: ${composer.trainer.save_latest_filename}
+  save_interval: ${composer.trainer.save_interval}
+  num_checkpoints_to_keep: ${composer.trainer.save_num_checkpoints_to_keep}
+  overwrite: ${composer.trainer.save_overwrite}
   disable_hf: false
