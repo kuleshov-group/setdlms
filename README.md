@@ -110,9 +110,10 @@ and set the `pretrained_model_name_or_path` to `bert-base-uncased`.
 Another example,
 if you want to remove something from the defaults list, use `~` syntax, e.g.:
 ```bash
-~/composer/parallelism@trainer.parallelism_config
+~composer.trainer.parallelism_config
 ```
-This will remove the `parallelism_config` from the defaults list.
+This will remove the `parallelism_config` from the defaults defined in the composer
+config [`configs/composer/default_composer`](./configs/composer/default_composer.yaml).
 
 ## Tour of the codebase
 TODO: Fill his in

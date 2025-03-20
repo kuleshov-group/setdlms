@@ -1,14 +1,14 @@
 #file: noinspection LongLine
-# Sets defaults for composer scripts
 defaults:
-  - composer_config
+  - default_composer  # Pull in composer setup defaults
   - overrides callbacks:
       - log_profiling_trace_to_wandb
+#      - dataloader_speed_monitor
       - hf_compatible_checkpointing
       - lr_monitor
-      - memory_monitor
-      - optimizer_monitor
-      - runtime_estimator
+#      - memory_monitor
+#      - optimizer_monitor
+#      - runtime_estimator
       - save_best_checkpointing
       - speed_monitor
   - profiler@trainer.profiler: profiler

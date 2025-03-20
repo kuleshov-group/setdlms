@@ -1,6 +1,6 @@
 #file: noinspection LongLine
 defaults:
-  - composer: composer_config  # Pull in defaults from composer
+  - composer: default_composer  # Pull in composer setup defaults
   - tokenizer: autotokenizer
   - collator: denoising
   - dataset@train_dataset: ???
