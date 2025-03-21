@@ -21,7 +21,7 @@ progress_bar: true
 log_to_console: false
 console_log_interval: '100ba'
 precision: 'amp_bf16'
-device_train_microbatch_size: ${div_up:${training.global_batch_size}, ${eval:${get_world_size:} * ${train_dataloader.batch_size}}}
+device_train_microbatch_size: ${div_up:${train_dataloader.batch_size}, ${training.grad_accum}}
 save_folder: ${checkpointing.save_dir}
 save_filename: 'ep{epoch}-ba{batch}-rank{rank}.pt'
 save_latest_filename: 'latest-rank{rank}.pt'

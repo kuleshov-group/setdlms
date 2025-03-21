@@ -37,6 +37,7 @@ training:
   lr: 3e-4  # Peak learning rate
   global_batch_size: 512
   eval_global_batch_size: ${.global_batch_size}
+  grad_accum: ${div_up:${training.global_batch_size}, ${eval:${get_world_size:} * ${train_dataloader.batch_size}}}
   # Parameters for sampling t
   antithetic_sampling: True
   sampling_eps: 1e-3
