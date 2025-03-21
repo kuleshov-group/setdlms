@@ -56,6 +56,7 @@ class DenoiserOutput(ModelOutput):
     """Output of the denoiser model."""
 
     model_output: torch.Tensor
+    logits: torch.Tensor
     tokens_mask: torch.Tensor | None = None
     loss: torch.Tensor | None = None
     nlls: torch.Tensor | None = None
@@ -259,6 +260,7 @@ class Denoiser(ABC, PreTrainedModel):
             loss, nlls = None, None
         return DenoiserOutput(
             model_output=model_output,
+            logits=backbone_output,
             tokens_mask=denoiser_inputs.attention_mask,
             loss=loss,
             nlls=nlls,
