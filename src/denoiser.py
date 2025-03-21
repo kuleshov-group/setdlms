@@ -56,7 +56,7 @@ class DenoiserOutput(ModelOutput):
     """Output of the denoiser model."""
 
     model_output: torch.Tensor
-    logits: torch.Tensor
+    logits: torch.Tensor | None = None
     tokens_mask: torch.Tensor | None = None
     loss: torch.Tensor | None = None
     nlls: torch.Tensor | None = None
@@ -179,7 +179,8 @@ class Denoiser(ABC, PreTrainedModel):
         **kwargs: Any,
     ) -> torch.Tensor:
         """
-        Forward pass for the denoiser model to be implemented by subclasses.
+        Forward pass for the denoiser model returns probabilities over denoised
+        sequence.
 
         Some classes may need to override this method.
 
@@ -431,6 +432,7 @@ class D3PM(Denoiser):
     def __init__(self, config: D3PMConfig):
         super().__init__(config)
         self.T = config.T
+        self.diffusion_type = config.diffusion_type
 
     def _sample_q_xt(self, x0: torch.Tensor, alpha_t: torch.Tensor) -> torch.Tensor:
         move_indices = torch.rand(*x0.shape, device=x0.device) < (1.0 - alpha_t)

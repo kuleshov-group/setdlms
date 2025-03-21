@@ -6,3 +6,4 @@ _target_: src.denoiser.D3PM
 config:
   _target_: src.denoiser.D3PMConfig
   T: 1000  # T > 0 indicates finite-time vs. continuous (e.g., MDLM, UDLM), i.e., T = 0.
+  diffusion_type: ???  # e.g., "absorbing" (MDLM), "uniform" (UDLM)
