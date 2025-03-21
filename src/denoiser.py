@@ -22,10 +22,9 @@ sys.path.append(str(Path(__file__).resolve().parent))
 from src.backbone.dit import DIT  # noqa: F401
 from src.noise_schedule.noise_schedules import (  # noqa: F401
     CosineNoise,
-    CosineSqrNoise,
-    GeometricNoise,
-    Linear,
-    LogLinearNoise,
+    ExpNoise,
+    LinearNoise,
+    LogarithmicNoise,
 )
 
 

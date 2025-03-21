@@ -5,121 +5,72 @@ import torch
 
 class Noise(ABC):
     """
-    Baseline forward method to get the total + rate of noise at a timestep
+    Baseline forward method to get noise parameters at a timestep
     """
 
     def __call__(
         self, t: torch.Tensor | float
     ) -> tuple[torch.Tensor | float, torch.Tensor | float]:
         # Assume time goes from 0 to 1
-        return self.total_noise(t), self.rate_noise(t)
-
-    @abstractmethod
-    def rate_noise(self, t: torch.Tensor | float) -> torch.Tensor | float:
-        """
-        Noise rate of change, i.e., g(t)
-        """
         pass
 
     @abstractmethod
-    def total_noise(self, t: torch.Tensor | float) -> torch.Tensor | float:
+    def inverse(self, alpha_t: torch.Tensor) -> torch.Tensor:
         """
-        Total noise ie \\int_0^t g(t) dt + g(0)
+        Inverse function to compute the timestep t from the noise schedule param.
         """
-        pass
+        raise NotImplementedError("Inverse function not implemented")
 
 
 class CosineNoise(Noise):
     def __init__(self, eps=1e-3):
         super().__init__()
         self.eps = eps
+        self.name = "cosine"
 
-    def rate_noise(self, t):
-        cos = (1 - self.eps) * torch.cos(t * torch.pi / 2)
-        sin = (1 - self.eps) * torch.sin(t * torch.pi / 2)
-        scale = torch.pi / 2
-        return scale * sin / (cos + self.eps)
-
-    def total_noise(self, t):
-        cos = torch.cos(t * torch.pi / 2)
-        return -torch.log(self.eps + (1 - self.eps) * cos)
+    def __call__(self, t):
+        cos = -(1 - self.eps) * torch.cos(t * torch.pi / 2)
+        sin = -(1 - self.eps) * torch.sin(t * torch.pi / 2)
+        move_chance = cos + 1
+        alpha_t_prime = sin * torch.pi / 2
+        return 1 - move_chance, alpha_t_prime
 
 
-class CosineSqrNoise(Noise):
+class ExponentialNoise(Noise):
+    def __init__(self, exp=2, eps=1e-3):
+        super().__init__()
+        self.eps = eps
+        self.exp = exp
+        self.name = f"exp_{exp}"
+
+    def __call__(self, t):
+        move_chance = torch.pow(t, self.exp)
+        move_chance = torch.clamp(move_chance, min=self.eps)
+        alpha_t_prime = -(self.exp * torch.pow(t, self.exp - 1))
+        return alpha_t_prime, 1 - move_chance
+
+
+class LogarithmicNoise(Noise):
     def __init__(self, eps=1e-3):
         super().__init__()
         self.eps = eps
+        self.name = "logarithmic"
 
-    def rate_noise(self, t):
-        cos = (1 - self.eps) * (torch.cos(t * torch.pi / 2) ** 2)
-        sin = (1 - self.eps) * torch.sin(t * torch.pi)
-        scale = torch.pi / 2
-        return scale * sin / (cos + self.eps)
-
-    def total_noise(self, t):
-        cos = torch.cos(t * torch.pi / 2) ** 2
-        return -torch.log(self.eps + (1 - self.eps) * cos)
+    def __call__(self, t):
+        move_chance = torch.log1p(t) / torch.log(torch.tensor(2.0))
+        alpha_t_prime = -1 / (torch.log(torch.tensor(2.0)) * (1 + t))
+        return 1 - move_chance, alpha_t_prime
 
 
-class Linear(Noise):
-    def __init__(self, sigma_min=0, sigma_max=10, dtype=torch.float32):
-        super().__init__()
-        self.sigma_min = torch.tensor(sigma_min, dtype=dtype)
-        self.sigma_max = torch.tensor(sigma_max, dtype=dtype)
-
-    def rate_noise(self, t):
-        return self.sigma_max - self.sigma_min
-
-    def total_noise(self, t):
-        return self.sigma_min + t * (self.sigma_max - self.sigma_min)
-
-    def importance_sampling_transformation(self, t):
-        f_T = torch.log1p(-torch.exp(-self.sigma_max))
-        f_0 = torch.log1p(-torch.exp(-self.sigma_min))
-        sigma_t = -torch.log1p(-torch.exp(t * f_T + (1 - t) * f_0))
-        return (sigma_t - self.sigma_min) / (self.sigma_max - self.sigma_min)
-
-
-class GeometricNoise(Noise):
-    def __init__(self, sigma_min=1e-3, sigma_max=1):
-        super().__init__()
-        self.sigmas = 1.0 * torch.tensor([sigma_min, sigma_max])
-
-    def rate_noise(self, t):
-        return (
-            self.sigmas[0] ** (1 - t)
-            * self.sigmas[1] ** t
-            * (self.sigmas[1].log() - self.sigmas[0].log())
-        )
-
-    def total_noise(self, t):
-        return self.sigmas[0] ** (1 - t) * self.sigmas[1] ** t
-
-
-class LogLinearNoise(Noise):
-    """Log Linear noise schedule.
-
-    Built such that 1 - 1/e^(n(t)) interpolates between 0 and
-    ~1 when t varies from 0 to 1. Total noise is
-    -log(1 - (1 - eps) * t), so the sigma will be
-    (1 - eps) * t.
-    """
-
+class LinearNoise(Noise):
     def __init__(self, eps=1e-3):
         super().__init__()
-        self.eps = eps
-        self.sigma_max = self.total_noise(torch.tensor(1.0))
-        self.sigma_min = self.eps + self.total_noise(torch.tensor(0.0))
+        self.name = "linear"
 
-    def rate_noise(self, t):
-        return (1 - self.eps) / (1 - (1 - self.eps) * t)
+    def inverse(self, alpha_t):
+        return 1 - alpha_t
 
-    def total_noise(self, t):
-        return -torch.log1p(-(1 - self.eps) * t)
-
-    def importance_sampling_transformation(self, t):
-        f_T = torch.log1p(-torch.exp(-self.sigma_max))
-        f_0 = torch.log1p(-torch.exp(-self.sigma_min))
-        sigma_t = -torch.log1p(-torch.exp(t * f_T + (1 - t) * f_0))
-        t = -torch.expm1(-sigma_t) / (1 - self.eps)
-        return t
+    def __call__(self, t):
+        alpha_t_prime = -1
+        move_chance = t
+        return 1 - move_chance, alpha_t_prime
