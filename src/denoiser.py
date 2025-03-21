@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import hydra.utils
 import torch
@@ -410,7 +410,7 @@ class D3PMConfig(DenoiserConfig):
         noise_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         T: int = 1000,
-        diffusion_type: str = "absorbing",  # absorbing, uniform, ...
+        diffusion_type: Literal["absorbing", "uniform"] = "absorbing",
         **kwargs,
     ):
         super().__init__(
@@ -433,8 +433,17 @@ class D3PM(Denoiser):
         self.T = config.T
 
     def _sample_q_xt(self, x0: torch.Tensor, alpha_t: torch.Tensor) -> torch.Tensor:
-        # TODO
-        raise NotImplementedError
+        move_indices = torch.rand(*x0.shape, device=x0.device) < (1.0 - alpha_t)
+        if self.diffusion_type == "absorbing":
+            return torch.where(move_indices, self.mask_token_id, x0)
+        if self.diffusion_type == "uniform":
+            uniform_tensor = torch.randint(
+                0, self.vocab_size, x0.shape, device=x0.device
+            )
+            return torch.where(move_indices, uniform_tensor, x0)
+        raise NotImplementedError(
+            f"Diffusion type '{self.diffusion_type}' not implemented."
+        )
 
     def _prepare_inputs(
         self,
@@ -476,26 +485,60 @@ class D3PM(Denoiser):
         alpha_t = 1 - t + torch.zeros_like(denoiser_inputs.x0)
         alpha_s = 1 - (t - dt) + torch.zeros_like(denoiser_inputs.x0)
 
-        log_x_theta_at_x0 = torch.gather(
-            model_output, -1, denoiser_inputs.x0[:, :, None]
-        ).squeeze(-1)
-        log_x_theta_at_m = model_output[:, :, self.mask_token_id]
-        x_theta_at_m = log_x_theta_at_m.exp()
+        if self.diffusion_type == "absorbing":
+            log_x_theta_at_x0 = torch.gather(
+                model_output, -1, denoiser_inputs.x0[:, :, None]
+            ).squeeze(-1)
+            log_x_theta_at_m = model_output[:, :, self.mask_token_id]
+            x_theta_at_m = log_x_theta_at_m.exp()
 
-        term_1_coef = dt / t
-        term_1_log_nr = torch.log(alpha_t * x_theta_at_m / t + 1)
-        term_1_log_dr = log_x_theta_at_x0
+            term_1_coef = dt / t
+            term_1_log_nr = torch.log(alpha_t * x_theta_at_m / t + 1)
+            term_1_log_dr = log_x_theta_at_x0
 
-        term_2_coef = 1 - dt / t
-        term_2_log_nr = term_1_log_nr
-        term_2_log_dr = torch.log(alpha_s * x_theta_at_m / (t - dt) + 1)
+            term_2_coef = 1 - dt / t
+            term_2_log_nr = term_1_log_nr
+            term_2_log_dr = torch.log(alpha_s * x_theta_at_m / (t - dt) + 1)
 
-        L_vb_masked = term_1_coef * (term_1_log_nr - term_1_log_dr) + term_2_coef * (
-            term_2_log_nr - term_2_log_dr
-        )
+            L_vb_masked = term_1_coef * (
+                term_1_log_nr - term_1_log_dr
+            ) + term_2_coef * (term_2_log_nr - term_2_log_dr)
 
-        L_vb = L_vb_masked * (denoiser_inputs.xt == self.mask_token_id)
+            L_vb = L_vb_masked * (denoiser_inputs.xt == self.mask_token_id)
+        elif self.diffusion_type == "uniform":
+            posterior = self._compute_posterior(
+                x=torch.nn.functional.one_hot(
+                    denoiser_inputs.x0, num_classes=self.vocab_size
+                ).to(self.dtype),
+                xt=denoiser_inputs.xt,
+                alpha_s=alpha_s,
+                alpha_t=alpha_t,
+            )
+            posterior_pred = self._compute_posterior(
+                x=model_output.exp(),
+                xt=denoiser_inputs.xt,
+                alpha_s=alpha_s,
+                alpha_t=alpha_t,
+            )
+            L_vb = (
+                posterior * (torch.log(posterior + 1e-12) - torch.log(posterior_pred))
+            ).sum(dim=-1)
+        else:
+            raise NotImplementedError(
+                f"Diffusion type '{self.diffusion_type}' not implemented."
+            )
         loss = self.T * L_vb
+        # reconstruction loss
+        # TODO: Implement recon loss for D3PM
+        # t0 = torch.zeros(
+        #     denoiser_inputs.x0.shape[0], dtype=self.dtype, device=self.device)
+        # time_conditioning = self.noise(t0)[0][:, None]
+        # model_output_t0 = self.forward(
+        #     denoiser_inputs.x0, time_conditioning)
+        # loss -= torch.gather(
+        #     input=model_output_t0, dim=-1, index=denoiser_inputs.x0[..., None]
+        # ).squeeze(-1)
+
         nlls = loss * denoiser_inputs.attention_mask
         count = denoiser_inputs.attention_mask.sum()
 
@@ -506,11 +549,26 @@ class D3PM(Denoiser):
 
     def _sample_prior(self, device, batch_size, length):
         """Samples from prior / limiting distribution."""
-        raise NotImplementedError
+        if self.diffusion_type == "absorbing_state":
+            return self.mask_token_id * torch.ones(
+                (batch_size, length), dtype=torch.int64, device=device
+            )
+        if self.diffusion_type == "uniform":
+            return torch.randint(
+                0,
+                self.vocab_size,
+                (batch_size, length),
+                device=device,
+                dtype=torch.int64,
+            )
+        raise NotImplementedError(
+            f"Diffusion type '{self.diffusion_type}' not implemented."
+        )
 
     def _compute_posterior(
         self,
         x: torch.Tensor,
+        xt: torch.Tensor,
         alpha_t: torch.Tensor,
         alpha_s: torch.Tensor,
     ) -> torch.Tensor:
@@ -520,10 +578,33 @@ class D3PM(Denoiser):
 
         Args:
             x (torch.Tensor): True (one-hot) / predicted clean signal (B, L, V).
+            xt (torch.Tensor): Noised signal at time t (B, L).
             alpha_t (torch.Tensor): Noise schedule parameter at time t (B, 1, 1).
             alpha_s (torch.Tensor): Noise schedule parameter at time s (B, 1, 1).
         """
-        raise NotImplementedError
+        if self.diffusion_type == "absorbing_state":
+            q_xs = x * (alpha_s - alpha_t)
+            q_xs[..., self.mask_token_id] = 1 - alpha_s[..., 0]
+            q_xs /= 1 - alpha_t
+            return q_xs
+
+        alpha_ts = alpha_t / alpha_s
+        d_alpha = alpha_s - alpha_t
+        xt_one_hot = torch.nn.functional.one_hot(x, self.vocab_size)
+        limiting_distribution = torch.ones_like(xt_one_hot) / self.vocab_size
+        if self.diffusion_type == "uniform":
+            return (
+                alpha_t * self.vocab_size * x * xt_one_hot
+                + (alpha_ts - alpha_t) * xt_one_hot
+                + d_alpha * x
+                + (1 - alpha_ts) * (1 - alpha_s) * limiting_distribution
+            ) / (
+                alpha_t * self.vocab_size * torch.gather(x, -1, xt[..., None])
+                + (1 - alpha_t)
+            )
+        raise NotImplementedError(
+            f"Diffusion type {self.diffusion_type} not implemented."
+        )
 
     def _generate_unconditional(  # TODO add CBG and CFG generation
         self,
@@ -558,7 +639,7 @@ class D3PM(Denoiser):
                 )
         else:
             x_theta = cache["x_theta"]
-        q_xs = self._compute_posterior(x_theta, alpha_t, alpha_s)
+        q_xs = self._compute_posterior(x_theta, denoiser_inputs.xt, alpha_t, alpha_s)
         cache = {"x_theta": x_theta}
         return q_xs, cache
 
@@ -640,10 +721,6 @@ class MDLM(D3PM):
         super().__init__(config)
         self.neg_infinity = -1e12
 
-    def _sample_q_xt(self, x0: torch.Tensor, alpha_t: torch.Tensor) -> torch.Tensor:
-        move_indices = torch.rand(*x0.shape, device=x0.device) < (1.0 - alpha_t)
-        return torch.where(move_indices, self.mask_token_id, x0)
-
     def _forward(
         self, backbone_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs
     ) -> torch.Tensor:
@@ -682,16 +759,6 @@ class MDLM(D3PM):
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
         return LossAndNllOutput(loss=token_nll, nlls=nlls)
-
-    def _sample_prior(self, device, batch_size, length):
-        return self.mask_token_id * torch.ones(
-            (batch_size, length), dtype=torch.int64, device=device
-        )
-
-    def _compute_posterior(self, x_theta, alpha_t, alpha_s):
-        q_xs = x_theta * (alpha_s - alpha_t) / (1 - alpha_t)
-        q_xs[:, :, self.mask_token_id] = (1 - alpha_s) / (1 - alpha_t)
-        return q_xs
 
 
 # TODO
