@@ -477,77 +477,7 @@ class D3PM(Denoiser):
     def _compute_loss(
         self, model_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
     ) -> LossAndNllOutput:
-        dt = 1 / self.T
-        t = kwargs.get("t", None)
-
-        if torch.is_tensor(t):
-            t = t[:, None]
-            assert t.ndim == 2
-            t = t.clamp(0.0, 1.0 - 1e-4)
-        alpha_t = 1 - t + torch.zeros_like(denoiser_inputs.x0)
-        alpha_s = 1 - (t - dt) + torch.zeros_like(denoiser_inputs.x0)
-
-        if self.diffusion_type == "absorbing":
-            log_x_theta_at_x0 = torch.gather(
-                model_output, -1, denoiser_inputs.x0[:, :, None]
-            ).squeeze(-1)
-            log_x_theta_at_m = model_output[:, :, self.mask_token_id]
-            x_theta_at_m = log_x_theta_at_m.exp()
-
-            term_1_coef = dt / t
-            term_1_log_nr = torch.log(alpha_t * x_theta_at_m / t + 1)
-            term_1_log_dr = log_x_theta_at_x0
-
-            term_2_coef = 1 - dt / t
-            term_2_log_nr = term_1_log_nr
-            term_2_log_dr = torch.log(alpha_s * x_theta_at_m / (t - dt) + 1)
-
-            L_vb_masked = term_1_coef * (
-                term_1_log_nr - term_1_log_dr
-            ) + term_2_coef * (term_2_log_nr - term_2_log_dr)
-
-            L_vb = L_vb_masked * (denoiser_inputs.xt == self.mask_token_id)
-        elif self.diffusion_type == "uniform":
-            posterior = self._compute_posterior(
-                x=torch.nn.functional.one_hot(
-                    denoiser_inputs.x0, num_classes=self.vocab_size
-                ).to(self.dtype),
-                xt=denoiser_inputs.xt,
-                alpha_s=alpha_s,
-                alpha_t=alpha_t,
-            )
-            posterior_pred = self._compute_posterior(
-                x=model_output.exp(),
-                xt=denoiser_inputs.xt,
-                alpha_s=alpha_s,
-                alpha_t=alpha_t,
-            )
-            L_vb = (
-                posterior * (torch.log(posterior + 1e-12) - torch.log(posterior_pred))
-            ).sum(dim=-1)
-        else:
-            raise NotImplementedError(
-                f"Diffusion type '{self.diffusion_type}' not implemented."
-            )
-        loss = self.T * L_vb
-        # reconstruction loss
-        # TODO: Implement recon loss for D3PM
-        # t0 = torch.zeros(
-        #     denoiser_inputs.x0.shape[0], dtype=self.dtype, device=self.device)
-        # time_conditioning = self.noise(t0)[0][:, None]
-        # model_output_t0 = self.forward(
-        #     denoiser_inputs.x0, time_conditioning)
-        # loss -= torch.gather(
-        #     input=model_output_t0, dim=-1, index=denoiser_inputs.x0[..., None]
-        # ).squeeze(-1)
-
-        nlls = loss * denoiser_inputs.attention_mask
-        count = denoiser_inputs.attention_mask.sum()
-
-        batch_nll = nlls.sum()
-        token_nll = batch_nll / count
-
-        return LossAndNllOutput(loss=token_nll, nlls=nlls)
+        raise NotImplementedError
 
     def _sample_prior(self, device, batch_size, length):
         """Samples from prior / limiting distribution."""
