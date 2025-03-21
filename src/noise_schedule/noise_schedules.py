@@ -71,6 +71,6 @@ class LinearNoise(Noise):
         return 1 - alpha_t
 
     def __call__(self, t):
-        alpha_t_prime = 1
+        alpha_t_prime = torch.ones_like(t)
         move_chance = t
         return 1 - move_chance, alpha_t_prime
