@@ -1,2 +1,0 @@
-_target_: src.noise_schedule.noise_schedules.LogLinearNoise
-eps: 1e-3

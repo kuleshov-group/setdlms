@@ -22,10 +22,9 @@ sys.path.append(str(Path(__file__).resolve().parent))
 from src.backbone.dit import DIT  # noqa: F401
 from src.noise_schedule.noise_schedules import (  # noqa: F401
     CosineNoise,
-    CosineSqrNoise,
-    GeometricNoise,
-    Linear,
-    LogLinearNoise,
+    ExponentialNoise,
+    LinearNoise,
+    LogarithmicNoise,
 )
 
 
@@ -682,7 +681,7 @@ class MDLM(D3PM):
         ).squeeze(-1)
 
         loss = (
-            -log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
+            log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
         )
 
         nlls = loss * denoiser_inputs.attention_mask
