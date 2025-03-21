@@ -681,7 +681,7 @@ class MDLM(D3PM):
         ).squeeze(-1)
 
         loss = (
-            -log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
+            log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
         )
 
         nlls = loss * denoiser_inputs.attention_mask
