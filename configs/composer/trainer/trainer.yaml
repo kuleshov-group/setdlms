@@ -17,8 +17,8 @@ train_subset_num_batches: -1
 eval_subset_num_batches: -1
 max_duration: '1000000ba'
 eval_interval: '10000ba'
-progress_bar: true
-log_to_console: false
+progress_bar: false
+log_to_console: true
 console_log_interval: '100ba'
 precision: 'amp_bf16'
 device_train_microbatch_size: ${div_up:${train_dataloader.batch_size}, ${training.grad_accum}}
