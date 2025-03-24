@@ -6,12 +6,11 @@ defaults:
     - ema
 #    - low_precision_layer_norm
   - callbacks:
-#      - dataloader_speed_monitor
       - hf_compatible_checkpointing
       - lr_monitor
 #      - memory_monitor
 #      - optimizer_monitor
-#      - runtime_estimator
+      - runtime_estimator
       - save_best_checkpointing
       - speed_monitor
   - loggers: wandb
@@ -19,4 +18,3 @@ defaults:
   - optimizer: decoupled_adamw
   - compile@trainer.compile_config: pytorch_defaults
   - parallelism@trainer.parallelism_config: fsdp
-  - _self_
