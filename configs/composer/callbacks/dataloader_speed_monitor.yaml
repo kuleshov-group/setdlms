@@ -1,2 +1,2 @@
 dataloader_speed_monitor:
-  _target_: src.custom_composer.callbacks.DataLoaderSpeedMonitor
+  _target_: src.custom_composer.callbacks.DataloaderSpeedMonitor
