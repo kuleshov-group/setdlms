@@ -16,7 +16,6 @@ from transformers.modeling_outputs import ModelOutput
 # Add the local directory (enables hydra.utils.instantiate for local imports)
 sys.path.append(str(Path(__file__).resolve().parent))
 
-# noinspection PyUnresolvedReferences
 # Local imports not used, but added here so that HF push_to_hub adds them to model repo
 # noinspection PyUnresolvedReferences
 from src.backbone.dit import DIT  # noqa: F401
@@ -460,7 +459,7 @@ class D3PM(Denoiser):
         if t is None:
             t = torch.rand(input_ids.shape[0], device=input_ids.device)
         alpha_t, alpha_t_prime = self.noise_schedule(t)
-        if alpha_t.ndim == 1:
+        while alpha_t.ndim < 2:
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
         xt = self._sample_q_xt(input_ids, alpha_t)
@@ -682,7 +681,7 @@ class MDLM(D3PM):
         ).squeeze(-1)
 
         loss = (
-            -log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
+            log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
         )
 
         nlls = loss * denoiser_inputs.attention_mask
