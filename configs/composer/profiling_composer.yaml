@@ -1,4 +1,3 @@
-#file: noinspection LongLine
 defaults:
   - default_composer  # Pull in composer setup defaults
   - overrides callbacks:

@@ -1,4 +1,3 @@
-#file: noinspection LongLine
 # Sets defaults for composer scripts
 defaults:
   - trainer: trainer
