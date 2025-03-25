@@ -20,11 +20,17 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denoiser.py \
-  run_name=lm1b-dit \
+  run_name=lm1b-dit-noise_bug_fixed \
   tokenizer.pretrained_model_name_or_path=bert-base-uncased \
   dataset@train_dataset=lm1b_preprocessed_train \
   dataset@eval_dataset=lm1b_preprocessed_eval \
   model/backbone@model.config.backbone_config=dit \
   model.config.length=128 \
   training.global_batch_size=512 \
-  ~composer.trainer.parallelism_config
+  training.grad_accum=2 \
+  composer.lr_scheduler.t_warmup='2500ba' \
+  ~composer.trainer.parallelism_config \
+  composer.trainer.progress_bar=false \
+  composer.trainer.log_to_console=true \
+  train_dataloader.num_workers=0 \
+  eval_dataloader.num_workers=0

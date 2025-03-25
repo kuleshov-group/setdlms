@@ -112,14 +112,7 @@ class LogLinearNoise(Noise):
         self.sigma_min = self.eps + self.total_noise(torch.tensor(0.0))
 
     def rate_noise(self, t):
-        return (1 - self.eps) / (1 - (1 - self.eps) * t)
+        return -1.0 * t
 
     def total_noise(self, t):
-        return -torch.log1p(-(1 - self.eps) * t)
-
-    def importance_sampling_transformation(self, t):
-        f_T = torch.log1p(-torch.exp(-self.sigma_max))
-        f_0 = torch.log1p(-torch.exp(-self.sigma_min))
-        sigma_t = -torch.log1p(-torch.exp(t * f_T + (1 - t) * f_0))
-        t = -torch.expm1(-sigma_t) / (1 - self.eps)
-        return t
+        return 1.0 - t
