@@ -159,11 +159,10 @@ def apply_rotary_emb_torch(x, cos, sin, interleaved=False):
     )
 
 
-@torch.cuda.amp.autocast(dtype=torch.float32)
 def split_and_apply_rotary_pos_emb(
     qkv: Tensor, rotary_cos_sin: tuple[Tensor, Tensor]
 ) -> tuple[Tensor, Tensor, Tensor]:
-    with torch.autocast(device_type="cuda", enabled=False):
+    with torch.autocast(device_type="cuda", dtype=torch.float32, enabled=False):
         cos, sin = rotary_cos_sin
         qkv = qkv.to(dtype=torch.float32)
         cos = cos.type_as(qkv)
@@ -174,7 +173,7 @@ def split_and_apply_rotary_pos_emb(
         q = apply_rotary_emb_torch(q.squeeze(dim=2), cos, sin)
         k = apply_rotary_emb_torch(k.squeeze(dim=2), cos, sin)
         v = v.squeeze(dim=2)
-        return q, k, v
+    return q, k, v
 
 
 # --------------------------------------------------------------------------------
@@ -294,7 +293,6 @@ class DIT(nn.Module):
         cond_dim: int = 128,
         n_blocks: int = 12,
         n_heads: int = 12,
-        scale_by_sigma: bool = True,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -302,7 +300,9 @@ class DIT(nn.Module):
         self.causal = causal
         self.use_adaln = use_adaln
         self.vocab_embed = nn.Embedding(vocab_size, hidden_size)
-        self.timestep_embed = TimestepEmbedding(cond_dim)
+        self.timestep_embed = (
+            TimestepEmbedding(cond_dim) if use_adaln and not causal else None
+        )
         self.rotary_embed = RotaryEmbedding(hidden_size // n_heads)
         self.activation = nn.SiLU()
 
@@ -326,20 +326,25 @@ class DIT(nn.Module):
             out_channels=vocab_size,
             cond_dim=cond_dim,
         )
-        self.scale_by_sigma = scale_by_sigma
 
-    def forward(self, input_ids: Tensor, noise: Tensor, **_: Any) -> Tensor:
+    def forward(
+        self, input_ids: Tensor, noise: Tensor | None = None, **_: Any
+    ) -> Tensor:
         """Forward pass for DIT model.
 
         Args:
             input_ids: Input ids of shape (batch_size, sequence_length)
-            noise: Noise float tensor of shape (batch_size,)
+            noise: (Optional) Noise float tensor of shape (batch_size,)
         """
         x = self.vocab_embed(input_ids)
-        c = None if self.causal else self.activation(self.timestep_embed(noise))
+        c = (
+            None
+            if self.causal or not self.use_adaln or noise is None
+            else self.activation(self.timestep_embed(noise))
+        )
         rotary_cos_sin = self.rotary_embed(x)
 
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             for block in self.blocks:
                 x = block(x, rotary_cos_sin, c)
 

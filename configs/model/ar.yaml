@@ -6,3 +6,4 @@ _target_: src.denoiser.AR
 config:
   _target_: src.denoiser.ARConfig
   noise_config: null
+  time_conditioned_backbone: false

@@ -77,6 +77,7 @@ class DenoiserConfig(PretrainedConfig):
         backbone_config: dict[str, Any] | None = None,
         noise_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
+        time_conditioned_backbone: bool | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -97,6 +98,7 @@ class DenoiserConfig(PretrainedConfig):
         self.backbone_config = backbone_config
         self.noise_config = noise_config
         self.length = length
+        self.time_conditioned_backbone = time_conditioned_backbone
 
 
 class Denoiser(ABC, PreTrainedModel):
@@ -131,7 +133,9 @@ class Denoiser(ABC, PreTrainedModel):
             else None
         )
         self.time_conditioned_backbone = (
-            "noise" in inspect.getfullargspec(self.backbone.forward).args
+            config.time_conditioned_backbone
+            if config.time_conditioned_backbone is not None
+            else "noise" in inspect.getfullargspec(self.backbone.forward).args
         )
 
     @abstractmethod
@@ -313,6 +317,7 @@ class ARConfig(DenoiserConfig):
     auto_map = {
         "AutoConfig": "denoiser.ARConfig",
         "AutoModel": "denoiser.AR",
+        "AutoModelForCausalLM": "denoiser.AR",
     }
 
     def __init__(
@@ -321,6 +326,7 @@ class ARConfig(DenoiserConfig):
         backbone_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         noise_config: None = None,
+        time_conditioned_backbone: bool | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -328,6 +334,7 @@ class ARConfig(DenoiserConfig):
             backbone_config=backbone_config,
             noise_config=noise_config,
             tokenization_config=tokenization_config,
+            time_conditioned_backbone=time_conditioned_backbone,
             **kwargs,
         )
 
@@ -342,7 +349,6 @@ class AR(Denoiser):
         config: ARConfig,
     ):
         super().__init__(config)
-        self.time_conditioned_backbone = False
 
     def _prepare_inputs(
         self,
@@ -400,6 +406,7 @@ class D3PMConfig(DenoiserConfig):
     auto_map = {
         "AutoConfig": "denoiser.D3PMConfig",
         "AutoModel": "denoiser.D3PM",
+        "AutoModelForMaskedLM": "denoiser.D3PM",
     }
 
     def __init__(
@@ -408,12 +415,18 @@ class D3PMConfig(DenoiserConfig):
         backbone_config: dict[str, Any] | None = None,
         noise_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
+        time_conditioned_backbone: bool | None = None,
         T: int = 1000,
         diffusion_type: Literal["absorbing", "uniform"] = "absorbing",
         **kwargs,
     ):
         super().__init__(
-            length, backbone_config, noise_config, tokenization_config, **kwargs
+            length=length,
+            backbone_config=backbone_config,
+            noise_config=noise_config,
+            tokenization_config=tokenization_config,
+            time_conditioned_backbone=time_conditioned_backbone,
+            **kwargs,
         )
         self.diffusion_type = diffusion_type
         self.T = T
@@ -639,6 +652,7 @@ class MDLMConfig(D3PMConfig):
     auto_map = {
         "AutoConfig": "denoiser.MDLMConfig",
         "AutoModel": "denoiser.MDLM",
+        "AutoModelForMaskedLM": "denoiser.MDLM",
     }
 
 
