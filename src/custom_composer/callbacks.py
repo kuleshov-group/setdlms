@@ -24,7 +24,7 @@ class DataloaderSpeedMonitor(Callback):
 
     Copied from:
         https://github.com/AnswerDotAI/ModernBERT/blob/main/src/callbacks/dataloader_speed.py
-        Copyright 2024 onwards Answe-r.AI, LightOn, and contributors
+        Copyright 2024 onwards Answer.AI, LightOn, and contributors
         License: Apache-2.0
     """  # noqa: E501
 
