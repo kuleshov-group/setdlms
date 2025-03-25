@@ -7,8 +7,6 @@
 #  - algorithms (list[composer.algorithms]),
 #  - scheduler (composer.optim.scheduler),
 #  - callbacks (list[composer.callbacks]),
-#  - compile_config (dict),
-#  - parallelism_config (dict)
 _target_: composer.Trainer
 run_name: ${run_name}
 seed: ${seed}
