@@ -198,6 +198,11 @@ def push_to_hub(
     """
     # For some reason auto_map needs to be explicitly set again
     model.config.auto_map = model.config.auto_map
+    # Register config and model classes
+    model.config.__class__.register_for_auto_class()
+    for automodel in ["AutoModel", "AutoModelForCausalLM", "AutoModelForMaskedLM"]:
+        if automodel in model.config.auto_map.keys():
+            model.__class__.register_for_auto_class(automodel)
 
     # Update model config paths to remove `src` and flatten (replace `.` with `_`)
     # in `_target_` (e.g. `src.backbone.dit` -> `backbone_dit`)
