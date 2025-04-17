@@ -19,14 +19,18 @@ class DenoisingCollator:
         restricted_t_range: tuple[float, float] | None = None,
         sampling_eps: float = 0.05,
         antithetic_sampling: bool = False,
+        base_collator: Callable | None = None,
     ):
-        self.base_collate_fn = DataCollatorWithPadding(
-            tokenizer=tokenizer,
-            padding=padding,
-            max_length=max_length,
-            pad_to_multiple_of=pad_to_multiple_of,
-            return_tensors=return_tensors,
-        )
+        if base_collator is not None:
+            self.base_collate_fn = base_collator
+        else:
+            self.base_collate_fn = DataCollatorWithPadding(
+                tokenizer=tokenizer,
+                padding=padding,
+                max_length=max_length,
+                pad_to_multiple_of=pad_to_multiple_of,
+                return_tensors=return_tensors,
+            )
         self.restricted_t_range = restricted_t_range
         self.sampling_eps = sampling_eps
         self.antithetic_sampling = antithetic_sampling
