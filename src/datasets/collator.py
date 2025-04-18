@@ -51,7 +51,7 @@ class DenoisingCollator:
         t = self._sample_t(
             batch_size=batch["input_ids"].shape[0], device=batch["input_ids"].device
         )
-        batch["t"] = t
+        batch.update({"t": t})
         return batch
 
 

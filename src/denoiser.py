@@ -237,6 +237,7 @@ class Denoiser(ABC, PreTrainedModel):
         self,
         input_ids: torch.LongTensor,
         attention_mask: torch.FloatTensor | None = None,
+        t: torch.FloatTensor | None = None,
         past_key_values: torch.Tensor | None = None,
         compute_loss: bool | None = True,
         **kwargs,
@@ -248,13 +249,13 @@ class Denoiser(ABC, PreTrainedModel):
         Parameters:
             input_ids (torch.Tensor): Input tensor to the model.
             attention_mask (Optional[torch.Tensor]): Attention mask for the model.
+            t (Optional[torch.Tensor]): Denoising time step for the model.
             past_key_values (Optional[torch.Tensor]): KV cache.
             compute_loss (Optional[bool]): Flag to compute loss.
 
         Returns:
             DenoiserOutput
         """
-        t = kwargs.pop("t", None)
         denoiser_inputs = self._prepare_inputs(
             input_ids=input_ids,
             attention_mask=attention_mask,
