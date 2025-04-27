@@ -24,10 +24,13 @@ composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denois
   pretrained_model_name_or_path=meta-llama/Llama-3.2-1B \
   dataset@train_dataset=c4_streaming_train \
   dataset@eval_dataset=c4_streaming_eval \
-  model=ao_mdlm \
+  model=bd3lm \
   model/backbone@model.config.backbone_config=llama_as_encoder_decoder \
-  model.config.length=1024 \
+  model.config.length=12 \
   training.global_batch_size=512 \
   train_dataloader.batch_size=2 \
   eval_dataloader.batch_size=2 \
-  ~composer.trainer.parallelism_config
+  ~composer.trainer.parallelism_config \
+  ~composer.trainer.compile_config \
+  composer.loggers=null \
+  collator.block_size=4
