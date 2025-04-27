@@ -36,6 +36,8 @@ from src.noise_schedule.noise_schedules import (  # noqa: F401
     LogarithmicNoise,
 )
 
+# TODO: Consider remove loss weighting for MDLM / BD3LM
+
 
 @dataclass
 class DenoiserInput(OrderedDict):
@@ -49,7 +51,7 @@ class DenoiserInput(OrderedDict):
     alpha_t_prime: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
     past_key_values: Optional[torch.Tensor] = None  # (B, ctx_len, D)
     # Placeholder in case future experiments require different inputs
-    kwargs: dict[str, Any] | None = None
+    backbone_kwargs: dict[str, Any] | None = None
 
 
 @dataclass
@@ -225,11 +227,14 @@ class Denoiser(ABC, PreTrainedModel):
                 attention_mask=denoiser_inputs.attention_mask,
                 noise=denoiser_inputs.alpha_t,
                 past_key_values=denoiser_inputs.past_key_values,
+                **denoiser_inputs.backbone_kwargs,
+                **kwargs,
             )
         return self.backbone(
             denoiser_inputs.xt,
             attention_mask=denoiser_inputs.attention_mask,
             past_key_values=denoiser_inputs.past_key_values,
+            **denoiser_inputs.backbone_kwargs,
             **kwargs,
         )
 
@@ -786,7 +791,7 @@ class BD3LMConfig(MDLMConfig):
     def __init__(
         self,
         block_size: int,
-        attn_backend: str,
+        attn_backend: str = "sdpa",
         backbone_is_decoder_only: bool = True,
         **kwargs,
     ):
@@ -806,16 +811,186 @@ class BD3LM(MDLM):
         super().__init__(config)
         self._create_static_mask()
 
+    @staticmethod
+    def _encoder_block_mask(
+        q_idx: torch.Tensor,  # (L, 1)
+        kv_idx: torch.Tensor,  # (1, L)
+        b: int | None = None,
+        h: int | None = None,
+        block_size: int | None = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            q_idx (torch.Tensor): Query indices.
+            kv_idx (torch.Tensor): Key indices
+            b (Optional: int): batch size
+            h (Optional: int): number of heads
+            block_size (Optional: int): Defines the block structure.
+
+        Returns:
+            Encoder block-causal attention mask.
+        """
+
+        del b, h
+
+        # Compute block indices
+        block_q = q_idx // block_size
+        block_kv = kv_idx // block_size
+
+        return block_q >= block_kv
+
+    @staticmethod
+    def _decoder_block_mask(
+        q_idx: torch.Tensor,  # (L, 1)
+        kv_idx: torch.Tensor,  # (1, 2 * L)
+        b: int | None = None,  # needed for compat. with flex_attention
+        h: int | None = None,  # needed for compat. with flex_attention
+        block_size: int | None = None,
+        seq_len: int | None = None,
+    ) -> torch.Tensor:
+        del b, h
+
+        # Indicate whether token belongs to xt or x0:
+        x0_flag_q = (q_idx >= seq_len).bool()
+        x0_flag_kv = (kv_idx >= seq_len).bool()
+
+        # Compute block indices
+        block_q = torch.where(
+            x0_flag_q, (q_idx - seq_len) // block_size, q_idx // block_size
+        )
+        block_kv = torch.where(
+            x0_flag_kv, (kv_idx - seq_len) // block_size, kv_idx // block_size
+        )
+
+        # **1. Block Diagonal Mask (M_BD) **
+        block_diagonal = (block_q == block_kv) & (x0_flag_q == x0_flag_kv)
+
+        # **2. Offset Block-Causal Mask (M_OBC) **
+        offset_block_causal = (block_q > block_kv) & x0_flag_kv & ~x0_flag_q
+
+        # **3. Combine Masks **
+        return block_diagonal | offset_block_causal
+
+    @staticmethod
+    def _block_mask(
+        q_idx: torch.Tensor,  # (B, 2 * L)
+        kv_idx: torch.Tensor | None = None,  # needed for compat. with flex_attention
+        b: int | None = None,  # needed for compat. with flex_attention
+        h: int | None = None,  # needed for compat. with flex_attention
+        block_size: int | None = None,
+        seq_len: int | None = None,
+    ) -> torch.Tensor:
+        """
+        Constructs the specialized block diffusion attention mask for training
+        composed of three masks:
+        - **Block Diagonal Mask (M_BD)**: Self-attention within noised blocks
+        - **Offset Block Causal Mask (M_OBC)**: Cross-attention for conditional context
+        - **Block Causal Mask (M_BC)**: Attention to update x0
+
+        Args:
+            q_idx (torch.Tensor): Query indices.
+            kv_idx (Optional: torch.Tensor): Key indices
+            b (Optional: int): batch size
+            h (Optional: int): number of heads
+            block_size (Optional: int): Defines the block structure.
+            seq_len (Optional: int): Total sequence length.
+
+        Returns:
+            Attention mask.
+        """
+
+        del b, h, kv_idx
+
+        # Indicate whether token belongs to xt or x0:
+        #   xt, x0 are concatenated to create 2N x 2N tensor
+        x0_flag_q = (q_idx >= seq_len).bool()
+        x0_flag_kv = x0_flag_q
+
+        # Compute block indices
+        block_q = torch.where(
+            x0_flag_q, (q_idx - seq_len) // block_size, q_idx // block_size
+        )
+        block_kv = block_q
+
+        # **1. Block Diagonal Mask (M_BD) **
+        block_diagonal = (block_q == block_kv) & (x0_flag_q == x0_flag_kv)
+
+        # **2. Offset Block-Causal Mask (M_OBC) **
+        offset_block_causal = (block_q > block_kv) & x0_flag_kv & ~x0_flag_q
+
+        # **3. Block-Causal Mask (M_BC) **
+        block_causal = (block_q >= block_kv) & x0_flag_kv & x0_flag_q
+
+        # **4. Combine Masks **
+        return block_diagonal | offset_block_causal | block_causal
+
     def _create_static_mask(self) -> None:
         if self.config.backbone_is_decoder_only:
-            # TODO: Generate the 2N x 2N BD3LM mask (use register_buffer)
-            pass
+            if self.config.attn_backend == "flex_attention":
+                static_mask = create_block_mask(
+                    partial(
+                        self._block_mask,
+                        block_size=self.config.block_size,
+                        seq_len=self.config.length,
+                    ),
+                    B=None,
+                    H=None,
+                    Q_LEN=self.config.length * 2,
+                    KV_LEN=self.config.length * 2,
+                )
+            else:
+                static_mask = self._block_mask(
+                    q_idx=torch.arange(self.config.length * 2)[:, None],
+                    block_size=self.config.block_size,
+                    seq_len=self.config.length,
+                )
+            self.register_buffer(
+                "static_attention_mask",
+                static_mask,
+            )
         else:
-            # TODO:
-            #  Generate N x N block causal enc_mask
-            #  and N X 2N block diag | offset block causal dec_mask
-            #  (use 2 register buffers)
-            pass
+            if self.config.attn_backend == "flex_attention":
+                encoder_static_mask = create_block_mask(
+                    partial(
+                        self._encoder_block_mask,
+                        block_size=self.config.block_size,
+                    ),
+                    B=None,
+                    H=None,
+                    Q_LEN=self.config.length,
+                    KV_LEN=self.config.length,
+                )
+                decoder_static_mask = create_block_mask(
+                    partial(
+                        self._decoder_block_mask,
+                        block_size=self.config.block_size,
+                        seq_len=self.config.length,
+                    ),
+                    B=None,
+                    H=None,
+                    Q_LEN=self.config.length,
+                    KV_LEN=self.config.length * 2,
+                )
+            else:
+                encoder_static_mask = self._encoder_block_mask(
+                    q_idx=torch.arange(self.config.length)[:, None],
+                    kv_idx=torch.arange(self.config.length)[None, :],
+                    block_size=self.config.block_size,
+                )
+                decoder_static_mask = self._decoder_block_mask(
+                    q_idx=torch.arange(self.config.length)[:, None],
+                    kv_idx=torch.arange(self.config.length * 2)[None, :],
+                    block_size=self.config.block_size,
+                    seq_len=self.config.length,
+                )
+            self.register_buffer(
+                "encoder_static_attention_mask",
+                encoder_static_mask,
+            )
+            self.register_buffer(
+                "decoder_static_attention_mask",
+                decoder_static_mask,
+            )
 
     def _prepare_inputs(
         self,
@@ -827,196 +1002,67 @@ class BD3LM(MDLM):
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
 
-        if self.config.backbone_is_decoder_only:
-            # TODO: attn-mask repeat to 2N x 2N and & it with the static mask
-            pass
-        else:
-            # TODO: attn-mask &-ed with enc_mask
-            # TODO: attn-mask repeat to N x 2N &-ed with dec_mask
-            pass
-
         if t is None:
-            t = torch.rand(input_ids.shape[0], device=input_ids.device)
+            t = torch.rand(
+                input_ids.shape[0],
+                input_ids.shape[1] // self.config.block_size,
+                device=input_ids.device,
+            )
         alpha_t, alpha_t_prime = self.noise_schedule(t)
         while alpha_t.ndim < 2:
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
+        # TODO: Override ._sample_q_xt to never mask BOS
         xt = self._sample_q_xt(input_ids, alpha_t)
 
-        return DenoiserInput(
-            xt=xt,
-            x0=input_ids,
-            attention_mask=attention_mask,
-            t=t,
-            alpha_t=alpha_t,
-            alpha_t_prime=alpha_t_prime,
-        )
-
-
-class AnyOrderMDLMConfig(MDLMConfig):
-    """Configuration class for AnyOrder MDLM models."""
-
-    model_type = "any_order_mdlm"
-    auto_map = {
-        "AutoConfig": "denoiser.AnyOrderMDLMConfig",
-        "AutoModel": "denoiser.AnyOrderMDLM",
-    }
-
-    def __init__(
-        self,
-        length: int | None = None,
-        backbone_config: dict[str, Any] | None = None,
-        noise_config: dict[str, Any] | None = None,
-        tokenization_config: dict[str, Any] | None = None,
-        T: int = 1000,
-        diffusion_type: Literal["absorbing", "uniform"] = "absorbing",
-        attn_backend: str = "sdpa",  # sdpa, flex
-        **kwargs,
-    ):
-        super().__init__(
-            length=length,
-            backbone_config=backbone_config,
-            noise_config=noise_config,
-            tokenization_config=tokenization_config,
-            T=T,
-            diffusion_type=diffusion_type,
-            **kwargs,
-        )
-        self.attn_backend = attn_backend
-
-
-class AnyOrderMDLM(MDLM):
-    def __init__(self, config: AnyOrderMDLMConfig):
-        super().__init__(config)
-        mask = self._gen_mask()
-        self.register_buffer("mask", mask)
-
-        self.time_conditioned_backbone = (
-            "noise" in inspect.getfullargspec(self.backbone.forward).args
-        )
-        self._validate_configuration()
-
-    def _validate_configuration(self):
-        assert self.noise_schedule.name in {"linear", "staggered"}
-        if self.config.attn_backend == "flex" and flex_attention is None:
-            raise ValueError("FlexAttention not available.")
-
-    @staticmethod
-    def _mask_fn(
-        q_idx: torch.Tensor,
-        kv_idx: torch.Tensor,
-        n: int | None = None,
-    ) -> torch.Tensor | BlockMask:
-        """
-        Constructs the encoder and decoder attention masks.
-
-        Args:
-            q_idx: Query indices.
-            kv_idx: Key-Value indices.
-            n: Total sequence length.
-        Returns:
-            A boolean attention mask.
-        """
-
-        encoder_flag_q = q_idx < n
-        encoder_flag_kv = kv_idx < n
-
-        # Compute block indices
-        idx_q = torch.where(encoder_flag_q, (q_idx - n), q_idx)
-        idx_kv = torch.where(encoder_flag_kv, (kv_idx - n), kv_idx)
-
-        # Encoder Self-Attention
-        x0_self = (idx_q >= idx_kv) & encoder_flag_kv & encoder_flag_kv
-
-        # Decoder Self-Attention
-        xt_self = (idx_q == idx_kv) & ~encoder_flag_kv & ~encoder_flag_kv
-
-        # Decoder Cross-Attention
-        xt_cross = (idx_q > idx_kv) & encoder_flag_kv & ~encoder_flag_kv
-
-        # Combine Masks
-        return xt_self | xt_cross | x0_self
-
-    def _gen_mask(self):
-        if self.config.attn_backend == "flex":
-            mask = create_block_mask(
-                partial(self._mask_fn, n=self.config.length),
-                B=None,
-                H=None,
-                Q_LEN=self.config.length * 2,
-                KV_LEN=self.config.length * 2,
+        if self.config.backbone_is_decoder_only:
+            # TODO: check attention mask is correct
+            attention_mask = (
+                self.decoder_static_attention_mask[None, ...]
+                & attention_mask.repeat(1, 2)[:, None, :]
+                & attention_mask[..., None]
+            )
+            return DenoiserInput(
+                xt=xt,
+                x0=input_ids,
+                attention_mask=attention_mask,
+                t=t,
+                alpha_t=alpha_t,
+                alpha_t_prime=alpha_t_prime,
             )
         else:
-            mask = self._mask_fn(
-                q_idx=torch.arange(self.config.length)[:, None],
-                kv_idx=torch.arange(self.config.length)[None, :],
-                n=self.config.length,
+            decoder_attention_mask = (
+                self.decoder_static_attention_mask[None, ...]
+                & attention_mask.repeat(1, 2)[:, None, :]
+                & attention_mask[..., None]
             )
-        return mask
+            # TODO: Hack to get qkv shapes working with Llama
+            decoder_attention_mask = torch.cat(
+                (decoder_attention_mask, torch.zeros_like(decoder_attention_mask)),
+                dim=1,
+            )
+            encoder_attention_mask = (
+                self.encoder_static_attention_mask[None, ...]
+                & attention_mask[..., None]
+            )
+            return DenoiserInput(
+                xt=xt,
+                x0=input_ids,
+                attention_mask=decoder_attention_mask,
+                t=t,
+                alpha_t=alpha_t,
+                alpha_t_prime=alpha_t_prime,
+                backbone_kwargs={
+                    "encoder_input_ids": input_ids,
+                    "encoder_attention_mask": encoder_attention_mask,
+                },
+            )
 
-    def _sample_permutation(self, batch_dim: int) -> torch.Tensor:
-        noise = torch.rand((batch_dim, self.config.length))
-        ts = self.noise_schedule.inverse(noise)
-        perms = (-ts).argsort(-1)  # sort by unmasking timestep (high to low)
-        return perms
-
-    def _permute_attention_mask(
-        self, batch_dim: int, attention_mask: torch.Tensor
-    ) -> torch.Tensor:
-        """Permute encoder AND decoder attention masks for any-order training."""
-        permutation = self._sample_permutation(batch_dim).to(attention_mask.device)
-        permutation = torch.cat(
-            (permutation, permutation + self.config.length + 1), dim=-1
-        )
-        permuted_attention_mask = attention_mask.gather(0, permutation)
-        permuted_attention_mask = permuted_attention_mask.gather(1, permutation)
-        return permuted_attention_mask
-
-    def _prepare_inputs(
-        self,
-        input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
-        past_key_values: torch.FloatTensor | None = None,
-    ):
-        # Prepare inputs for AO-MDLM model
-        attention_mask = self.mask
-
-        alpha_t, alpha_t_prime = self.noise_schedule(t)
-        if alpha_t.ndim == 1:
-            alpha_t = alpha_t[..., None]
-            alpha_t_prime = alpha_t_prime[..., None]
-        xt = self._sample_q_xt(input_ids, alpha_t)
-
-        permuted_attention_mask = self._permute_attention_mask(
-            input_ids.shape[0], attention_mask
-        )
-        encoder_attention_mask = permuted_attention_mask[:, : self.config.length]
-        decoder_attention_mask = permuted_attention_mask[:, self.config.length :]
-
-        return DenoiserInput(
-            xt=xt,
-            x0=input_ids,
-            attention_mask=attention_mask,
-            t=t,
-            alpha_t=alpha_t,
-            alpha_t_prime=alpha_t_prime,
-            kwargs={
-                "encoder_attention_mask": encoder_attention_mask,
-                "decoder_attention_mask": decoder_attention_mask,
-            },
-        )
-
-    def _backbone_forward(self, denoiser_inputs: DenoiserInput, **kwargs: Any):
-        # TODO: time conditioning not currently supported
-        return self.backbone(
-            encoder_input_ids=denoiser_inputs.x0,  # Pass clean(!) inputs
-            decoder_input_ids=torch.full_like(denoiser_inputs.x0, self.mask_token_id),
-            encoder_attention_mask=denoiser_inputs.kwargs["encoder_attention_mask"],
-            decoder_attention_mask=denoiser_inputs.kwargs["decoder_attention_mask"],
-            past_key_values=denoiser_inputs.past_key_values,
-            **kwargs,
-        )
+    def _compute_loss(
+        self, model_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
+    ) -> LossAndNllOutput:
+        # TODO: ovveride this to shift the logits and ensure loss scaling is per block
+        pass
 
 
 # TODO
