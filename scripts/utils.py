@@ -8,15 +8,13 @@ import rich.tree
 import torch
 from composer.utils import dist
 from omegaconf import DictConfig, OmegaConf
+from transformers import PreTrainedTokenizer
 
 
 def _make_tokenization_config(tokenizer_cfg: DictConfig) -> dict[str, Any]:
     tokenizer = hydra.utils.instantiate(tokenizer_cfg)
-    pad_vocab_size_multiple = (
-        tokenizer.pad_vocab_size_multiple
-        if hasattr(tokenizer, "pad_vocab_size_multiple")
-        else 8
-    )
+    tokenizer = maybe_add_missing_special_tokens(tokenizer)
+    pad_vocab_size_multiple = getattr(tokenizer, "pad_vocab_size_multiple", 1)
     return {
         "vocab_size": len(tokenizer),
         "mask_token_id": tokenizer.mask_token_id,
@@ -33,6 +31,23 @@ def _get_world_size() -> int:
         print("Initializing dist")
         dist.initialize_dist()
     return dist.get_world_size()
+
+
+def maybe_add_missing_special_tokens(tokenizer: PreTrainedTokenizer):
+    if getattr(tokenizer, "pad_token", None) is None:
+        if hasattr(tokenizer, "get_added_vocab"):
+            if "<|finetune_right_pad_id|>" in tokenizer.get_added_vocab().keys():
+                tokenizer.pad_token = "<|finetune_right_pad_id|>"
+        else:
+            tokenizer.pad_token = tokenizer.eos_token
+    if getattr(tokenizer, "mask_token", None) is None:
+        if hasattr(tokenizer, "get_added_vocab"):
+            if "<|reserved_special_token_0|>" in tokenizer.get_added_vocab().keys():
+                tokenizer.mask_token = "<|reserved_special_token_0|>"
+                tokenizer.mask_token_id = tokenizer.get_added_vocab()[
+                    "<|reserved_special_token_0|>"
+                ]
+    return tokenizer
 
 
 def register_useful_resolvers() -> None:
