@@ -150,5 +150,4 @@ class LlamaAsEncoderDecoder(nn.Module):
 
         # Only keep logits for masked tokens
         decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)
-        # TODO: shift logits?
         return self.decoder.lm_head(decoder_hidden_states)

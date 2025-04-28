@@ -92,6 +92,8 @@ class DenoiserConfig(PretrainedConfig):
         noise_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         time_conditioned_backbone: bool | None = None,
+        keep_clean_bos: bool | None = None,  # Whether to enforce unnoised BOS token
+        shift_logits: bool | None = None,  # Whether position i predicts i+1 (True)
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -113,6 +115,7 @@ class DenoiserConfig(PretrainedConfig):
         self.noise_config = noise_config
         self.length = length
         self.time_conditioned_backbone = time_conditioned_backbone
+        self.shift_logits = shift_logits
 
 
 class Denoiser(ABC, PreTrainedModel):
@@ -520,12 +523,15 @@ class D3PM(Denoiser):
     def _sample_q_xt(self, x0: torch.Tensor, alpha_t: torch.Tensor) -> torch.Tensor:
         move_indices = torch.rand(*x0.shape, device=x0.device) < (1.0 - alpha_t)
         if self.diffusion_type == "absorbing":
-            return torch.where(move_indices, self.mask_token_id, x0)
+            xt = torch.where(move_indices, self.mask_token_id, x0)
+            if self.config.keep_clean_bos:
+                xt[..., 0] = x0[..., 0]
+            return xt
         if self.diffusion_type == "uniform":
-            uniform_tensor = torch.randint(
-                0, self.vocab_size, x0.shape, device=x0.device
-            )
-            return torch.where(move_indices, uniform_tensor, x0)
+            xt = torch.randint(0, self.vocab_size, x0.shape, device=x0.device)
+            if self.config.keep_clean_bos:
+                xt[..., 0] = x0[..., 0]
+            return xt
         raise NotImplementedError(
             f"Diffusion type '{self.diffusion_type}' not implemented."
         )
@@ -762,6 +768,10 @@ class MDLM(D3PM):
     def _compute_loss(
         self, model_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
     ) -> LossAndNllOutput:
+        if self.config.shift_logits:
+            denoiser_inputs.x0 = denoiser_inputs.x0[..., 1:]
+            denoiser_inputs.attention_mask = denoiser_inputs.attention_mask[..., 1:]
+
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
         ).squeeze(-1)
@@ -1045,6 +1055,7 @@ class BD3LM(MDLM):
                 self.encoder_static_attention_mask[None, ...]
                 & attention_mask[..., None]
             )
+
             return DenoiserInput(
                 xt=xt,
                 x0=input_ids,
@@ -1058,11 +1069,16 @@ class BD3LM(MDLM):
                 },
             )
 
-    def _compute_loss(
-        self, model_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
-    ) -> LossAndNllOutput:
-        # TODO: ovveride this to shift the logits and ensure loss scaling is per block
-        pass
+    def _forward(
+        self,
+        backbone_output: torch.Tensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        if self.config.shift_logits:
+            # Logits position i predicts token position i+1 (as in AR models)
+            return torch.log_softmax(backbone_output[:, :-1, ...], dim=-1)
+        return torch.log_softmax(backbone_output, dim=-1)
 
 
 # TODO

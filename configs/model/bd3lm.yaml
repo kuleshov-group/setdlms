@@ -8,3 +8,4 @@ config:
   block_size: 4
   attn_backend: "sdpa" # "flex_attention"
   backbone_is_decoder_only: false
+  shift_logits: true

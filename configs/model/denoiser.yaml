@@ -10,3 +10,5 @@ config:
   # OmegaConf resolver creates the dictionary that contains tokenizer config params
   tokenization_config: ${oc.create:${make_tokenization_config:${tokenizer}}}
   time_conditioned_backbone: null
+  keep_clean_bos: true
+  shift_logits: null
