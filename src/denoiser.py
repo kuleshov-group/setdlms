@@ -758,6 +758,7 @@ class MDLM(D3PM):
         unmasked_indices = denoiser_inputs.xt != self.mask_token_id
         if self.config.shift_logits:
             unmasked_indices = unmasked_indices[..., 1:]
+            denoiser_inputs.xt = denoiser_inputs.xt[..., 1:]
         log_probs[unmasked_indices] = self.neg_infinity
         log_probs[unmasked_indices, denoiser_inputs.xt[unmasked_indices]] = 0
         return log_probs
