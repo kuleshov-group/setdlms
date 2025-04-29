@@ -131,13 +131,10 @@ class LlamaAsEncoderDecoder(nn.Module):
         attention_mask = attention_mask[:, None, ...].to(decoder_hidden_states.dtype)
         for i, decoder_layer in enumerate(self.decoder.model.layers):
             decoder_hidden_states = decoder_layer(
-                hidden_states=torch.cat(
-                    (
-                        decoder_hidden_states,
-                        encoder_hidden_states[i + self.cross_attention_offset],
-                    ),
-                    dim=1,
-                ),
+                hidden_states=decoder_hidden_states,
+                encoder_hidden_states=encoder_hidden_states[
+                    i + self.cross_attention_offset
+                ],
                 attention_mask=attention_mask,
                 position_ids=decoder_position_ids,
                 past_key_value=past_key_values,
@@ -145,7 +142,6 @@ class LlamaAsEncoderDecoder(nn.Module):
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=decoder_position_embeddings,
-                q_index=input_ids.shape[-1],
                 **flash_attn_kwargs,
             )[0]  # [:, : input_ids.shape[1], :]
 

@@ -46,10 +46,10 @@ class DenoiserInput(OrderedDict):
     xt: torch.Tensor  # (B, L) Tensor of token_ids
     x0: Optional[torch.Tensor] = None  # (B, L) Tensor of token_ids (not used in gen.)
     attention_mask: Optional[torch.Tensor] = None  # (B, L)
+    tokens_mask: Optional[torch.Tensor] = None
     t: Optional[torch.Tensor] = None  # (B,)
     alpha_t: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
     alpha_t_prime: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
-    compute_loss_mask: Optional[torch.Tensor] = None
     past_key_values: Optional[torch.Tensor] = None  # (B, ctx_len, D)
     # Placeholder in case future experiments require different inputs
     backbone_kwargs: dict[str, Any] | None = None
@@ -296,7 +296,7 @@ class Denoiser(ABC, PreTrainedModel):
             denoiser_output=denoiser_output,
             logits=backbone_output,
             past_key_values=new_past_key_values,
-            tokens_mask=denoiser_inputs.attention_mask,
+            tokens_mask=denoiser_inputs.tokens_mask,
             loss=loss,
             nlls=nlls,
         )
@@ -403,7 +403,7 @@ class AR(Denoiser):
             xt=input_ids,
             x0=labels,
             attention_mask=attention_mask,
-            compute_loss_mask=attention_mask,
+            tokens_mask=attention_mask,
             past_key_values=past_key_values,
         )
 
@@ -550,7 +550,7 @@ class D3PM(Denoiser):
             xt=xt,
             x0=input_ids,
             attention_mask=attention_mask,
-            compute_loss_mask=attention_mask,
+            tokens_mask=attention_mask,
             t=t,
             alpha_t=alpha_t,
             alpha_t_prime=alpha_t_prime,
@@ -762,9 +762,7 @@ class MDLM(D3PM):
     ) -> LossAndNllOutput:
         if self.config.shift_logits:
             denoiser_inputs.x0 = denoiser_inputs.x0[..., 1:]
-            denoiser_inputs.compute_loss_mask = denoiser_inputs.compute_loss_mask[
-                ..., 1:
-            ]
+            denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask[..., 1:]
             denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[..., 1:]
             denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[..., 1:]
 
@@ -776,8 +774,8 @@ class MDLM(D3PM):
             log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
         )
 
-        nlls = loss * denoiser_inputs.compute_loss_mask
-        count = denoiser_inputs.compute_loss_mask.sum()
+        nlls = loss * denoiser_inputs.tokens_mask
+        count = denoiser_inputs.tokens_mask.sum()
 
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
@@ -1031,7 +1029,7 @@ class BD3LM(MDLM):
                 xt=xt,
                 x0=input_ids,
                 attention_mask=decoder_attention_mask,
-                compute_loss_mask=attention_mask,
+                tokens_mask=attention_mask,
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
@@ -1056,7 +1054,7 @@ class BD3LM(MDLM):
                 xt=xt,
                 x0=input_ids,
                 attention_mask=decoder_attention_mask,
-                compute_loss_mask=attention_mask,
+                tokens_mask=attention_mask,
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
