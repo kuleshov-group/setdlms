@@ -144,7 +144,9 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
+    q_embed = (q * cos[..., : q.shape[-2], :]) + (
+        rotate_half(q) * sin[..., : q.shape[-2], :]
+    )
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
@@ -342,6 +344,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Cache] = None,
@@ -360,6 +363,11 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
 
         # Self Attention
         q_index = hidden_states.shape[1] if encoder_hidden_states is not None else None
+        hidden_states = (
+            torch.cat((hidden_states, encoder_hidden_states), dim=1)
+            if encoder_hidden_states is not None
+            else hidden_states
+        )
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -928,6 +936,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
+        output_logits: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
@@ -994,6 +1003,8 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         )
 
         hidden_states = outputs.last_hidden_state
+        if not output_logits:
+            return outputs.hidden_states
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = (
             slice(-logits_to_keep, None)

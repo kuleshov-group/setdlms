@@ -1,5 +1,7 @@
 _target_: src.backbone.encoder_decoder.LlamaAsEncoderDecoder
 pretrained_model_name_or_path: ${pretrained_model_name_or_path}
+n_encoder_layers: 4
+n_decoder_layers: 2
 keep_every_n_encoder_layers: 4
 keep_every_n_decoder_layers: 8
 block_size: ${model.config.block_size}

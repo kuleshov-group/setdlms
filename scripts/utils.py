@@ -43,10 +43,15 @@ def maybe_add_missing_special_tokens(tokenizer: PreTrainedTokenizer):
     if getattr(tokenizer, "mask_token", None) is None:
         if hasattr(tokenizer, "get_added_vocab"):
             if "<|reserved_special_token_0|>" in tokenizer.get_added_vocab().keys():
+                # llama
                 tokenizer.mask_token = "<|reserved_special_token_0|>"
                 tokenizer.mask_token_id = tokenizer.get_added_vocab()[
                     "<|reserved_special_token_0|>"
                 ]
+            elif "<|fim_middle|>" in tokenizer.get_added_vocab().keys():
+                # qwen
+                tokenizer.mask_token = "<|fim_middle|>"
+                tokenizer.mask_token_id = tokenizer.get_added_vocab()["<|fim_middle|>"]
     return tokenizer
 
 
