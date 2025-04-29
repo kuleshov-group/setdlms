@@ -25,7 +25,7 @@ train_dataloader:
 
 eval_dataloader:
   _target_: torch.utils.data.DataLoader
-  # Note: batch_size is **per device**
+  # Note: batch_size is **per device** (use `training.grad_accum` > 1, if OOM)
   batch_size: ${div_up:${training.eval_global_batch_size}, ${get_world_size:}}
   num_workers: ${train_dataloader.num_workers}
   pin_memory: ${train_dataloader.pin_memory}
@@ -37,7 +37,7 @@ training:
   lr: 3e-4  # Peak learning rate
   global_batch_size: 512
   eval_global_batch_size: ${.global_batch_size}
-  grad_accum: ${div_up:${training.global_batch_size}, ${eval:${get_world_size:} * ${train_dataloader.batch_size}}}
+  grad_accum: 1
   # Parameters for sampling t
   antithetic_sampling: True
   sampling_eps: 1e-3

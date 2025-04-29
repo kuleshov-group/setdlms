@@ -69,7 +69,7 @@ class DenoiserOutput(ModelOutput):
 
     denoiser_output: torch.Tensor
     logits: Optional[torch.Tensor] = None
-    tokens_mask: Optional[torch.Tensor] = None
+    tokens_mask: Optional[torch.Tensor] = None  # Which tokens contribute to loss
     past_key_values: Optional[torch.Tensor] = None
     loss: Optional[torch.Tensor] = None
     nlls: Optional[torch.Tensor] = None
@@ -93,8 +93,9 @@ class DenoiserConfig(PretrainedConfig):
         noise_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         time_conditioned_backbone: bool | None = None,
-        keep_clean_bos: bool | None = None,  # Whether to enforce unnoised BOS token
-        shift_logits: bool | None = None,  # Whether position i predicts i+1 (True)
+        keep_clean_bos: bool | None = None,  # Whether to enforce un-noised BOS token
+        # Logits @ position i predicts token @ position i+1 (as in AR models)
+        shift_logits: bool | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -739,6 +740,8 @@ class MDLM(D3PM):
     def _forward(
         self, backbone_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs
     ) -> torch.Tensor:
+        if self.config.shift_logits:
+            backbone_output = backbone_output[:, :-1, ...]
         # Zero-mask probability
         mask = (
             torch.arange(backbone_output.shape[-1], device=backbone_output.device)
@@ -753,6 +756,8 @@ class MDLM(D3PM):
         # to -infinity except for the indices corresponding to
         # the unmasked tokens.
         unmasked_indices = denoiser_inputs.xt != self.mask_token_id
+        if self.config.shift_logits:
+            unmasked_indices = unmasked_indices[..., 1:]
         log_probs[unmasked_indices] = self.neg_infinity
         log_probs[unmasked_indices, denoiser_inputs.xt[unmasked_indices]] = 0
         return log_probs
@@ -1063,17 +1068,6 @@ class BD3LM(MDLM):
                     "encoder_attention_mask": encoder_attention_mask,
                 },
             )
-
-    def _forward(
-        self,
-        backbone_output: torch.Tensor,
-        denoiser_inputs: DenoiserInput,
-        **kwargs: Any,
-    ) -> torch.Tensor:
-        if self.config.shift_logits:
-            # Logits position i predicts token position i+1 (as in AR models)
-            return torch.log_softmax(backbone_output[:, :-1, ...], dim=-1)
-        return torch.log_softmax(backbone_output, dim=-1)
 
 
 # TODO
