@@ -2,7 +2,6 @@ from typing import Union
 
 import torch
 from torch import Tensor, nn
-from transformers import AutoModelForCausalLM
 from transformers.cache_utils import Cache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.processing_utils import Unpack
@@ -13,6 +12,7 @@ try:
 except ModuleNotFoundError:
     BlockMask = None
 
+from src.backbone.custom_modeling_llama import LlamaForCausalLM
 
 logger = logging.get_logger(__name__)
 
@@ -34,13 +34,13 @@ class LlamaAsEncoderDecoder(nn.Module):
             "Encoder-Decoder layers are mismatched; cross attention will not work."
         )
         super().__init__()
-        self.encoder = AutoModelForCausalLM.from_pretrained(
+        self.encoder = LlamaForCausalLM.from_pretrained(
             pretrained_model_name_or_path,
             trust_remote_code=True,
             attn_implementation=attn_backend,
         )
         # TODO: consider init of decoder layers from scratch
-        self.decoder = AutoModelForCausalLM.from_pretrained(
+        self.decoder = LlamaForCausalLM.from_pretrained(
             pretrained_model_name_or_path,
             trust_remote_code=True,
             attn_implementation=attn_backend,
@@ -145,8 +145,9 @@ class LlamaAsEncoderDecoder(nn.Module):
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=decoder_position_embeddings,
+                q_index=input_ids.shape[-1],
                 **flash_attn_kwargs,
-            )[0][:, : input_ids.shape[1], :]
+            )[0]  # [:, : input_ids.shape[1], :]
 
         # Only keep logits for masked tokens
         decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)

@@ -49,6 +49,7 @@ class DenoiserInput(OrderedDict):
     t: Optional[torch.Tensor] = None  # (B,)
     alpha_t: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
     alpha_t_prime: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
+    compute_loss_mask: Optional[torch.Tensor] = None
     past_key_values: Optional[torch.Tensor] = None  # (B, ctx_len, D)
     # Placeholder in case future experiments require different inputs
     backbone_kwargs: dict[str, Any] | None = None
@@ -115,6 +116,7 @@ class DenoiserConfig(PretrainedConfig):
         self.noise_config = noise_config
         self.length = length
         self.time_conditioned_backbone = time_conditioned_backbone
+        self.keep_clean_bos = keep_clean_bos
         self.shift_logits = shift_logits
 
 
@@ -401,6 +403,7 @@ class AR(Denoiser):
             xt=input_ids,
             x0=labels,
             attention_mask=attention_mask,
+            compute_loss_mask=attention_mask,
             past_key_values=past_key_values,
         )
 
@@ -486,23 +489,11 @@ class D3PMConfig(DenoiserConfig):
 
     def __init__(
         self,
-        length: int | None = None,
-        backbone_config: dict[str, Any] | None = None,
-        noise_config: dict[str, Any] | None = None,
-        tokenization_config: dict[str, Any] | None = None,
-        time_conditioned_backbone: bool | None = None,
         T: int = 1000,
         diffusion_type: Literal["absorbing", "uniform"] = "absorbing",
         **kwargs,
     ):
-        super().__init__(
-            length=length,
-            backbone_config=backbone_config,
-            noise_config=noise_config,
-            tokenization_config=tokenization_config,
-            time_conditioned_backbone=time_conditioned_backbone,
-            **kwargs,
-        )
+        super().__init__(**kwargs)
         self.diffusion_type = diffusion_type
         self.T = T
 
@@ -559,6 +550,7 @@ class D3PM(Denoiser):
             xt=xt,
             x0=input_ids,
             attention_mask=attention_mask,
+            compute_loss_mask=attention_mask,
             t=t,
             alpha_t=alpha_t,
             alpha_t_prime=alpha_t_prime,
@@ -770,7 +762,11 @@ class MDLM(D3PM):
     ) -> LossAndNllOutput:
         if self.config.shift_logits:
             denoiser_inputs.x0 = denoiser_inputs.x0[..., 1:]
-            denoiser_inputs.attention_mask = denoiser_inputs.attention_mask[..., 1:]
+            denoiser_inputs.compute_loss_mask = denoiser_inputs.compute_loss_mask[
+                ..., 1:
+            ]
+            denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[..., 1:]
+            denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[..., 1:]
 
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
@@ -780,8 +776,8 @@ class MDLM(D3PM):
             log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
         )
 
-        nlls = loss * denoiser_inputs.attention_mask
-        count = denoiser_inputs.attention_mask.sum()
+        nlls = loss * denoiser_inputs.compute_loss_mask
+        count = denoiser_inputs.compute_loss_mask.sum()
 
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
@@ -1022,12 +1018,11 @@ class BD3LM(MDLM):
         while alpha_t.ndim < 2:
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
-        # TODO: Override ._sample_q_xt to never mask BOS
         xt = self._sample_q_xt(input_ids, alpha_t)
 
         if self.config.backbone_is_decoder_only:
             # TODO: check attention mask is correct
-            attention_mask = (
+            decoder_attention_mask = (
                 self.decoder_static_attention_mask[None, ...]
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask[..., None]
@@ -1035,7 +1030,8 @@ class BD3LM(MDLM):
             return DenoiserInput(
                 xt=xt,
                 x0=input_ids,
-                attention_mask=attention_mask,
+                attention_mask=decoder_attention_mask,
+                compute_loss_mask=attention_mask,
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
@@ -1046,11 +1042,11 @@ class BD3LM(MDLM):
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask[..., None]
             )
-            # TODO: Hack to get qkv shapes working with Llama
-            decoder_attention_mask = torch.cat(
-                (decoder_attention_mask, torch.zeros_like(decoder_attention_mask)),
-                dim=1,
-            )
+            # # TODO: Hack to get qkv shapes working with Llama
+            # decoder_attention_mask = torch.cat(
+            #     (decoder_attention_mask, torch.zeros_like(decoder_attention_mask)),
+            #     dim=1,
+            # )
             encoder_attention_mask = (
                 self.encoder_static_attention_mask[None, ...]
                 & attention_mask[..., None]
@@ -1060,6 +1056,7 @@ class BD3LM(MDLM):
                 xt=xt,
                 x0=input_ids,
                 attention_mask=decoder_attention_mask,
+                compute_loss_mask=attention_mask,
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
