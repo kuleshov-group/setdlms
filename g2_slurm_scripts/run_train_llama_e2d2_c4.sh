@@ -26,11 +26,8 @@ composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denois
   dataset@eval_dataset=c4_streaming_eval \
   model=bd3lm \
   model/backbone@model.config.backbone_config=llama_as_encoder_decoder \
-  model.config.length=12 \
+  model.config.length=1024 \
   training.global_batch_size=512 \
-  train_dataloader.batch_size=2 \
-  eval_dataloader.batch_size=2 \
-  ~composer.trainer.parallelism_config \
+  training.grad_accum=$(( 512 / SLURM_GPUS_ON_NODE )) \
   ~composer.trainer.compile_config \
-  composer.loggers=null \
-  collator.block_size=4
+  block_size=16
