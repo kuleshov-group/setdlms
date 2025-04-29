@@ -13,6 +13,7 @@ except ModuleNotFoundError:
     BlockMask = None
 
 from src.backbone.custom_modeling_llama import LlamaForCausalLM
+from src.backbone.custom_modeling_qwen3 import Qwen3ForCausalLM
 
 logger = logging.get_logger(__name__)
 
@@ -34,17 +35,30 @@ class LlamaAsEncoderDecoder(nn.Module):
             "Encoder-Decoder layers are mismatched; cross attention will not work."
         )
         super().__init__()
-        self.encoder = LlamaForCausalLM.from_pretrained(
-            pretrained_model_name_or_path,
-            trust_remote_code=True,
-            attn_implementation=attn_backend,
-        )
-        # TODO: consider init of decoder layers from scratch
-        self.decoder = LlamaForCausalLM.from_pretrained(
-            pretrained_model_name_or_path,
-            trust_remote_code=True,
-            attn_implementation=attn_backend,
-        )
+        if "Qwen" in pretrained_model_name_or_path:
+            self.encoder = Qwen3ForCausalLM.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=True,
+                attn_implementation=attn_backend,
+            )
+
+            self.decoder = Qwen3ForCausalLM.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=True,
+                attn_implementation=attn_backend,
+            )
+        else:
+            self.encoder = LlamaForCausalLM.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=True,
+                attn_implementation=attn_backend,
+            )
+            # TODO: consider init of decoder layers from scratch
+            self.decoder = LlamaForCausalLM.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=True,
+                attn_implementation=attn_backend,
+            )
         # delete layers from encoder / decoder
         if keep_every_n_encoder_layers < len(self.encoder.model.layers):
             encoder_layers_post_surgery = []
@@ -109,7 +123,7 @@ class LlamaAsEncoderDecoder(nn.Module):
         # )
         encoder_hidden_states = self.encoder(
             input_ids=encoder_input_ids,
-            attention_mask=encoder_attention_mask,
+            attention_mask=encoder_attention_mask[:, None, ...].to(self.encoder.dtype),
             position_ids=encoder_position_ids,
             output_hidden_states=True,
         ).hidden_states[1:]  # 0th hidden layer == token embeddings
@@ -128,7 +142,7 @@ class LlamaAsEncoderDecoder(nn.Module):
         decoder_position_embeddings = self.decoder.model.rotary_emb(
             decoder_hidden_states, decoder_position_ids
         )
-        attention_mask = attention_mask[:, None, ...].to(decoder_hidden_states.dtype)
+        attention_mask = attention_mask[:, None, ...].to(self.decoder.dtype)
         for i, decoder_layer in enumerate(self.decoder.model.layers):
             decoder_hidden_states = decoder_layer(
                 hidden_states=decoder_hidden_states,

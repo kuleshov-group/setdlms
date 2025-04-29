@@ -3,7 +3,7 @@ import inspect
 import sys
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
@@ -52,7 +52,7 @@ class DenoiserInput(OrderedDict):
     alpha_t_prime: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
     past_key_values: Optional[torch.Tensor] = None  # (B, ctx_len, D)
     # Placeholder in case future experiments require different inputs
-    backbone_kwargs: dict[str, Any] | None = None
+    backbone_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -755,11 +755,12 @@ class MDLM(D3PM):
         # Copy-over unmasked: For the log_probs of the unmasked tokens, set all values
         # to -infinity except for the indices corresponding to
         # the unmasked tokens.
-        unmasked_indices = denoiser_inputs.xt != self.mask_token_id
+        xt = denoiser_inputs.xt
         if self.config.shift_logits:
-            unmasked_indices = unmasked_indices[..., 1:]
+            xt = xt[..., 1:]
+        unmasked_indices = xt != self.mask_token_id
         log_probs[unmasked_indices] = self.neg_infinity
-        log_probs[unmasked_indices, denoiser_inputs.xt[unmasked_indices]] = 0
+        log_probs[unmasked_indices, xt[unmasked_indices]] = 0
         return log_probs
 
     def _compute_loss(
@@ -768,8 +769,9 @@ class MDLM(D3PM):
         if self.config.shift_logits:
             denoiser_inputs.x0 = denoiser_inputs.x0[..., 1:]
             denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask[..., 1:]
-            denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[..., 1:]
-            denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[..., 1:]
+            if denoiser_inputs.t.ndim > 1:
+                denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[..., 1:]
+                denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[..., 1:]
 
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
@@ -1016,7 +1018,7 @@ class BD3LM(MDLM):
                 input_ids.shape[0],
                 input_ids.shape[1] // self.config.block_size,
                 device=input_ids.device,
-            )
+            ).repeat_interleave(self.config.block_size, dim=-1)
         alpha_t, alpha_t_prime = self.noise_schedule(t)
         while alpha_t.ndim < 2:
             alpha_t = alpha_t[..., None]
