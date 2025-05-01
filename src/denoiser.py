@@ -835,7 +835,7 @@ class BD3LMConfig(MDLMConfig):
 
     def __init__(
         self,
-        block_size: int,
+        block_size: int | None = None,
         attn_backend: str = "sdpa",
         backbone_is_decoder_only: bool = True,
         **kwargs,
