@@ -6,4 +6,4 @@ return_tensors: "pt"
 restricted_t_range: ${training.restricted_t_range}
 sampling_eps: ${training.sampling_eps}
 antithetic_sampling: ${training.antithetic_sampling}
-block_size: null  # Use with BD3LM
+block_size: ${block_size}

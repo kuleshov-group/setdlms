@@ -5,7 +5,7 @@ defaults:
 _target_: src.denoiser.BD3LM
 config:
   _target_: src.denoiser.BD3LMConfig
-  block_size: 4
+  block_size: ${block_size}
   attn_backend: "sdpa" # "flex_attention"
   backbone_is_decoder_only: false
   shift_logits: true

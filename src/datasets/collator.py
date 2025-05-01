@@ -15,7 +15,6 @@ class DenoisingCollator:
         max_length: int | None = None,
         pad_to_multiple_of: int | None = None,
         return_tensors: str = "pt",
-        # Use to bias sampling in certain region
         restricted_t_range: tuple[float, float] | None = None,
         sampling_eps: float = 0.05,
         antithetic_sampling: bool = False,
@@ -79,11 +78,21 @@ class DenoisingCollator:
         return t
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        context_mask = [f.pop("context_mask", None) for f in features]
         batch = self.base_collate_fn(features)
         t = self._sample_t(
             batch_size=batch["input_ids"].shape[0], device=batch["input_ids"].device
         )
-        batch.update({"t": t})
+        if all([c is not None for c in context_mask]):
+            context_mask = torch.nn.utils.rnn.pad_sequence(
+                context_mask, batch_first=True
+            )[..., : self.max_length]  # noqa: type
+            context_mask = torch.nn.functional.pad(
+                context_mask, (0, self.max_length - context_mask.shape[-1])
+            )
+        else:
+            context_mask = None
+        batch.update({"t": t, "context_mask": context_mask})
         return batch
 
 
