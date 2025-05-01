@@ -15,7 +15,6 @@ class DenoisingCollator:
         max_length: int | None = None,
         pad_to_multiple_of: int | None = None,
         return_tensors: str = "pt",
-        # Use to bias sampling in certain region
         restricted_t_range: tuple[float, float] | None = None,
         sampling_eps: float = 0.05,
         antithetic_sampling: bool = False,
@@ -60,29 +59,40 @@ class DenoisingCollator:
         self.block_size = block_size
 
     def _sample_t(self, batch_size, device):
+        num_blocks = self.max_length // self.block_size if self.block_size else 1
         if self.block_size is not None and self.block_size > 0:
-            _eps_t = torch.rand(
-                batch_size, self.max_length // self.block_size, device=device
-            ).repeat_interleave(self.block_size, dim=-1)
+            _eps_t = torch.rand(batch_size, num_blocks, device=device)
         else:
             _eps_t = torch.rand(batch_size, device=device)
         if self.antithetic_sampling:
-            offset = torch.arange(batch_size, device=device) / batch_size
-            if self.block_size is not None and self.block_size > 0:
-                offset = offset.unsqueeze(-1)
-            _eps_t = (_eps_t / batch_size + offset) % 1
+            offset = torch.arange(batch_size * num_blocks, device=device) / (
+                batch_size * num_blocks
+            )
+            offset = offset.view(batch_size, num_blocks)
+            _eps_t = (_eps_t / (batch_size * num_blocks) + offset) % 1
         t = (1 - self.sampling_eps) * _eps_t + self.sampling_eps
         if self.restricted_t_range is not None:
             low, high = self.restricted_t_range
             t = (low - high) * t + high
+        t = t.repeat_interleave(self.block_size, dim=1) if self.block_size else t
         return t
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        context_mask = [f.pop("context_mask", None) for f in features]
         batch = self.base_collate_fn(features)
         t = self._sample_t(
             batch_size=batch["input_ids"].shape[0], device=batch["input_ids"].device
         )
-        batch.update({"t": t})
+        if all([c is not None for c in context_mask]):
+            context_mask = torch.nn.utils.rnn.pad_sequence(
+                context_mask, batch_first=True
+            )[..., : self.max_length]  # noqa: type
+            context_mask = torch.nn.functional.pad(
+                context_mask, (0, self.max_length - context_mask.shape[-1])
+            )
+        else:
+            context_mask = None
+        batch.update({"t": t, "context_mask": context_mask})
         return batch
 
 
