@@ -198,7 +198,6 @@ class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
 
         self.latest_filename = None
         self.latest_hf_filename = None
-        self.num_checkpoints_to_keep = 1
 
     @staticmethod
     def _validate_metric_name(metric_to_monitor: str) -> None:
