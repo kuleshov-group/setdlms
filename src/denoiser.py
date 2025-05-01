@@ -302,7 +302,6 @@ class Denoiser(ABC, PreTrainedModel):
             nlls = loss_and_nll.nlls
         else:
             loss, nlls = None, None
-
         return DenoiserOutput(
             denoiser_output=denoiser_output,
             logits=backbone_output,
@@ -412,7 +411,6 @@ class AR(Denoiser):
             attention_mask = attention_mask[..., :-1]
         if context_mask is None:
             context_mask = torch.zeros_like(attention_mask)
-
         return DenoiserInput(
             xt=input_ids,
             x0=labels,
@@ -790,16 +788,15 @@ class MDLM(D3PM):
             mask, backbone_output + self.neg_infinity, backbone_output
         )
         log_probs = log_probs - torch.logsumexp(log_probs, dim=-1, keepdim=True)
-
         # Copy-over unmasked: For the log_probs of the unmasked tokens, set all values
         # to -infinity except for the indices corresponding to
         # the unmasked tokens.
-        unmasked_indices = (denoiser_inputs.xt != self.mask_token_id).view(-1)
+        xt = denoiser_inputs.xt
         if self.config.shift_logits:
-            unmasked_indices = unmasked_indices[..., 1:]
-            denoiser_inputs.xt = denoiser_inputs.xt[..., 1:]
+            xt = xt[..., 1:]
+        unmasked_indices = xt != self.mask_token_id
         log_probs[unmasked_indices] = self.neg_infinity
-        log_probs[unmasked_indices, denoiser_inputs.xt[unmasked_indices]] = 0
+        log_probs[unmasked_indices, xt[unmasked_indices]] = 0
         return log_probs
 
     def _compute_loss(
@@ -819,10 +816,8 @@ class MDLM(D3PM):
         loss = (
             log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
         )
-
         nlls = loss * denoiser_inputs.tokens_mask
         count = denoiser_inputs.tokens_mask.sum()
-
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
         return LossAndNllOutput(loss=token_nll, nlls=nlls)
@@ -1091,6 +1086,7 @@ class BD3LM(MDLM):
             )
             encoder_attention_mask = (
                 self.encoder_static_attention_mask[None, ...]
+                & attention_mask[:, None, :]
                 & attention_mask[..., None]
             )
             return DenoiserInput(

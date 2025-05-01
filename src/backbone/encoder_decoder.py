@@ -12,6 +12,7 @@ try:
 except ModuleNotFoundError:
     BlockMask = None
 
+
 from src.backbone.custom_modeling_llama import LlamaForCausalLM
 from src.backbone.custom_modeling_qwen3 import Qwen3ForCausalLM
 
@@ -46,6 +47,19 @@ class LlamaAsEncoderDecoder(nn.Module):
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
             )
+            # encoder_config = AutoConfig.from_pretrained(
+            #     pretrained_model_name_or_path,
+            #     trust_remote_code=True,
+            #     attn_implementation=attn_backend,
+            # )
+            # self.encoder = Qwen3ForCausalLM(encoder_config)
+
+            # decoder_config = AutoConfig.from_pretrained(
+            #     pretrained_model_name_or_path,
+            #     trust_remote_code=True,
+            #     attn_implementation=attn_backend,
+            # )
+            # self.decoder = Qwen3ForCausalLM(decoder_config)
 
         else:
             self.encoder = LlamaForCausalLM.from_pretrained(
@@ -161,7 +175,6 @@ class LlamaAsEncoderDecoder(nn.Module):
                 position_embeddings=decoder_position_embeddings,
                 **flash_attn_kwargs,
             )[0]  # [:, : input_ids.shape[1], :]
-
         # Only keep logits for masked tokens
         decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)
         return self.decoder.lm_head(decoder_hidden_states)

@@ -29,6 +29,7 @@ class CosineNoise(Noise):
         self.name = "cosine"
 
     def __call__(self, t):
+        t = t.to(torch.float32)
         cos = -(1 - self.eps) * torch.cos(t * torch.pi / 2)
         sin = -(1 - self.eps) * torch.sin(t * torch.pi / 2)
         move_chance = cos + 1
@@ -44,6 +45,7 @@ class ExponentialNoise(Noise):
         self.name = f"exp_{exp}"
 
     def __call__(self, t):
+        t = t.to(torch.float32)
         move_chance = torch.pow(t, self.exp)
         move_chance = torch.clamp(move_chance, min=self.eps)
         alpha_t_prime = -self.exp * torch.pow(t, self.exp - 1)
@@ -57,6 +59,7 @@ class LogarithmicNoise(Noise):
         self.name = "logarithmic"
 
     def __call__(self, t):
+        t = t.to(torch.float32)
         move_chance = torch.log1p(t) / torch.log(torch.tensor(2.0))
         alpha_t_prime = -1 / (torch.log(torch.tensor(2.0)) * (1 + t))
         return 1 - move_chance, alpha_t_prime
@@ -71,6 +74,7 @@ class LinearNoise(Noise):
         return 1 - alpha_t
 
     def __call__(self, t):
+        t = t.to(torch.float32)
         alpha_t_prime = -torch.ones_like(t)
         move_chance = t
         return 1 - move_chance, alpha_t_prime

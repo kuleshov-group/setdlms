@@ -35,11 +35,7 @@ def _get_world_size() -> int:
 
 def maybe_add_missing_special_tokens(tokenizer: PreTrainedTokenizer):
     if getattr(tokenizer, "bos_token", None) is None:
-        if hasattr(tokenizer, "get_added_vocab"):
-            if "<|im_start|>" in tokenizer.get_added_vocab().keys():
-                tokenizer.bos_token = "<|im_start|>"
-        else:
-            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.bos_token = tokenizer.eos_token
     if getattr(tokenizer, "pad_token", None) is None:
         if hasattr(tokenizer, "get_added_vocab"):
             if "<|finetune_right_pad_id|>" in tokenizer.get_added_vocab().keys():

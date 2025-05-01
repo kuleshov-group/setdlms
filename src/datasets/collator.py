@@ -90,9 +90,8 @@ class DenoisingCollator:
             context_mask = torch.nn.functional.pad(
                 context_mask, (0, self.max_length - context_mask.shape[-1])
             )
-        else:
-            context_mask = None
-        batch.update({"t": t, "context_mask": context_mask})
+            batch.update({"context_mask": context_mask})
+        batch.update({"t": t})
         return batch
 
 

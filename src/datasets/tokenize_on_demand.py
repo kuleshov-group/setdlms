@@ -17,6 +17,9 @@ class GSM8KDataset(Dataset):
         config_name: Literal["main", "socratic"] = "main",
         padding: bool = False,
         add_special_tokens: bool = True,
+        question_prompt_text: str
+        | None = None,  # "Please reason step by step, and put your final answer within \\boxed{}. ",
+        answer_prompt_text: str | None = "Answer: ",
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -27,27 +30,48 @@ class GSM8KDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.padding = padding
         self.add_special_tokens = add_special_tokens
+        self.question_prompt_text = question_prompt_text
+        self.answer_prompt_text = answer_prompt_text
 
     def __len__(self):
         return len(self.dataset)
 
+    def _postprocess_box_answer(
+        self, answer: str, prefix: str = "\\boxed{", suffix: str = "}"
+    ):
+        """
+        Postprocesses the answer for the desired format.
+        Args:
+            answer (str): The answer string to be postprocessed.
+        Returns:
+            str: The postprocessed answer string.
+        """
+        answer = answer.replace("#### ", prefix) + suffix
+        return answer
+
     def __getitem__(self, idx):
         example = self.dataset[idx]
+        if self.question_prompt_text is not None:
+            example["question"] = self.question_prompt_text + example["question"]
+        if self.answer_prompt_text is not None:
+            example["answer"] = self.answer_prompt_text + example["answer"]
+        example["answer"] = self._postprocess_box_answer(example["answer"])
+        if self.add_special_tokens:
+            example["question"] = (
+                self.tokenizer.bos_token
+                + example["question"]
+                + self.tokenizer.eos_token
+            )
+            example["answer"] = example["answer"] + self.tokenizer.eos_token
+
         qa_tokenized = self.tokenizer.batch_encode_plus(
             [example["question"], example["answer"]],
             max_length=self.max_seq_len,
             padding=self.padding,
-            add_special_tokens=False,  # (potentially) added manually, below
+            add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
         )
-        if self.add_special_tokens:
-            qa_tokenized["input_ids"] = [
-                [self.tokenizer.bos_token_id] + t + [self.tokenizer.eos_token_id]
-                for t in qa_tokenized["input_ids"]
-            ]
-            qa_tokenized["attention_mask"] = [
-                [1, 1] + t for t in qa_tokenized["attention_mask"]
-            ]
+
         input_ids = torch.cat(
             [torch.LongTensor(t) for t in qa_tokenized["input_ids"]], dim=-1
         )

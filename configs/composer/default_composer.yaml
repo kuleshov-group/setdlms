@@ -5,12 +5,12 @@ defaults:
     - ema
 #    - low_precision_layer_norm
   - callbacks:
-      - hf_compatible_checkpointing
+      # - hf_compatible_checkpointing
       - lr_monitor
 #      - memory_monitor
 #      - optimizer_monitor
       - runtime_estimator
-      - save_best_checkpointing
+      # - save_best_checkpointing
       - speed_monitor
   - loggers: wandb
   - lr_scheduler: constant_with_warmup
