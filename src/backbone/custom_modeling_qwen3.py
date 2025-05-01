@@ -253,22 +253,27 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        q_index: Optional[int] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        if q_index is not None:
-            query_states = self.q_norm(
-                self.q_proj(hidden_states[:, :q_index, ...]).view(
-                    (*input_shape[:-1], q_index, -1, self.head_dim)
-                )
-            ).transpose(1, 2)
-        else:
-            query_states = self.q_norm(
-                self.q_proj(hidden_states).view(hidden_shape)
-            ).transpose(1, 2)
+        query_states = self.q_norm(
+            self.q_proj(hidden_states).view(hidden_shape)
+        ).transpose(1, 2)
+
+        q_index = None
+        # concatenate encoder hidden states in every layer
+        if encoder_hidden_states is not None:
+            q_index = hidden_states.shape[1]
+            hidden_states = (
+                torch.cat((hidden_states, encoder_hidden_states), dim=1)
+                if encoder_hidden_states is not None
+                else hidden_states
+            )
+            input_shape = hidden_states.shape[:-1]
+            hidden_shape = (*input_shape, -1, self.head_dim)
 
         key_states = self.k_norm(
             self.k_proj(hidden_states).view(hidden_shape)
@@ -300,7 +305,6 @@ class Qwen3Attention(nn.Module):
                 attention_interface = ALL_ATTENTION_FUNCTIONS[
                     self.config._attn_implementation
                 ]
-
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
@@ -362,12 +366,6 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        q_index = hidden_states.shape[1] if encoder_hidden_states is not None else None
-        hidden_states = (
-            torch.cat((hidden_states, encoder_hidden_states), dim=1)
-            if encoder_hidden_states is not None
-            else hidden_states
-        )
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -377,7 +375,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
-            q_index=q_index,
+            encoder_hidden_states=encoder_hidden_states,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -683,7 +681,6 @@ class Qwen3Model(Qwen3PreTrainedModel):
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
