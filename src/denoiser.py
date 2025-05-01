@@ -45,8 +45,14 @@ class DenoiserInput(OrderedDict):
 
     xt: torch.Tensor  # (B, L) Tensor of token_ids
     x0: Optional[torch.Tensor] = None  # (B, L) Tensor of token_ids (not used in gen.)
-    attention_mask: Optional[torch.Tensor] = None  # (B, L)
-    tokens_mask: Optional[torch.Tensor] = None
+    # 1 / True indicates attention applies; 0 / False indicates ignore (e.g., padding)
+    attention_mask: Optional[torch.Tensor] = None
+    # 1 / True indicates token is part of context; 0 / False indicates token should be
+    # generated / predicted
+    context_mask: Optional[torch.Tensor] = None
+    # 1 / True indicates token contributes to loss; 0 / False indicates otherwise;
+    # for most use cases, this should be `= attention_mask & ~context_mask`
+    tokens_mask: Optional[torch.Tensor] = None  # (B, L)
     t: Optional[torch.Tensor] = None  # (B,)
     alpha_t: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
     alpha_t_prime: Optional[torch.Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
@@ -108,7 +114,7 @@ class DenoiserConfig(PretrainedConfig):
             "pad_vocab_size_multiple",
         ]:
             if tokenization_config is not None and (
-                not hasattr(self, v) or hasattr(tokenization_config, v)
+                getattr(self, v, None) is None or v in tokenization_config
             ):
                 setattr(self, v, tokenization_config.get(v, None))
             else:
@@ -161,10 +167,11 @@ class Denoiser(ABC, PreTrainedModel):
     @abstractmethod
     def _prepare_inputs(
         self,
-        input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
-        past_key_values: torch.FloatTensor | None = None,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        context_mask: torch.Tensor | None = None,
+        t: torch.Tensor | None = None,
+        past_key_values: torch.Tensor | None = None,
     ) -> DenoiserInput:
         """
         Prepare inputs for the model.
@@ -191,7 +198,7 @@ class Denoiser(ABC, PreTrainedModel):
             denoiser_inputs (DenoiserInput): Inputs passed to the denoiser model.
 
         Returns:
-            LossAndNllOutput: loss (torch.FloatTensor) and nlls (torch.FloatTensor).
+            LossAndNllOutput: loss (torch.Tensor) and nlls (torch.Tensor).
         """
         raise NotImplementedError("Denoiser subclasses must implement _compute_loss")
 
@@ -246,9 +253,10 @@ class Denoiser(ABC, PreTrainedModel):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        context_mask: torch.Tensor | None = None,
+        t: torch.Tensor | None = None,
         past_key_values: torch.Tensor | None = None,
         compute_loss: bool | None = True,
         **kwargs,
@@ -260,6 +268,7 @@ class Denoiser(ABC, PreTrainedModel):
         Parameters:
             input_ids (torch.Tensor): Input tensor to the model.
             attention_mask (Optional[torch.Tensor]): Attention mask for the model.
+            context_mask (Optional[torch.Tensor]): Indicator for context tokens.
             t (Optional[torch.Tensor]): Denoising time step for the model.
             past_key_values (Optional[torch.Tensor]): KV cache.
             compute_loss (Optional[bool]): Flag to compute loss.
@@ -270,6 +279,7 @@ class Denoiser(ABC, PreTrainedModel):
         denoiser_inputs = self._prepare_inputs(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            context_mask=context_mask,
             past_key_values=past_key_values,
             t=t,
         )
@@ -321,7 +331,7 @@ class Denoiser(ABC, PreTrainedModel):
         eps: float = 1e-5,
         device: str | None = None,
         disable_cache: bool = False,
-        input_ids: torch.LongTensor | None = None,
+        input_ids: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generates sample from denoising model.
@@ -338,7 +348,7 @@ class Denoiser(ABC, PreTrainedModel):
                 Defaults to None, which will select cuda (if available).
             disable_cache (bool, optional): Whether to disable caching.
                 Defaults to False.
-            input_ids (torch.LongTensor, optional): Optional input tensor
+            input_ids (torch.Tensor, optional): Optional input tensor
         Returns:
             torch.Tensor: Generated samples of token_ids (B, L).
         """
@@ -387,24 +397,28 @@ class AR(Denoiser):
 
     def _prepare_inputs(
         self,
-        input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
-        past_key_values: torch.FloatTensor | None = None,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        context_mask: torch.Tensor | None = None,
+        t: torch.Tensor | None = None,
+        past_key_values: torch.Tensor | None = None,
     ) -> DenoiserInput:
         # Prepare inputs for autoregressive model
         labels = copy.deepcopy(input_ids[..., 1:])[..., None]
         input_ids = input_ids[..., :-1]
         if attention_mask is None:
-            attention_mask = torch.ones_like(input_ids, dtype=torch.float)
+            attention_mask = torch.ones_like(input_ids)
         elif attention_mask.shape != input_ids.shape:
             attention_mask = attention_mask[..., :-1]
+        if context_mask is None:
+            context_mask = torch.zeros_like(attention_mask)
 
         return DenoiserInput(
             xt=input_ids,
             x0=labels,
             attention_mask=attention_mask,
-            tokens_mask=attention_mask,
+            context_mask=context_mask,
+            tokens_mask=attention_mask * (1 - context_mask),
             past_key_values=past_key_values,
         )
 
@@ -414,8 +428,8 @@ class AR(Denoiser):
         # Shift labels
         loss = -torch.gather(model_output, -1, denoiser_inputs.x0).squeeze(-1)
 
-        nlls = loss * denoiser_inputs.attention_mask
-        count = denoiser_inputs.attention_mask.sum()
+        nlls = loss * denoiser_inputs.tokens_mask
+        count = denoiser_inputs.tokens_mask.sum()
 
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
@@ -429,8 +443,8 @@ class AR(Denoiser):
         batch_size: int | None = None,
         device: str | None = None,
         disable_cache: bool = False,
-        input_ids: torch.LongTensor | None = None,
-        input_attention_mask: torch.LongTensor | None = None,
+        input_ids: torch.Tensor | None = None,
+        input_attention_mask: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         input_attention_mask = (
@@ -512,17 +526,34 @@ class D3PM(Denoiser):
         self.T = config.T
         self.diffusion_type = config.diffusion_type
 
-    def _sample_q_xt(self, x0: torch.Tensor, alpha_t: torch.Tensor) -> torch.Tensor:
+    def _sample_q_xt(
+        self,
+        x0: torch.Tensor,
+        alpha_t: torch.Tensor,
+        context_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Sample from the pre-defined forward / noising process.
+
+        Parameters:
+            x0 (torch.Tensor): Signal / data sample;
+                can potentially include context tokens.
+            alpha_t (torch.Tensor): Amount of signal to retain.
+            context_mask (torch.Tensor): Indicator of context tokens (to remain
+                unchanged).
+        """
         move_indices = torch.rand(*x0.shape, device=x0.device) < (1.0 - alpha_t)
         if self.diffusion_type == "absorbing":
-            xt = torch.where(move_indices, self.mask_token_id, x0)
+            xt = torch.where(
+                (move_indices * (1 - context_mask)).bool(), self.mask_token_id, x0
+            )
             if self.config.keep_clean_bos:
-                xt[..., 0] = x0[..., 0]
+                xt = torch.where(x0 == self.bos_token_id, x0, xt)
             return xt
         if self.diffusion_type == "uniform":
             xt = torch.randint(0, self.vocab_size, x0.shape, device=x0.device)
+            xt = torch.where(context_mask.bool(), x0, xt)
             if self.config.keep_clean_bos:
-                xt[..., 0] = x0[..., 0]
+                xt = torch.where(x0 == self.bos_token_id, x0, xt)
             return xt
         raise NotImplementedError(
             f"Diffusion type '{self.diffusion_type}' not implemented."
@@ -530,14 +561,17 @@ class D3PM(Denoiser):
 
     def _prepare_inputs(
         self,
-        input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
-        past_key_values: torch.FloatTensor | None = None,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        context_mask: torch.Tensor | None = None,
+        t: torch.Tensor | None = None,
+        past_key_values: torch.Tensor | None = None,
     ):
         # Prepare inputs for D3PM model
         if attention_mask is None:
-            attention_mask = torch.ones_like(input_ids, dtype=torch.float)
+            attention_mask = torch.ones_like(input_ids)
+        if context_mask is None:
+            context_mask = torch.zeros_like(attention_mask)
 
         if t is None:
             t = torch.rand(input_ids.shape[0], device=input_ids.device)
@@ -545,13 +579,18 @@ class D3PM(Denoiser):
         while alpha_t.ndim < 2:
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
-        xt = self._sample_q_xt(input_ids, alpha_t)
+        xt = self._sample_q_xt(
+            x0=input_ids,
+            alpha_t=alpha_t,
+            context_mask=context_mask,
+        )
 
         return DenoiserInput(
             xt=xt,
             x0=input_ids,
             attention_mask=attention_mask,
-            tokens_mask=attention_mask,
+            context_mask=context_mask,
+            tokens_mask=attention_mask * (1 - context_mask),
             t=t,
             alpha_t=alpha_t,
             alpha_t_prime=alpha_t_prime,
@@ -1004,13 +1043,16 @@ class BD3LM(MDLM):
 
     def _prepare_inputs(
         self,
-        input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
-        past_key_values: torch.FloatTensor | None = None,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        context_mask: torch.Tensor | None = None,
+        t: torch.Tensor | None = None,
+        past_key_values: torch.Tensor | None = None,
     ):
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
+        if context_mask is None:
+            context_mask = torch.zeros_like(attention_mask)
 
         if t is None:
             t = torch.rand(
@@ -1022,7 +1064,7 @@ class BD3LM(MDLM):
         while alpha_t.ndim < 2:
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
-        xt = self._sample_q_xt(input_ids, alpha_t)
+        xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, context_mask=context_mask)
 
         if self.config.backbone_is_decoder_only:
             # TODO: check attention mask is correct
@@ -1035,7 +1077,7 @@ class BD3LM(MDLM):
                 xt=xt,
                 x0=input_ids,
                 attention_mask=decoder_attention_mask,
-                tokens_mask=attention_mask,
+                tokens_mask=attention_mask * (1 - context_mask),
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
@@ -1046,21 +1088,15 @@ class BD3LM(MDLM):
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask[..., None]
             )
-            # # TODO: Hack to get qkv shapes working with Llama
-            # decoder_attention_mask = torch.cat(
-            #     (decoder_attention_mask, torch.zeros_like(decoder_attention_mask)),
-            #     dim=1,
-            # )
             encoder_attention_mask = (
                 self.encoder_static_attention_mask[None, ...]
                 & attention_mask[..., None]
             )
-
             return DenoiserInput(
                 xt=xt,
                 x0=input_ids,
                 attention_mask=decoder_attention_mask,
-                tokens_mask=attention_mask,
+                tokens_mask=attention_mask * (1 - context_mask),
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
