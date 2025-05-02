@@ -7,3 +7,5 @@ keep_every_n_decoder_layers: 8
 block_size: ${block_size}
 max_length: ${model.config.length}
 attn_backend: ${model.config.attn_backend}
+freeze_encoder: false
+reinit_decoder: false

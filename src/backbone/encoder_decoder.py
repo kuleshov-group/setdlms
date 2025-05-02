@@ -2,6 +2,7 @@ from typing import Union
 
 import torch
 from torch import Tensor, nn
+from transformers import AutoConfig
 from transformers.cache_utils import Cache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.processing_utils import Unpack
@@ -30,6 +31,8 @@ class LlamaAsEncoderDecoder(nn.Module):
         keep_every_n_encoder_layers: int = 1,
         keep_every_n_decoder_layers: int = 1,
         attn_backend: str = "sdpa",
+        freeze_encoder: bool = False,
+        reinit_decoder: bool = False,
     ):
         assert keep_every_n_encoder_layers <= keep_every_n_decoder_layers, (
             "Cannot remove more encoder than decoder layers."
@@ -42,37 +45,56 @@ class LlamaAsEncoderDecoder(nn.Module):
                 attn_implementation=attn_backend,
             )
 
-            self.decoder = Qwen3ForCausalLM.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=True,
-                attn_implementation=attn_backend,
-            )
-            # encoder_config = AutoConfig.from_pretrained(
-            #     pretrained_model_name_or_path,
-            #     trust_remote_code=True,
-            #     attn_implementation=attn_backend,
-            # )
-            # self.encoder = Qwen3ForCausalLM(encoder_config)
+            # freeze encoder layers
+            if freeze_encoder:
+                for param in self.encoder.parameters():
+                    param.requires_grad = False
 
-            # decoder_config = AutoConfig.from_pretrained(
-            #     pretrained_model_name_or_path,
-            #     trust_remote_code=True,
-            #     attn_implementation=attn_backend,
-            # )
-            # self.decoder = Qwen3ForCausalLM(decoder_config)
-
-        else:
+            # reinitialize decoder layers
+            if reinit_decoder:
+                decoder_config = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    attn_implementation=attn_backend,
+                )
+                self.decoder = Qwen3ForCausalLM(decoder_config)
+            else:
+                self.decoder = Qwen3ForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    attn_implementation=attn_backend,
+                )
+        elif "Llama" in pretrained_model_name_or_path:
             self.encoder = LlamaForCausalLM.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
             )
-            # TODO: consider init of decoder layers from scratch
-            self.decoder = LlamaForCausalLM.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=True,
-                attn_implementation=attn_backend,
+            # freeze encoder layers
+            if freeze_encoder:
+                for param in self.encoder.parameters():
+                    param.requires_grad = False
+
+            # reinitialize decoder layers
+            if reinit_decoder:
+                decoder_config = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    attn_implementation=attn_backend,
+                )
+                self.decoder = LlamaForCausalLM(decoder_config)
+            else:
+                self.decoder = LlamaForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    attn_implementation=attn_backend,
+                )
+        else:
+            raise ValueError(
+                f"Unsupported model type: {pretrained_model_name_or_path}. "
+                "Please use either Qwen or Llama."
             )
+
         # delete layers from encoder / decoder
         max_encoder_layers = n_encoder_layers * keep_every_n_encoder_layers
         if keep_every_n_encoder_layers < len(self.encoder.model.layers):
@@ -104,8 +126,8 @@ class LlamaAsEncoderDecoder(nn.Module):
         self,
         input_ids: Tensor,  # for Decoder
         attention_mask: Union[Tensor, BlockMask],  # for Decoder
-        encoder_input_ids: Tensor,
-        encoder_attention_mask: Union[Tensor, BlockMask],
+        encoder_input_ids: Tensor | None = None,  # for Encoder
+        encoder_attention_mask: Union[Tensor, BlockMask] | None = None,
         past_key_values: Cache | None = None,
         cache_position: torch.LongTensor | None = None,
         use_cache: bool | None = None,
@@ -136,28 +158,38 @@ class LlamaAsEncoderDecoder(nn.Module):
 
         # Encode clean tokens
         # encoder_hidden_states = self.llama.model.embed_tokens(encoder_input_ids)
-        encoder_position_ids = torch.arange(
-            encoder_input_ids.shape[-1], device=encoder_input_ids.device
-        ).unsqueeze(0)
-        # encoder_position_embeddings = self.llama.model.rotary_emb(
-        #     encoder_hidden_states, encoder_position_ids
-        # )
-        encoder_hidden_state = self.encoder(
-            input_ids=encoder_input_ids,
-            attention_mask=encoder_attention_mask[:, None, ...].to(self.encoder.dtype),
-            position_ids=encoder_position_ids,
-            output_hidden_states=True,
-        )[-1]
+        encoder_hidden_state = None
+        if encoder_input_ids is not None:
+            encoder_position_ids = torch.arange(
+                encoder_input_ids.shape[-1], device=encoder_input_ids.device
+            ).unsqueeze(0)
+            # encoder_position_embeddings = self.llama.model.rotary_emb(
+            #     encoder_hidden_states, encoder_position_ids
+            # )
+            if encoder_attention_mask is not None:
+                encoder_attention_mask[:, None, ...].to(self.encoder.dtype)
+            encoder_hidden_state = self.encoder(
+                input_ids=encoder_input_ids,
+                attention_mask=encoder_attention_mask,
+                position_ids=encoder_position_ids,
+                output_hidden_states=True,
+            )[-1]
 
         # Run decoder with xattn to clean tokens
         decoder_hidden_states = self.encoder.model.embed_tokens(input_ids)
-        decoder_position_ids = torch.cat(
-            (
-                torch.arange(decoder_hidden_states.shape[1], device=input_ids.device),
-                torch.arange(encoder_hidden_state.shape[1], device=input_ids.device),
-            ),
-            dim=-1,
+        decoder_position_ids = torch.arange(
+            decoder_hidden_states.shape[1], device=input_ids.device
         ).unsqueeze(0)
+        if encoder_hidden_state is not None:
+            decoder_position_ids = torch.cat(
+                (
+                    decoder_position_ids,
+                    torch.arange(
+                        encoder_hidden_state.shape[1], device=input_ids.device
+                    ).unsqueeze(0),
+                ),
+                dim=-1,
+            ).unsqueeze(0)
         decoder_position_embeddings = self.decoder.model.rotary_emb(
             decoder_hidden_states, decoder_position_ids
         )
