@@ -1,0 +1,283 @@
+from abc import ABC, abstractmethod
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Any, Dict, Tuple
+
+import torch
+from tqdm import tqdm
+from transformers.modeling_outputs import ModelOutput
+
+from denoiser import DenoiserInput
+
+
+@dataclass
+class SamplerConfig(OrderedDict):
+    num_samples: int = 1
+    batch_size: int = 1
+    max_length: int = 512
+    block_size: int = 512
+    top_p: float = 0.9
+    first_hitting: bool = False
+    disable_cache: bool = False
+    kv_caching: bool = False
+    shift_logits: bool = False
+
+
+class Sampler(ABC):
+    def __init__(self, config):
+        self.config = config
+
+    def __call__(
+        self,
+        model: torch.nn.Module,
+        batch_size: int,
+        max_seq_len: int,
+        num_steps: int,
+        eps: float = 1e-5,
+        device: str | None = None,
+        prompt_tokens: torch.Tensor | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        pass
+
+    def _sample_categorical(self, categorical_probs):
+        gumbel_norm = 1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()
+        samples = (categorical_probs / gumbel_norm).argmax(dim=-1)
+        return samples
+
+    def _logit_transform(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Transform logits using various techniques.
+        Args:
+            logits (torch.Tensor): Logits to transform.
+        Returns:
+            torch.Tensor: Transformed logits.
+        """
+        if self.config.top_p < 1.0:
+            logits = self._nucleus_sample(logits)
+        # TODO: highest-confidence remasking, etc
+        return logits
+
+    def _nucleus_sample(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Sample from the logits using nucleus sampling.
+        Args:
+            logits (torch.Tensor): Logits to sample from.
+        Returns:
+            torch.Tensor: Sampled tokens.
+        """
+        p = self.config.top_p
+        if p == 1.0:
+            return logits
+        sorted_probs, sorted_indices = logits.sort(dim=-1, descending=True)
+        cum_probs = sorted_probs.cumsum(dim=-1)
+        nucleus_mask = cum_probs <= p
+        nucleus_mask[..., 0] = 1
+        sorted_probs = sorted_probs * nucleus_mask
+        logits.scatter_(-1, sorted_indices, sorted_probs * nucleus_mask)
+        logits /= logits.sum(-1, keepdim=True)
+        return logits
+
+    @abstractmethod
+    def _sample_prior(
+        self,
+        model: torch.nn.Module,
+        batch_size: int,
+        max_seq_len: int,
+        device: str | None = None,
+    ) -> torch.Tensor:
+        """
+        Sample a sequence of tokens from the prior distribution.
+        Args:
+            batch_size (int): Number of sequences to sample.
+            max_seq_len (int): Maximum sequence length.
+            device (str | None): Device to use for sampling.
+        Returns:
+            torch.Tensor: Sampled tokens.
+        """
+        raise NotImplementedError("Sampler is not implemented yet.")
+
+
+# TODO
+# class ARSampler(Sampler):
+
+
+class AncestralSampler(Sampler):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def _sample_prior(
+        self,
+        model: torch.nn.Module,
+        batch_size: int,
+        max_seq_len: int,
+        device: str | None = None,
+    ) -> torch.Tensor:
+        """
+        Sample a sequence of tokens from the prior distribution.
+        Args:
+            batch_size (int): Number of sequences to sample.
+            max_seq_len (int): Maximum sequence length.
+            device (str | None): Device to use for sampling.
+        Returns:
+            torch.Tensor: Sampled tokens.
+        """
+        x = torch.full(
+            (batch_size, max_seq_len),
+            model.mask_token_id,
+            dtype=torch.long,
+            device=device,
+        )
+        return x
+
+    def _compute_posterior(
+        self,
+        model: torch.nn.Module,
+        x: torch.Tensor,
+        xt: torch.Tensor,
+        alpha_t: torch.Tensor,
+        alpha_s: torch.Tensor,
+    ) -> torch.Tensor:
+        """Computes posterior / approximate posterior q(x_s | x_t, x),
+            where x represents clean sequence (as one-hots) or the output of the
+            denoising model.
+
+        Args:
+            x (torch.Tensor): True (one-hot) / predicted clean signal (B, L, V).
+            xt (torch.Tensor): Noised signal at time t (B, L).
+            alpha_t (torch.Tensor): Noise schedule parameter at time t (B, 1, 1).
+            alpha_s (torch.Tensor): Noise schedule parameter at time s (B, 1, 1).
+        """
+        if model.diffusion_type == "absorbing":
+            q_xs = x * (alpha_s - alpha_t)
+            q_xs[..., model.mask_token_id] = 1 - alpha_s[..., 0]
+            q_xs /= 1 - alpha_t
+            return q_xs
+
+        alpha_ts = alpha_t / alpha_s
+        d_alpha = alpha_s - alpha_t
+        xt_one_hot = torch.nn.functional.one_hot(x, model.vocab_size)
+        limiting_distribution = torch.ones_like(xt_one_hot) / model.vocab_size
+        if model.diffusion_type == "uniform":
+            return (
+                alpha_t * model.vocab_size * x * xt_one_hot
+                + (alpha_ts - alpha_t) * xt_one_hot
+                + d_alpha * x
+                + (1 - alpha_ts) * (1 - alpha_s) * limiting_distribution
+            ) / (
+                alpha_t * model.vocab_size * torch.gather(x, -1, xt[..., None])
+                + (1 - alpha_t)
+            )
+        raise NotImplementedError(
+            f"Diffusion type {model.diffusion_type} not implemented."
+        )
+
+    def _generate_unconditional(  # TODO add CBG and CFG generation
+        self,
+        model: torch.nn.Module,
+        alpha_t: torch.Tensor,
+        alpha_s: torch.Tensor,
+        denoiser_inputs: DenoiserInput | None = None,
+        cache: Dict[str, torch.Tensor] | None = None,
+        context_mask: torch.Tensor | None = None,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        if cache is None:
+            backbone_output = model._backbone_forward(denoiser_inputs)
+            if isinstance(backbone_output, ModelOutput) and hasattr(
+                backbone_output, "logits"
+            ):
+                backbone_output = backbone_output.logits
+            log_x_theta = model._forward(
+                backbone_output,
+                denoiser_inputs,
+            )  # should be the log(x_\theta) with the shape of (B, Seq, Vocab)
+            # assume that we have batch_size = 1
+            if context_mask is not None:
+                log_x_theta = log_x_theta[~context_mask.bool()]
+
+            x_theta = log_x_theta.exp()
+            x_theta = self._logit_transform(x_theta)
+        else:
+            x_theta = cache["x_theta"]
+        q_xs = self._compute_posterior(
+            model, x_theta, denoiser_inputs.xt, alpha_t, alpha_s
+        )
+        cache = {"x_theta": x_theta}
+        return q_xs, cache
+
+    # def _cache_kvs(self, model: torch.nn.Module, xt: torch.Tensor):
+
+    def __call__(
+        self,
+        model: torch.nn.Module,
+        batch_size: int,
+        max_seq_len: int,
+        num_steps: int,
+        eps: float = 1e-5,
+        device: str | None = None,
+        disable_cache: bool = False,
+        context: torch.Tensor | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        device = (
+            device
+            if device is not None
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        xt = self._sample_prior(model, batch_size, max_seq_len, device=device)
+        timesteps = torch.linspace(1, eps, num_steps + 1, device=device)
+        dt = (1 - eps) / num_steps
+        pbar = tqdm(range(num_steps), desc="Sampling", leave=False)
+        NFEs = 0
+        cache = None
+        context_mask = None
+        if context is None or context.shape[1] == 0:
+            xt[:, 0] = model.bos_token_id
+        if context is not None:
+            full_seq_len = context.shape[1] + max_seq_len
+            context_mask = torch.zeros((batch_size, full_seq_len), device=device)
+            context_mask[:, : context.shape[1]] = 1
+            if self.config.shift_logits:
+                context_mask = context_mask[:, :-1]
+        for i in pbar:
+            t = timesteps[i]
+            if cache is None:
+                NFEs += 1
+            # t is 0-dim tensor, reshape to (1, 1, 1) for broadcasting
+            alpha_t, _ = model.noise_schedule(t)
+            alpha_s, _ = model.noise_schedule(t - dt)
+            alpha_t = alpha_t[None, None, None]
+            alpha_s = alpha_s[None, None, None]
+            # prepare backbone inputs
+            input_ids = xt
+            if context is not None:
+                input_ids = torch.cat((context, input_ids), dim=1)
+            attention_mask = (
+                torch.ones_like(input_ids, dtype=torch.float) if cache is None else None
+            )
+            denoiser_inputs = DenoiserInput(
+                xt=input_ids, attention_mask=attention_mask, alpha_t=alpha_t
+            )
+            q_xs, cache = self._generate_unconditional(
+                model=model,
+                alpha_t=alpha_t,
+                alpha_s=alpha_s,
+                denoiser_inputs=denoiser_inputs,
+                cache=cache,
+                context_mask=context_mask,
+            )
+            xs = self._sample_categorical(q_xs)
+            pbar.set_postfix(
+                NFEs=NFEs,
+                prob_check=(q_xs.sum() / xt.numel()).item(),
+                nan_check=bool(q_xs.isnan().sum() > 0),
+            )
+            if self.config.shift_logits:
+                xs = torch.cat((xt[:, 0:1], xs), dim=1)
+            if not torch.allclose(xs, xt) or not disable_cache:
+                cache = None
+            xt = xs
+        # TODO: for e2d2, call encoder to cache kvs
+        # if self.config.kv_caching:
+        #     self._cache_kvs(model, xt)
+        return xt, NFEs

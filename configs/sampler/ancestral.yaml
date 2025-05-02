@@ -1,0 +1,12 @@
+_target_: src.sampler.AncestralSampler
+config:
+  _target_: src.sampler.SamplerConfig
+  num_samples: 1
+  batch_size: 1
+  max_length: 512
+  block_size: 512
+  top_p: 0.9
+  first_hitting: false
+  disable_cache: false
+  kv_caching: false
+  shift_logits: ${model.config.shift_logits}

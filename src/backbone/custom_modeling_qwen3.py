@@ -305,7 +305,7 @@ class Qwen3Attention(nn.Module):
             query_states,
             key_states,
             value_states,
-            attention_mask,
+            attention_mask.to(torch.bool),
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
             sliding_window=self.sliding_window,  # diff with Llama
