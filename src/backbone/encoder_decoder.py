@@ -186,7 +186,8 @@ class LlamaAsEncoderDecoder(nn.Module):
                         encoder_hidden_state.shape[1], device=input_ids.device
                     ).unsqueeze(0),
                 ),
-                dim=-1)
+                dim=-1,
+            )
         decoder_position_embeddings = self.decoder.model.rotary_emb(
             decoder_hidden_states, position_ids
         )
