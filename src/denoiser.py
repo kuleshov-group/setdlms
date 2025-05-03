@@ -1112,7 +1112,7 @@ class BD3LM(MDLM):
                 xt=xt,
                 x0=x0,
                 attention_mask=decoder_attention_mask,
-                tokens_mask=attention_mask * (1 - context_mask),
+                tokens_mask=attention_mask,
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
