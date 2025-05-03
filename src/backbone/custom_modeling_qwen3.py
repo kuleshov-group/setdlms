@@ -300,12 +300,14 @@ class Qwen3Attention(nn.Module):
                 attention_interface = ALL_ATTENTION_FUNCTIONS[
                     self.config._attn_implementation
                 ]
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(torch.bool)
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
             key_states,
             value_states,
-            attention_mask.to(torch.bool),
+            attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
             sliding_window=self.sliding_window,  # diff with Llama
@@ -366,6 +368,19 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             torch.cat((hidden_states, encoder_hidden_states), dim=1)
             if encoder_hidden_states is not None
             else hidden_states
+        )
+        position_ids = (
+            torch.cat(
+                (
+                    torch.arange(encoder_hidden_states.shape[1]).to(
+                        position_ids.device
+                    )[None, :],
+                    position_ids,
+                ),
+                dim=-1,
+            )
+            if encoder_hidden_states is not None
+            else position_ids
         )
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,

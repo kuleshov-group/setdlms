@@ -10,6 +10,7 @@ from typing import Any, Dict, Literal, Optional
 
 import hydra.utils
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
@@ -452,6 +453,7 @@ class AR(Denoiser):
         input_attention_mask: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
+        # TODO implement ar sampler
         input_attention_mask = (
             torch.ones((batch_size, 1), device=device)
             if input_ids is None
@@ -601,6 +603,20 @@ class D3PM(Denoiser):
             alpha_t_prime=alpha_t_prime,
         )
 
+    def _prepare_inputs_inference(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        context_mask: torch.Tensor | None = None,
+        t: torch.Tensor | None = None,
+        past_key_values: torch.Tensor | None = None,
+    ):
+        attention_mask = torch.ones_like(input_ids, dtype=torch.float)
+        alpha_t, _ = self.noise_schedule(t)
+        return DenoiserInput(
+            xt=input_ids, attention_mask=attention_mask, alpha_t=alpha_t
+        )
+
     def _compute_loss(
         self, model_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
     ) -> LossAndNllOutput:
@@ -728,6 +744,31 @@ class MDLM(D3PM):
         xt = denoiser_inputs.xt
         if self.config.shift_logits:
             xt = xt[..., 1:]
+        unmasked_indices = xt != self.mask_token_id
+        log_probs[unmasked_indices] = self.neg_infinity
+        log_probs[unmasked_indices, xt[unmasked_indices]] = 0
+        return log_probs
+
+    def _forward_inference(
+        self, backbone_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs
+    ) -> torch.Tensor:
+        # Zero-mask probability
+        mask = (
+            torch.arange(backbone_output.shape[-1], device=backbone_output.device)
+            == self.mask_token_id
+        ).view(1, 1, -1)  # unsqueeze for broadcast to (batch, seq_len, vocab_size)
+        log_probs = torch.where(
+            mask, backbone_output + self.neg_infinity, backbone_output
+        )
+        log_probs = log_probs - torch.logsumexp(log_probs, dim=-1, keepdim=True)
+        # Copy-over unmasked: For the log_probs of the unmasked tokens, set all values
+        # to -infinity except for the indices corresponding to
+        # the unmasked tokens.
+        xt = denoiser_inputs.xt
+        if self.config.shift_logits:
+            # only apply carry-over for tokens except the last
+            # (the last token predicts a token not in the context)
+            xt = F.pad(xt[..., 1:], (0, 1), value=self.mask_token_id)
         unmasked_indices = xt != self.mask_token_id
         log_probs[unmasked_indices] = self.neg_infinity
         log_probs[unmasked_indices, xt[unmasked_indices]] = 0
@@ -1037,6 +1078,50 @@ class BD3LM(MDLM):
                 },
             )
 
+    def _prepare_inputs_inference(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        context_mask: torch.Tensor | None = None,
+        t: torch.Tensor | None = None,
+        past_key_values: torch.Tensor | None = None,
+    ):
+        xt = input_ids[~context_mask.bool()].view(input_ids.shape[0], -1)
+        x0 = input_ids[context_mask.bool()].view(input_ids.shape[0], -1)
+        alpha_t, alpha_t_prime = self.noise_schedule(t)
+        if self.config.backbone_is_decoder_only:
+            raise NotImplementedError(
+                "Inference for decoder-only BD3LM is not implemented yet."
+            )
+        else:
+            # full attention to xt and context
+            decoder_attention_mask = torch.ones(
+                (xt.shape[0], xt.shape[1], context_mask.shape[1]),
+                device=xt.device,
+                dtype=attention_mask.dtype,
+            )
+            # block-causal attention within x0
+            encoder_attention_mask = (
+                self.encoder_static_attention_mask[None, : x0.shape[1], : x0.shape[1]]
+            ).to(attention_mask.dtype)
+
+            return DenoiserInput(
+                xt=xt,
+                x0=x0,
+                attention_mask=decoder_attention_mask,
+                tokens_mask=attention_mask * (1 - context_mask),
+                t=t,
+                alpha_t=alpha_t,
+                alpha_t_prime=alpha_t_prime,
+                backbone_kwargs={
+                    "encoder_input_ids": x0,
+                    "encoder_attention_mask": encoder_attention_mask,
+                    "position_ids": torch.arange(
+                        context_mask.shape[1], device=xt.device
+                    ).expand((xt.shape[0], -1)),
+                },
+            )
+
     def generate(
         self,
         batch_size: int,
@@ -1045,7 +1130,7 @@ class BD3LM(MDLM):
         eps: float = 1e-5,
         device: str | None = None,
         disable_cache: bool = False,
-        input_ids: torch.Tensor | None = None,
+        prompt: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generates sample from denoising model.
@@ -1062,7 +1147,7 @@ class BD3LM(MDLM):
                 Defaults to None, which will select cuda (if available).
             disable_cache (bool, optional): Whether to disable caching.
                 Defaults to False.
-            input_ids (torch.Tensor, optional): Optional input tensor
+            prompt (torch.Tensor, optional): Optional input tensor
         Returns:
             torch.Tensor: Generated samples of token_ids (B, L).
         """
@@ -1073,9 +1158,12 @@ class BD3LM(MDLM):
         )
 
         max_blocks = max_seq_len // self.config.block_size
-        accumulated_samples = torch.empty(
-            (batch_size, 0), dtype=torch.int64, device=device
-        )
+        if prompt is not None:
+            accumulated_samples = prompt.to(device)
+        else:
+            accumulated_samples = torch.empty(
+                (batch_size, 0), dtype=torch.int64, device=device
+            )
         total_NFEs = 0
 
         pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)

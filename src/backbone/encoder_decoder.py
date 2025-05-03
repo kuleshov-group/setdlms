@@ -131,6 +131,7 @@ class LlamaAsEncoderDecoder(nn.Module):
         past_key_values: Cache | None = None,
         cache_position: torch.LongTensor | None = None,
         use_cache: bool | None = None,
+        position_ids: Tensor | None = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tensor:
         # TODO: not sure how to use this yet...
@@ -159,13 +160,10 @@ class LlamaAsEncoderDecoder(nn.Module):
         # Encode clean tokens
         # encoder_hidden_states = self.llama.model.embed_tokens(encoder_input_ids)
         encoder_hidden_state = None
-        if encoder_input_ids is not None:
+        if encoder_input_ids is not None and encoder_input_ids.shape[1] > 0:
             encoder_position_ids = torch.arange(
                 encoder_input_ids.shape[-1], device=encoder_input_ids.device
             ).unsqueeze(0)
-            # encoder_position_embeddings = self.llama.model.rotary_emb(
-            #     encoder_hidden_states, encoder_position_ids
-            # )
             if encoder_attention_mask is not None:
                 encoder_attention_mask[:, None, ...].to(self.encoder.dtype)
             encoder_hidden_state = self.encoder(
@@ -177,21 +175,13 @@ class LlamaAsEncoderDecoder(nn.Module):
 
         # Run decoder with xattn to clean tokens
         decoder_hidden_states = self.encoder.model.embed_tokens(input_ids)
-        decoder_position_ids = torch.arange(
-            decoder_hidden_states.shape[1], device=input_ids.device
-        ).unsqueeze(0)
-        if encoder_hidden_state is not None:
-            decoder_position_ids = torch.cat(
-                (
-                    decoder_position_ids,
-                    torch.arange(
-                        encoder_hidden_state.shape[1], device=input_ids.device
-                    ).unsqueeze(0),
-                ),
-                dim=-1,
+        # offset will be nonzero during sampling
+        if position_ids is None:
+            position_ids = torch.arange(
+                decoder_hidden_states.shape[1], device=input_ids.device
             ).unsqueeze(0)
         decoder_position_embeddings = self.decoder.model.rotary_emb(
-            decoder_hidden_states, decoder_position_ids
+            decoder_hidden_states, position_ids
         )
         attention_mask = attention_mask[:, None, ...].to(self.decoder.dtype)
         for i, decoder_layer in enumerate(self.decoder.model.layers):
@@ -199,7 +189,7 @@ class LlamaAsEncoderDecoder(nn.Module):
                 hidden_states=decoder_hidden_states,
                 encoder_hidden_states=encoder_hidden_state,
                 attention_mask=attention_mask,
-                position_ids=decoder_position_ids,
+                position_ids=position_ids,
                 past_key_value=past_key_values,
                 output_attentions=False,
                 use_cache=use_cache,

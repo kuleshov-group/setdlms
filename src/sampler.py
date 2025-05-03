@@ -179,7 +179,6 @@ class AncestralSampler(Sampler):
         alpha_s: torch.Tensor,
         denoiser_inputs: DenoiserInput | None = None,
         cache: Dict[str, torch.Tensor] | None = None,
-        context_mask: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if cache is None:
             backbone_output = model._backbone_forward(denoiser_inputs)
@@ -187,14 +186,10 @@ class AncestralSampler(Sampler):
                 backbone_output, "logits"
             ):
                 backbone_output = backbone_output.logits
-            log_x_theta = model._forward(
+            log_x_theta = model._forward_inference(
                 backbone_output,
                 denoiser_inputs,
             )  # should be the log(x_\theta) with the shape of (B, Seq, Vocab)
-            # assume that we have batch_size = 1
-            if context_mask is not None:
-                log_x_theta = log_x_theta[~context_mask.bool()]
-
             x_theta = log_x_theta.exp()
             x_theta = self._logit_transform(x_theta)
         else:
@@ -229,16 +224,23 @@ class AncestralSampler(Sampler):
         dt = (1 - eps) / num_steps
         pbar = tqdm(range(num_steps), desc="Sampling", leave=False)
         NFEs = 0
-        cache = None
-        context_mask = None
+        cache, context_mask = None, None
+
+        # for unconditional generation, always start with bos
         if context is None or context.shape[1] == 0:
-            xt[:, 0] = model.bos_token_id
-        if context is not None:
-            full_seq_len = context.shape[1] + max_seq_len
-            context_mask = torch.zeros((batch_size, full_seq_len), device=device)
-            context_mask[:, : context.shape[1]] = 1
-            if self.config.shift_logits:
-                context_mask = context_mask[:, :-1]
+            context = torch.full(
+                (batch_size, 1),
+                model.bos_token_id,
+                dtype=torch.long,
+                device=device,
+            )
+        full_seq_len = context.shape[1] + max_seq_len
+        # indicates which logits are used for sampling
+        context_mask = torch.zeros((batch_size, full_seq_len), device=device)
+        context_mask[:, : context.shape[1]] = 1
+        if self.config.shift_logits:
+            context_mask = context_mask[:, 1:]
+
         for i in pbar:
             t = timesteps[i]
             if cache is None:
@@ -248,15 +250,22 @@ class AncestralSampler(Sampler):
             alpha_s, _ = model.noise_schedule(t - dt)
             alpha_t = alpha_t[None, None, None]
             alpha_s = alpha_s[None, None, None]
-            # prepare backbone inputs
+            # pass in context and xt to model
             input_ids = xt
             if context is not None:
                 input_ids = torch.cat((context, input_ids), dim=1)
+            if self.config.shift_logits:
+                # left-shift the input_ids
+                input_ids = input_ids[:, :-1]
+            # TODO handling pads?
             attention_mask = (
                 torch.ones_like(input_ids, dtype=torch.float) if cache is None else None
             )
-            denoiser_inputs = DenoiserInput(
-                xt=input_ids, attention_mask=attention_mask, alpha_t=alpha_t
+            denoiser_inputs = model._prepare_inputs_inference(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                context_mask=context_mask,
+                t=t,
             )
             q_xs, cache = self._generate_unconditional(
                 model=model,
@@ -264,16 +273,18 @@ class AncestralSampler(Sampler):
                 alpha_s=alpha_s,
                 denoiser_inputs=denoiser_inputs,
                 cache=cache,
-                context_mask=context_mask,
             )
             xs = self._sample_categorical(q_xs)
+            if self.config.shift_logits:
+                # apply carry-over for last token
+                # (last token predicts a token not in the context)
+                unmasked_last = xt[:, -1] != model.mask_token_id
+                xs[:, -1][unmasked_last] = xt[:, -1][unmasked_last]
             pbar.set_postfix(
                 NFEs=NFEs,
                 prob_check=(q_xs.sum() / xt.numel()).item(),
                 nan_check=bool(q_xs.isnan().sum() > 0),
             )
-            if self.config.shift_logits:
-                xs = torch.cat((xt[:, 0:1], xs), dim=1)
             if not torch.allclose(xs, xt) or not disable_cache:
                 cache = None
             xt = xs
