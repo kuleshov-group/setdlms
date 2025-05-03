@@ -369,19 +369,6 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             if encoder_hidden_states is not None
             else hidden_states
         )
-        position_ids = (
-            torch.cat(
-                (
-                    torch.arange(encoder_hidden_states.shape[1]).to(
-                        position_ids.device
-                    )[None, :],
-                    position_ids,
-                ),
-                dim=-1,
-            )
-            if encoder_hidden_states is not None
-            else position_ids
-        )
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
