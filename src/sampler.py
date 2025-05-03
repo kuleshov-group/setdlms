@@ -17,6 +17,7 @@ class SamplerConfig(OrderedDict):
     max_length: int = 512
     block_size: int = 512
     top_p: float = 0.9
+    pad_context: bool = False
     first_hitting: bool = False
     low_confidence_remasking: bool = False
     disable_cache: bool = False
@@ -201,9 +202,12 @@ class AncestralSampler(Sampler):
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if cache is None:
-            # pad context with masks to match the training context (improves quality)
+            # pad context with masks to match the training context (improves mdlm quality)
             pad_len = 0
-            if denoiser_inputs.xt.shape[-1] < model.config.length:
+            if (
+                self.config.pad_context
+                and denoiser_inputs.xt.shape[-1] < model.config.length
+            ):
                 # pad with masks
                 pad_len = model.config.length - denoiser_inputs.xt.shape[-1]
                 pad = torch.full(
@@ -212,14 +216,18 @@ class AncestralSampler(Sampler):
                     dtype=denoiser_inputs.xt.dtype,
                     device=denoiser_inputs.xt.device,
                 )
-                denoiser_inputs.xt = torch.cat(
-                    (denoiser_inputs.xt, pad), dim=-1
-                )
+                denoiser_inputs.xt = torch.cat((denoiser_inputs.xt, pad), dim=-1)
+                denoiser_inputs.position_ids = torch.arange(
+                    denoiser_inputs.xt.shape[-1], device=denoiser_inputs.xt.device
+                )[None, :]
             backbone_output = model._backbone_forward(denoiser_inputs)
             # remove padding
             if pad_len > 0:
                 backbone_output = backbone_output[:, :-pad_len]
                 denoiser_inputs.xt = denoiser_inputs.xt[:, :-pad_len]
+                denoiser_inputs.position_ids = torch.arange(
+                    denoiser_inputs.xt.shape[-1], device=denoiser_inputs.xt.device
+                )[None, :]
             if isinstance(backbone_output, ModelOutput) and hasattr(
                 backbone_output, "logits"
             ):
@@ -237,7 +245,7 @@ class AncestralSampler(Sampler):
         )
         cache = {"x_theta": x_theta}
         return q_xs, cache
-    
+
     def _maybe_remask(
         self,
         xs: torch.Tensor,

@@ -26,8 +26,6 @@ class LlamaAsEncoderDecoder(nn.Module):
         pretrained_model_name_or_path: str,
         block_size: int,
         max_length: int,
-        n_encoder_layers: int = 1,
-        n_decoder_layers: int = 1,
         keep_every_n_encoder_layers: int = 1,
         keep_every_n_decoder_layers: int = 1,
         attn_backend: str = "sdpa",
@@ -96,25 +94,17 @@ class LlamaAsEncoderDecoder(nn.Module):
             )
 
         # delete layers from encoder / decoder
-        max_encoder_layers = n_encoder_layers * keep_every_n_encoder_layers
         if keep_every_n_encoder_layers < len(self.encoder.model.layers):
             encoder_layers_post_surgery = []
-            for i, encoder_layer in enumerate(
-                self.encoder.model.layers[:max_encoder_layers]
-            ):
+            for i, encoder_layer in enumerate(self.encoder.model.layers):
                 if i % keep_every_n_encoder_layers == 0:
                     encoder_layers_post_surgery.append(encoder_layer)
             self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
         del self.encoder.lm_head
 
-        max_decoder_layers = n_decoder_layers * keep_every_n_decoder_layers
         if keep_every_n_decoder_layers < len(self.decoder.model.layers):
             decoder_layers_post_surgery = []
-            for i, decoder_layer in enumerate(
-                self.decoder.model.layers[
-                    max_encoder_layers : max_encoder_layers + max_decoder_layers
-                ]
-            ):
+            for i, decoder_layer in enumerate(self.decoder.model.layers):
                 if i % keep_every_n_decoder_layers == 0:
                     decoder_layers_post_surgery.append(decoder_layer)
             self.decoder.model.layers = nn.ModuleList(decoder_layers_post_surgery)
@@ -177,6 +167,7 @@ class LlamaAsEncoderDecoder(nn.Module):
 
         # Run decoder with xattn to clean tokens
         decoder_hidden_states = self.encoder.model.embed_tokens(input_ids)
+
         if position_ids is None:
             position_ids = torch.arange(
                 input_ids.shape[1], device=input_ids.device

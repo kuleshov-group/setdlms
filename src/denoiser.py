@@ -1139,6 +1139,35 @@ class BD3LM(MDLM):
                 },
             )
 
+    def _forward_inference(
+        self, backbone_output: torch.Tensor, denoiser_inputs: DenoiserInput, **kwargs
+    ) -> torch.Tensor:
+        # Zero-mask probability
+        mask = (
+            torch.arange(backbone_output.shape[-1], device=backbone_output.device)
+            == self.mask_token_id
+        ).view(1, 1, -1)  # unsqueeze for broadcast to (batch, seq_len, vocab_size)
+        log_probs = torch.where(
+            mask, backbone_output + self.neg_infinity, backbone_output
+        )
+        log_probs = log_probs - torch.logsumexp(log_probs, dim=-1, keepdim=True)
+        # Copy-over unmasked: For the log_probs of the unmasked tokens, set all values
+        # to -infinity except for the indices corresponding to
+        # the unmasked tokens.
+        xt = denoiser_inputs.xt
+        if self.config.shift_logits:
+            # only apply carry-over for tokens except the last
+            # (the last token predicts a token not in the context)
+            xt = F.pad(xt[..., 1:], (0, 1), value=self.mask_token_id)
+        unmasked_indices = xt != self.mask_token_id
+        log_probs[unmasked_indices] = self.neg_infinity
+        log_probs[unmasked_indices, xt[unmasked_indices]] = 0
+        if self.config.backbone_is_decoder_only:
+            log_probs = log_probs[~denoiser_inputs.context_mask.bool()].view(
+                log_probs.shape[0], -1, log_probs.shape[-1]
+            )
+        return log_probs
+
 
 # TODO
 # class UDLM(D3PM):
