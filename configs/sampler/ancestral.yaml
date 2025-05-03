@@ -6,7 +6,7 @@ config:
   max_length: 512
   block_size: 512
   top_p: 0.9
-  first_hitting: false
+  first_hitting: true
   disable_cache: false
   kv_caching: false
   shift_logits: ${model.config.shift_logits}
