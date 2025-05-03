@@ -18,6 +18,7 @@ class SamplerConfig(OrderedDict):
     block_size: int = 512
     top_p: float = 0.9
     first_hitting: bool = False
+    low_confidence_remasking: bool = False
     disable_cache: bool = False
     kv_caching: bool = False
     shift_logits: bool = False
@@ -200,7 +201,25 @@ class AncestralSampler(Sampler):
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if cache is None:
+            # pad context with masks to match the training context (improves quality)
+            pad_len = 0
+            if denoiser_inputs.xt.shape[-1] < model.config.length:
+                # pad with masks
+                pad_len = model.config.length - denoiser_inputs.xt.shape[-1]
+                pad = torch.full(
+                    (denoiser_inputs.xt.shape[0], pad_len),
+                    model.mask_token_id,
+                    dtype=denoiser_inputs.xt.dtype,
+                    device=denoiser_inputs.xt.device,
+                )
+                denoiser_inputs.xt = torch.cat(
+                    (denoiser_inputs.xt, pad), dim=-1
+                )
             backbone_output = model._backbone_forward(denoiser_inputs)
+            # remove padding
+            if pad_len > 0:
+                backbone_output = backbone_output[:, :-pad_len]
+                denoiser_inputs.xt = denoiser_inputs.xt[:, :-pad_len]
             if isinstance(backbone_output, ModelOutput) and hasattr(
                 backbone_output, "logits"
             ):
@@ -218,43 +237,66 @@ class AncestralSampler(Sampler):
         )
         cache = {"x_theta": x_theta}
         return q_xs, cache
-
-    def _logit_transform(
-        self, logits: torch.Tensor, xt: torch.Tensor, mask_token_id: int = None
+    
+    def _maybe_remask(
+        self,
+        xs: torch.Tensor,
+        q_xs: torch.Tensor,
+        xt: torch.Tensor,
+        mask_token_id: int,
     ) -> torch.Tensor:
-        logits = super()._logit_transform(logits)
+        """
+        Remask the sampled sequence based on different strategies.
+        Args:
+            xs (torch.Tensor): Sampled sequence.
+            q_xs (torch.Tensor): Posterior distribution.
+            xt (torch.Tensor): Masked sequence.
+            mask_token_id (int): Mask token ID.
+        Returns:
+            torch.Tensor: Remasked tokens.
+        """
         if self.config.first_hitting:
-            logits = self._first_hitting_remask(
-                logits=logits, xt=xt, mask_token_id=mask_token_id
-            )
-        return logits
+            xs = self._first_hitting_remask(xs, q_xs, xt, mask_token_id)
+        return xs
 
     def _first_hitting_remask(
-        self, logits: torch.Tensor, xt: torch.Tensor, mask_token_id: int
+        self,
+        xs: torch.Tensor,
+        q_xs: torch.Tensor,
+        xt: torch.Tensor,
+        mask_token_id: int,
+        **kwargs: Any,
     ) -> torch.Tensor:
         """
         First-hitting sampler that analytically computes the next unmasking timestep
         Args:
-            logits (torch.Tensor): Logits
+            xs (torch.Tensor): Sampled sequence
             xt (torch.Tensor): Masked sequence
             mask_token_id (int): Mask token ID
         Returns:
-            torch.Tensor: Logits adjusted for remasking.
+            torch.Tensor: Samples adjusted for remasking.
         """
         # TODO assumes batch size 1
 
         # uniformly select an index (among masked tokens)
         num_masked = (xt == mask_token_id).sum(-1)
-        ind = torch.randint(0, num_masked.item(), (logits.shape[0],))
-        ind = (xt == mask_token_id).nonzero()[ind, 1]
+
+        if self.config.low_confidence_remasking:
+            # select the index with the highest confidence
+            xs_q = q_xs.gather(-1, xs[..., None]).squeeze(-1)
+            xs_q[xt != mask_token_id] = 0
+            ind = xs_q.argmax(dim=-1)
+        else:
+            ind = torch.randint(0, num_masked.item(), (xs.shape[0],))
+            ind = (xt == mask_token_id).nonzero()[ind, 1]
+
         unmask_flag = torch.arange(xt.shape[-1], device=xt.device) == ind[None, :]
         # if a token is already unmasked, don't apply remasking
         unmask_flag = unmask_flag | (xt != mask_token_id)
 
         # remask tokens not selected
-        logits[~unmask_flag] = 0.0
-        logits[:, :, mask_token_id] = ~unmask_flag
-        return logits
+        xs[~unmask_flag] = mask_token_id
+        return xs
 
     # def _cache_kvs(self, model: torch.nn.Module, xt: torch.Tensor):
 
@@ -356,6 +398,7 @@ class AncestralSampler(Sampler):
                 mask_token_id=model.mask_token_id,
             )
             xs = self._sample_categorical(q_xs)
+            xs = self._maybe_remask(xs, q_xs, xt, model.mask_token_id)
             if self.config.shift_logits:
                 # apply carry-over for last token
                 # (last token predicts a token not in the context)

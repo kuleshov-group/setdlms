@@ -5,8 +5,9 @@ config:
   batch_size: 1
   max_length: 512
   block_size: 512
-  top_p: 0.9
+  top_p: 1.0
   first_hitting: true
+  low_confidence_remasking: true
   disable_cache: false
   kv_caching: false
   shift_logits: ${model.config.shift_logits}
