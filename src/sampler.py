@@ -40,12 +40,28 @@ class Sampler(ABC):
     ) -> torch.Tensor:
         pass
 
+    def _sample_timesteps(
+        self, eps: float, num_steps: int, device: str | None = None, **kwargs: Any
+    ) -> torch.Tensor:
+        """
+        Sample timesteps for the diffusion process.
+        Args:
+            eps (float): Small value to avoid division by zero.
+            num_steps (int): Number of timesteps to sample.
+            device (str | None): Device to use for sampling.
+        Returns:
+            torch.Tensor: Sampled timesteps.
+        """
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        return torch.linspace(1, eps, num_steps + 1, device=device)
+
     def _sample_categorical(self, categorical_probs):
         gumbel_norm = 1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()
         samples = (categorical_probs / gumbel_norm).argmax(dim=-1)
         return samples
 
-    def _logit_transform(self, logits: torch.Tensor) -> torch.Tensor:
+    def _logit_transform(self, logits: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """
         Transform logits using various techniques.
         Args:
@@ -55,7 +71,6 @@ class Sampler(ABC):
         """
         if self.config.top_p < 1.0:
             logits = self._nucleus_sample(logits)
-        # TODO: highest-confidence remasking, etc
         return logits
 
     def _nucleus_sample(self, logits: torch.Tensor) -> torch.Tensor:
@@ -148,6 +163,9 @@ class AncestralSampler(Sampler):
             alpha_t (torch.Tensor): Noise schedule parameter at time t (B, 1, 1).
             alpha_s (torch.Tensor): Noise schedule parameter at time s (B, 1, 1).
         """
+        if self.config.first_hitting:
+            return x
+
         if model.diffusion_type == "absorbing":
             q_xs = x * (alpha_s - alpha_t)
             q_xs[..., model.mask_token_id] = 1 - alpha_s[..., 0]
@@ -179,6 +197,7 @@ class AncestralSampler(Sampler):
         alpha_s: torch.Tensor,
         denoiser_inputs: DenoiserInput | None = None,
         cache: Dict[str, torch.Tensor] | None = None,
+        **kwargs: Any,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if cache is None:
             backbone_output = model._backbone_forward(denoiser_inputs)
@@ -191,7 +210,7 @@ class AncestralSampler(Sampler):
                 denoiser_inputs,
             )  # should be the log(x_\theta) with the shape of (B, Seq, Vocab)
             x_theta = log_x_theta.exp()
-            x_theta = self._logit_transform(x_theta)
+            x_theta = self._logit_transform(x_theta, **kwargs)
         else:
             x_theta = cache["x_theta"]
         q_xs = self._compute_posterior(
@@ -200,7 +219,67 @@ class AncestralSampler(Sampler):
         cache = {"x_theta": x_theta}
         return q_xs, cache
 
+    def _logit_transform(
+        self, logits: torch.Tensor, xt: torch.Tensor, mask_token_id: int = None
+    ) -> torch.Tensor:
+        logits = super()._logit_transform(logits)
+        if self.config.first_hitting:
+            logits = self._first_hitting_remask(
+                logits=logits, xt=xt, mask_token_id=mask_token_id
+            )
+        return logits
+
+    def _first_hitting_remask(
+        self, logits: torch.Tensor, xt: torch.Tensor, mask_token_id: int
+    ) -> torch.Tensor:
+        """
+        First-hitting sampler that analytically computes the next unmasking timestep
+        Args:
+            logits (torch.Tensor): Logits
+            xt (torch.Tensor): Masked sequence
+            mask_token_id (int): Mask token ID
+        Returns:
+            torch.Tensor: Logits adjusted for remasking.
+        """
+        # TODO assumes batch size 1
+
+        # uniformly select an index (among masked tokens)
+        num_masked = (xt == mask_token_id).sum(-1)
+        ind = torch.randint(0, num_masked.item(), (logits.shape[0],))
+        ind = (xt == mask_token_id).nonzero()[ind, 1]
+        unmask_flag = torch.arange(xt.shape[-1], device=xt.device) == ind[:, None]
+        # if a token is already unmasked, don't apply remasking
+        unmask_flag = unmask_flag | (xt != mask_token_id)
+
+        # remask tokens not selected
+        logits[~unmask_flag] = 0.0
+        logits[:, :, mask_token_id] = ~unmask_flag
+        return logits
+
     # def _cache_kvs(self, model: torch.nn.Module, xt: torch.Tensor):
+
+    def _sample_timesteps(
+        self,
+        eps: float,
+        num_steps: int,
+        batch_size: int,
+        max_seq_len: int,
+        device: str | None = None,
+    ) -> torch.Tensor:
+        """
+        Sample timesteps for the diffusion process.
+        Returns:
+            torch.Tensor: Sampled timesteps.
+        """
+        if self.config.first_hitting:
+            # TODO: assumes batch size 1
+            timesteps = torch.tensor([1.0])
+            for i in range(max_seq_len, 0, -1):
+                u = torch.rand(batch_size)
+                next_t = timesteps[-1] * u ** (1 / i)
+                timesteps = torch.cat((timesteps, next_t), dim=0)
+            return timesteps[1:].to(device)
+        super()._sample_timesteps(eps, num_steps, device=device)
 
     def __call__(
         self,
@@ -220,9 +299,15 @@ class AncestralSampler(Sampler):
             else ("cuda" if torch.cuda.is_available() else "cpu")
         )
         xt = self._sample_prior(model, batch_size, max_seq_len, device=device)
-        timesteps = torch.linspace(1, eps, num_steps + 1, device=device)
-        dt = (1 - eps) / num_steps
-        pbar = tqdm(range(num_steps), desc="Sampling", leave=False)
+        timesteps = self._sample_timesteps(
+            eps,
+            num_steps,
+            batch_size=batch_size,
+            max_seq_len=max_seq_len,
+            device=device,
+        )
+        dt = (1 - eps) / len(timesteps)
+        pbar = tqdm(range(len(timesteps)), desc="Sampling", leave=False)
         NFEs = 0
         cache, context_mask = None, None
 
@@ -273,6 +358,8 @@ class AncestralSampler(Sampler):
                 alpha_s=alpha_s,
                 denoiser_inputs=denoiser_inputs,
                 cache=cache,
+                xt=xt,
+                mask_token_id=model.mask_token_id,
             )
             xs = self._sample_categorical(q_xs)
             if self.config.shift_logits:
