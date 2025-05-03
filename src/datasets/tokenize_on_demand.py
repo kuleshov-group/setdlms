@@ -18,7 +18,7 @@ class GSM8KDataset(Dataset):
         padding: bool = False,
         add_special_tokens: bool = True,
         question_prompt_text: str
-        | None = None,  # "Please reason step by step, and put your final answer within \\boxed{}. ",
+        | None = "Please reason step by step, and put your final answer within \\boxed{}. ",
         answer_prompt_text: str | None = "Answer: ",
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],

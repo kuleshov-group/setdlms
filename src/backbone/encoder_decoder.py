@@ -165,7 +165,9 @@ class LlamaAsEncoderDecoder(nn.Module):
                 encoder_input_ids.shape[-1], device=encoder_input_ids.device
             ).unsqueeze(0)
             if encoder_attention_mask is not None:
-                encoder_attention_mask[:, None, ...].to(self.encoder.dtype)
+                encoder_attention_mask = encoder_attention_mask[:, None, ...].to(
+                    self.encoder.dtype
+                )
             encoder_hidden_state = self.encoder(
                 input_ids=encoder_input_ids,
                 attention_mask=encoder_attention_mask,

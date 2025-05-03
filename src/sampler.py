@@ -247,7 +247,7 @@ class AncestralSampler(Sampler):
         num_masked = (xt == mask_token_id).sum(-1)
         ind = torch.randint(0, num_masked.item(), (logits.shape[0],))
         ind = (xt == mask_token_id).nonzero()[ind, 1]
-        unmask_flag = torch.arange(xt.shape[-1], device=xt.device) == ind[:, None]
+        unmask_flag = torch.arange(xt.shape[-1], device=xt.device) == ind[None, :]
         # if a token is already unmasked, don't apply remasking
         unmask_flag = unmask_flag | (xt != mask_token_id)
 
@@ -279,9 +279,9 @@ class AncestralSampler(Sampler):
                 next_t = timesteps[-1] * u ** (1 / i)
                 timesteps = torch.cat((timesteps, next_t), dim=0)
             return timesteps[1:].to(device)
-        super()._sample_timesteps(eps, num_steps, device=device)
+        return super()._sample_timesteps(eps, num_steps, device=device)
 
-    def __call__(
+    def _sampling_loop(
         self,
         model: torch.nn.Module,
         batch_size: int,
@@ -293,11 +293,6 @@ class AncestralSampler(Sampler):
         context: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        device = (
-            device
-            if device is not None
-            else ("cuda" if torch.cuda.is_available() else "cpu")
-        )
         xt = self._sample_prior(model, batch_size, max_seq_len, device=device)
         timesteps = self._sample_timesteps(
             eps,
@@ -342,7 +337,6 @@ class AncestralSampler(Sampler):
             if self.config.shift_logits:
                 # left-shift the input_ids
                 input_ids = input_ids[:, :-1]
-            # TODO handling pads?
             attention_mask = (
                 torch.ones_like(input_ids, dtype=torch.float) if cache is None else None
             )
@@ -379,3 +373,55 @@ class AncestralSampler(Sampler):
         # if self.config.kv_caching:
         #     self._cache_kvs(model, xt)
         return xt, NFEs
+
+    def __call__(
+        self,
+        model: torch.nn.Module,
+        batch_size: int,
+        max_seq_len: int,
+        num_steps: int,
+        eps: float = 1e-5,
+        device: str | None = None,
+        disable_cache: bool = False,
+        context: torch.Tensor | None = None,
+        block_size: int | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        device = (
+            device
+            if device is not None
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        block_size = max_seq_len if block_size is None else block_size
+        max_blocks = max_seq_len // block_size
+        if context is not None:
+            accumulated_samples = context.to(device)
+        else:
+            accumulated_samples = torch.empty(
+                (batch_size, 0), dtype=torch.int64, device=device
+            )
+        total_NFEs = 0
+
+        pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)
+        for _ in pbar:
+            # pass in context somehow
+            sampled_block, block_NFEs = self._sampling_loop(
+                model=model,
+                batch_size=batch_size,
+                max_seq_len=block_size,
+                eps=eps,
+                device=device,
+                disable_cache=disable_cache,
+                num_steps=num_steps,
+                context=accumulated_samples,
+            )
+
+            accumulated_samples = torch.cat(
+                [accumulated_samples, sampled_block], dim=-1
+            )
+            total_NFEs += block_NFEs
+
+            # TODO: specify a delimiter token for ending sample generation (for example EOS or \boxed{})
+
+        # TODO after finishing this, set up notebook for testing on gsm8k
+        return accumulated_samples, total_NFEs

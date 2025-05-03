@@ -15,6 +15,7 @@ class DenoisingCollator:
         max_length: int | None = None,
         pad_to_multiple_of: int | None = None,
         return_tensors: str = "pt",
+        predict_padding: bool = False,
         restricted_t_range: tuple[float, float] | None = None,
         sampling_eps: float = 0.05,
         antithetic_sampling: bool = False,
@@ -29,6 +30,7 @@ class DenoisingCollator:
             pad_to_multiple_of: (Optional: int): if specified,
                 pad sequences to a multiple of this value.
             return_tensors: (str; default: "pt"): Format of the returned tensors.
+            predict_padding (bool; default: False): Whether to predict padding tokens.
             restricted_t_range (Optional: tuple[min: float, max: float]): If specified,
                 sampling of timestep (t) sampling is restricted to [min, max] range,
                 as opposed to [0, 1].
@@ -52,6 +54,7 @@ class DenoisingCollator:
                 pad_to_multiple_of=pad_to_multiple_of,
                 return_tensors=return_tensors,
             )
+        self.predict_padding = predict_padding
         self.restricted_t_range = restricted_t_range
         self.sampling_eps = sampling_eps
         self.antithetic_sampling = antithetic_sampling
@@ -92,6 +95,10 @@ class DenoisingCollator:
             )
             batch.update({"context_mask": context_mask})
         batch.update({"t": t})
+
+        # Override the attention mask to attend to all tokens (including [PAD])
+        if self.predict_padding:
+            batch["attention_mask"] = torch.ones_like(batch["input_ids"])
         return batch
 
 

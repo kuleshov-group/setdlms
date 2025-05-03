@@ -11,7 +11,6 @@ from typing import Any, Dict, Literal, Optional
 import hydra.utils
 import torch
 import torch.nn.functional as F
-from tqdm import tqdm
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
 
@@ -341,7 +340,7 @@ class Denoiser(ABC, PreTrainedModel):
         eps: float = 1e-5,
         device: str | None = None,
         disable_cache: bool = False,
-        input_ids: torch.Tensor | None = None,
+        prompt: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generates sample from denoising model.
@@ -358,7 +357,7 @@ class Denoiser(ABC, PreTrainedModel):
                 Defaults to None, which will select cuda (if available).
             disable_cache (bool, optional): Whether to disable caching.
                 Defaults to False.
-            input_ids (torch.Tensor, optional): Optional input tensor
+            prompt (torch.Tensor, optional): Optional prompt tensor
         Returns:
             torch.Tensor: Generated samples of token_ids (B, L).
         """
@@ -617,7 +616,13 @@ class D3PM(Denoiser):
         attention_mask = torch.ones_like(input_ids, dtype=torch.float)
         alpha_t, _ = self.noise_schedule(t)
         return DenoiserInput(
-            xt=input_ids, attention_mask=attention_mask, alpha_t=alpha_t
+            xt=input_ids,
+            attention_mask=attention_mask,
+            context_mask=context_mask,
+            tokens_mask=attention_mask * (1 - context_mask),
+            t=t,
+            alpha_t=alpha_t,
+            past_key_values=past_key_values,
         )
 
     def _compute_loss(
@@ -692,18 +697,23 @@ class D3PM(Denoiser):
         eps: float = 1e-5,
         device: str | None = None,
         disable_cache: bool = False,
-        input_ids: torch.Tensor | None = None,
+        prompt: torch.Tensor | None = None,
+        block_size: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         samples, NFEs = self.sampler(
             model=self,
             batch_size=batch_size,
-            max_seq_len=self.config.block_size,
+            max_seq_len=max_seq_len,
             eps=eps,
             device=device,
             disable_cache=disable_cache,
             num_steps=num_steps,
+            context=prompt,
+            block_size=block_size,
         )
+        if prompt is not None:
+            samples = torch.cat([prompt, samples], dim=1)
         return samples, NFEs
 
 
@@ -775,6 +785,9 @@ class MDLM(D3PM):
         unmasked_indices = xt != self.mask_token_id
         log_probs[unmasked_indices] = self.neg_infinity
         log_probs[unmasked_indices, xt[unmasked_indices]] = 0
+        log_probs = log_probs[~denoiser_inputs.context_mask.bool()].view(
+            log_probs.shape[0], -1, log_probs.shape[-1]
+        )
         return log_probs
 
     def _compute_loss(
@@ -1111,6 +1124,7 @@ class BD3LM(MDLM):
             return DenoiserInput(
                 xt=xt,
                 x0=x0,
+                context_mask=context_mask,
                 attention_mask=decoder_attention_mask,
                 tokens_mask=attention_mask,
                 t=t,
@@ -1124,76 +1138,6 @@ class BD3LM(MDLM):
                     ).expand((xt.shape[0], -1)),
                 },
             )
-
-    def generate(
-        self,
-        batch_size: int,
-        max_seq_len: int,
-        num_steps: int,
-        eps: float = 1e-5,
-        device: str | None = None,
-        disable_cache: bool = False,
-        prompt: torch.Tensor | None = None,
-        **kwargs: Any,
-    ) -> torch.Tensor:
-        """Generates sample from denoising model.
-        # TODO: will need to enable infilling / starting from partially noised sequences
-
-        Args:
-            batch_size (int): Batch size.
-            max_seq_len (int): Maximum sequence length.
-            num_steps (int): Number of sampling steps.
-            nucleus_p (float, optional): Nucleus sampling probability.
-                Defaults to 1.0 (i.e., no nucleus sampling)
-            eps (float, optional): Minimum value for t. Defaults to 1e-5.
-            device (str, optional): Device to use for computation.
-                Defaults to None, which will select cuda (if available).
-            disable_cache (bool, optional): Whether to disable caching.
-                Defaults to False.
-            prompt (torch.Tensor, optional): Optional input tensor
-        Returns:
-            torch.Tensor: Generated samples of token_ids (B, L).
-        """
-        device = (
-            device
-            if device is not None
-            else ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-
-        max_blocks = max_seq_len // self.config.block_size
-        if prompt is not None:
-            accumulated_samples = prompt.to(device)
-        else:
-            accumulated_samples = torch.empty(
-                (batch_size, 0), dtype=torch.int64, device=device
-            )
-        total_NFEs = 0
-
-        pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)
-        for _ in pbar:
-            # TODO: call an external sampler? (mdlm/remdm/llada/...)
-
-            # pass in context somehow
-            sampled_block, block_NFEs = self.sampler(
-                model=self,
-                batch_size=batch_size,
-                max_seq_len=self.config.block_size,
-                eps=eps,
-                device=device,
-                disable_cache=disable_cache,
-                num_steps=num_steps,
-                context=accumulated_samples,
-            )
-
-            accumulated_samples = torch.cat(
-                [accumulated_samples, sampled_block], dim=-1
-            )
-            total_NFEs += block_NFEs
-
-            # TODO: specify a delimiter token for ending sample generation (for example EOS or \boxed{})
-
-        # TODO after finishing this, set up notebook for testing on gsm8k
-        return accumulated_samples, total_NFEs
 
 
 # TODO
