@@ -25,11 +25,13 @@ except ImportError:
     BlockMask, create_block_mask, flex_attention = None, None, None
 
 # Add the local directory (enables hydra.utils.instantiate for local imports)
-sys.path.append(str(Path(__file__).resolve().parent))
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.append(str(Path(__file__).resolve().parent))
 
 # Local imports not used, but added here so that HF push_to_hub adds them to model repo
 # noinspection PyUnresolvedReferences
 from src.backbone.dit import DIT  # noqa: F401
+from src.backbone.encoder_decoder import LlamaAsEncoderDecoder  # noqa: F401
 from src.noise_schedule.noise_schedules import (  # noqa: F401
     CosineNoise,
     ExponentialNoise,
@@ -310,6 +312,7 @@ class Denoiser(ABC, PreTrainedModel):
             nlls = loss_and_nll.nlls
         else:
             loss, nlls = None, None
+
         return DenoiserOutput(
             denoiser_output=denoiser_output,
             logits=backbone_output,
