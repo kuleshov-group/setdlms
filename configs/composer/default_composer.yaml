@@ -3,6 +3,7 @@ defaults:
   - trainer: trainer
   - algorithms:
     - ema
+    - gradient_clipping
 #    - low_precision_layer_norm
   - callbacks:
       - hf_compatible_checkpointing

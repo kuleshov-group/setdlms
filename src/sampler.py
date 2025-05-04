@@ -19,6 +19,7 @@ class SamplerConfig(OrderedDict):
     block_size: int = 512
     top_p: float = 0.9
     pad_context: bool = False
+    greedy: bool = False
     first_hitting: bool = False
     low_confidence_remasking: bool = False
     disable_cache: bool = False
@@ -60,6 +61,8 @@ class Sampler(ABC):
         return torch.linspace(1, eps, num_steps + 1, device=device)
 
     def _sample_categorical(self, categorical_probs):
+        if self.config.greedy:
+            return categorical_probs.argmax(dim=-1)
         gumbel_norm = 1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()
         samples = (categorical_probs / gumbel_norm).argmax(dim=-1)
         return samples

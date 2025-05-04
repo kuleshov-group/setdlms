@@ -1,0 +1,4 @@
+gradient_clipping:
+  _target_: composer.algorithms.GradientClipping
+  clipping_type: norm # norm, adaptive, value
+  clipping_threshold: 1.0

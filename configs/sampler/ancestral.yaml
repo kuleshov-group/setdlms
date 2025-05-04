@@ -5,8 +5,9 @@ config:
   batch_size: 1
   max_length: 512
   block_size: 512
-  top_p: 0.85
+  top_p: 1.0
   pad_context: false
+  greedy: true
   first_hitting: true
   low_confidence_remasking: true
   disable_cache: false
