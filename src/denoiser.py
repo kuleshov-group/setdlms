@@ -11,7 +11,7 @@ from typing import Any, Dict, Literal, Optional
 import hydra.utils
 import torch
 import torch.nn.functional as F
-from transformers import PretrainedConfig, PreTrainedModel
+from transformers import AutoTokenizer, PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
 
 try:
@@ -157,6 +157,10 @@ class Denoiser(ABC, PreTrainedModel):
         self.bos_token_id = config.bos_token_id
         self.eos_token_id = config.eos_token_id
         self.backbone = hydra.utils.instantiate(config.backbone_config)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            config.tokenizer_name,
+            trust_remote_code=True,
+        )
         self.noise_schedule = (
             hydra.utils.instantiate(config.noise_config)
             if config.noise_config is not None
@@ -248,14 +252,12 @@ class Denoiser(ABC, PreTrainedModel):
                 denoiser_inputs.xt,
                 attention_mask=denoiser_inputs.attention_mask,
                 noise=denoiser_inputs.alpha_t,
-                past_key_values=denoiser_inputs.past_key_values,
                 **denoiser_inputs.backbone_kwargs,
                 **kwargs,
             )
         return self.backbone(
             denoiser_inputs.xt,
             attention_mask=denoiser_inputs.attention_mask,
-            past_key_values=denoiser_inputs.past_key_values,
             **denoiser_inputs.backbone_kwargs,
             **kwargs,
         )
@@ -712,8 +714,6 @@ class D3PM(Denoiser):
             context=prompt,
             block_size=block_size,
         )
-        if prompt is not None:
-            samples = torch.cat([prompt, samples], dim=1)
         return samples, NFEs
 
 
@@ -1105,6 +1105,7 @@ class BD3LM(MDLM):
         xt = input_ids[~context_mask.bool()].view(input_ids.shape[0], -1)
         x0 = input_ids[context_mask.bool()].view(input_ids.shape[0], -1)
         alpha_t, alpha_t_prime = self.noise_schedule(t)
+        attention_mask = torch.ones_like(xt, dtype=torch.float)
         if self.config.backbone_is_decoder_only:
             raise NotImplementedError(
                 "Inference for decoder-only BD3LM is not implemented yet."
@@ -1121,6 +1122,18 @@ class BD3LM(MDLM):
                 self.encoder_static_attention_mask[None, : x0.shape[1], : x0.shape[1]]
             ).to(attention_mask.dtype)
 
+            # TODO encoder activations are APPENDED to decoder activations.. need to fix later
+            position_ids_inference = (
+                torch.cat(
+                    (
+                        torch.arange(x0.shape[1], context_mask.shape[1]),
+                        torch.arange(x0.shape[1]),
+                    )
+                )
+                .to(xt.device)[None, :]
+                .repeat(xt.shape[0], 1)
+            )
+
             return DenoiserInput(
                 xt=xt,
                 x0=x0,
@@ -1133,9 +1146,7 @@ class BD3LM(MDLM):
                 backbone_kwargs={
                     "encoder_input_ids": x0,
                     "encoder_attention_mask": encoder_attention_mask,
-                    "position_ids": torch.arange(
-                        context_mask.shape[1], device=xt.device
-                    ).expand((xt.shape[0], -1)),
+                    "position_ids": position_ids_inference,
                 },
             )
 

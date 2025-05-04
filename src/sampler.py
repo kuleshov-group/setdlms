@@ -5,6 +5,7 @@ from typing import Any, Dict, Tuple
 
 import torch
 from tqdm import tqdm
+from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import ModelOutput
 
 from denoiser import DenoiserInput
@@ -114,6 +115,36 @@ class Sampler(ABC):
         """
         raise NotImplementedError("Sampler is not implemented yet.")
 
+    def _check_stop_condition(
+        self,
+        xs: str,
+        condition_prefix: str | None = None,
+        condition_suffix: str | None = None,
+    ) -> bool:
+        """
+        Check if the stop condition is met.
+        Args:
+            xs (torch.Tensor): Sampled tokens.
+            condition_prefix (str | None): Prefix for the stop condition.
+            condition_suffix (str | None): Suffix for the stop condition.
+        Returns:
+            bool: True if the stop condition is met, False otherwise.
+        """
+        for i in range(len(xs)):
+            # check if the prefix and suffix are in the sampled tokens
+            # ensure that prefix precedes suffix
+            if condition_prefix is not None and condition_prefix not in xs[i]:
+                return False
+            if condition_suffix is not None and condition_suffix not in xs[i]:
+                return False
+            if (
+                condition_prefix is not None
+                and condition_suffix is not None
+                and xs[i].index(condition_prefix) >= xs[i].index(condition_suffix)
+            ):
+                return False
+        return True
+
 
 # TODO
 # class ARSampler(Sampler):
@@ -199,6 +230,7 @@ class AncestralSampler(Sampler):
         alpha_s: torch.Tensor,
         denoiser_inputs: DenoiserInput | None = None,
         cache: Dict[str, torch.Tensor] | None = None,
+        past_key_values: DynamicCache | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if cache is None:
@@ -220,7 +252,9 @@ class AncestralSampler(Sampler):
                 denoiser_inputs.position_ids = torch.arange(
                     denoiser_inputs.xt.shape[-1], device=denoiser_inputs.xt.device
                 )[None, :]
-            backbone_output = model._backbone_forward(denoiser_inputs)
+            backbone_output = model._backbone_forward(
+                denoiser_inputs, past_key_values=past_key_values
+            )
             # remove padding
             if pad_len > 0:
                 backbone_output = backbone_output[:, :-pad_len]
@@ -341,6 +375,7 @@ class AncestralSampler(Sampler):
         device: str | None = None,
         disable_cache: bool = False,
         context: torch.Tensor | None = None,
+        past_key_values: DynamicCache | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         xt = self._sample_prior(model, batch_size, max_seq_len, device=device)
@@ -387,12 +422,8 @@ class AncestralSampler(Sampler):
             if self.config.shift_logits:
                 # left-shift the input_ids
                 input_ids = input_ids[:, :-1]
-            attention_mask = (
-                torch.ones_like(input_ids, dtype=torch.float) if cache is None else None
-            )
             denoiser_inputs = model._prepare_inputs_inference(
                 input_ids=input_ids,
-                attention_mask=attention_mask,
                 context_mask=context_mask,
                 t=t,
             )
@@ -404,6 +435,7 @@ class AncestralSampler(Sampler):
                 cache=cache,
                 xt=xt,
                 mask_token_id=model.mask_token_id,
+                past_key_values=past_key_values,
             )
             xs = self._sample_categorical(q_xs)
             xs = self._maybe_remask(xs, q_xs, xt, model.mask_token_id)
@@ -436,6 +468,8 @@ class AncestralSampler(Sampler):
         disable_cache: bool = False,
         context: torch.Tensor | None = None,
         block_size: int | None = None,
+        condition_prefix: str | None = "\\boxed{",
+        condition_suffix: str | None = "}",
         **kwargs: Any,
     ) -> torch.Tensor:
         device = (
@@ -452,6 +486,18 @@ class AncestralSampler(Sampler):
                 (batch_size, 0), dtype=torch.int64, device=device
             )
         total_NFEs = 0
+        past_key_values = None
+        # cache context
+        if context is not None and self.config.kv_caching:
+            encoder_inputs = model._prepare_inputs_inference(
+                input_ids=context,
+                context_mask=torch.ones_like(context),
+                t=torch.tensor([0.0], device=device),
+            )
+            _, past_key_values = model._backbone_forward(
+                encoder_inputs,
+                use_cache=True,
+            )
 
         pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)
         for _ in pbar:
@@ -465,14 +511,27 @@ class AncestralSampler(Sampler):
                 disable_cache=disable_cache,
                 num_steps=num_steps,
                 context=accumulated_samples,
+                past_key_values=past_key_values,
             )
 
             accumulated_samples = torch.cat(
                 [accumulated_samples, sampled_block], dim=-1
             )
             total_NFEs += block_NFEs
+            print(model.tokenizer.batch_decode(accumulated_samples))
+            if self._check_stop_condition(
+                model.tokenizer.batch_decode(sampled_block),
+                condition_prefix=condition_prefix,
+                condition_suffix=condition_suffix,
+            ):
+                break
 
-            # TODO: specify a delimiter token for ending sample generation (for example EOS or \boxed{})
+        # extra forward pass on clean block to cache kvs
+        if self.config.kv_caching:
+            denoiser_inputs = model._prepare_inputs_inference(input_ids=sampled_block)
+            _, past_key_values = model._backbone_forward(
+                denoiser_inputs, use_cache=True, past_key_values=past_key_values
+            )
 
         # TODO after finishing this, set up notebook for testing on gsm8k
         return accumulated_samples, total_NFEs

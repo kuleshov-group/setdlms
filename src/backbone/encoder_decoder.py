@@ -3,7 +3,7 @@ from typing import Union
 import torch
 from torch import Tensor, nn
 from transformers import AutoConfig
-from transformers.cache_utils import Cache
+from transformers.cache_utils import DynamicCache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.processing_utils import Unpack
 from transformers.utils import logging
@@ -111,6 +111,7 @@ class LlamaAsEncoderDecoder(nn.Module):
         del self.decoder.model.embed_tokens
         self.block_size = block_size
         self.max_length = max_length
+        self.freeze_encoder = freeze_encoder
 
     def forward(
         self,
@@ -118,34 +119,15 @@ class LlamaAsEncoderDecoder(nn.Module):
         attention_mask: Union[Tensor, BlockMask],  # for Decoder
         encoder_input_ids: Tensor | None = None,  # for Encoder
         encoder_attention_mask: Union[Tensor, BlockMask] | None = None,
-        past_key_values: Cache | None = None,
+        past_key_values: DynamicCache | None = None,
         cache_position: torch.LongTensor | None = None,
         use_cache: bool | None = None,
         position_ids: Tensor | None = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tensor:
-        # TODO: not sure how to use this yet...
-        # if use_cache and past_key_values is None:
-        #     past_key_values = DynamicCache()
-        # if cache_position is None:
-        #     past_seen_tokens = (
-        #         past_key_values.get_seq_length() if past_key_values is not None else 0
-        #     )
-        #     cache_position = torch.arange(
-        #         past_seen_tokens,
-        #         past_seen_tokens + inputs_embeds.shape[1],
-        #         device=inputs_embeds.device,
-        #     )
-        # if position_ids is None:
-        #     position_ids = cache_position.unsqueeze(0)
-        #
-        # causal_mask = self.llama._update_causal_mask(
-        #     attention_mask,
-        #     inputs_embeds,
-        #     cache_position,
-        #     past_key_values,
-        #     output_attentions,
-        # )
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache()
+            cache_position = position_ids
 
         # Encode clean tokens
         # encoder_hidden_states = self.llama.model.embed_tokens(encoder_input_ids)
@@ -154,6 +136,8 @@ class LlamaAsEncoderDecoder(nn.Module):
             encoder_position_ids = torch.arange(
                 encoder_input_ids.shape[-1], device=encoder_input_ids.device
             ).unsqueeze(0)
+            if self.freeze_encoder:
+                encoder_attention_mask = None  # must use causal mask
             if encoder_attention_mask is not None:
                 encoder_attention_mask = encoder_attention_mask[:, None, ...].to(
                     self.encoder.dtype
@@ -163,7 +147,14 @@ class LlamaAsEncoderDecoder(nn.Module):
                 attention_mask=encoder_attention_mask,
                 position_ids=encoder_position_ids,
                 output_hidden_states=True,
+                use_cache=use_cache,
             )[-1]
+
+            if input_ids is None or input_ids.shape[1] == 0:
+                # If no input_ids are provided, we only need the encoder hidden states
+                if use_cache:
+                    return encoder_hidden_state, past_key_values
+                return encoder_hidden_state
 
         # Run decoder with xattn to clean tokens
         decoder_hidden_states = self.encoder.model.embed_tokens(input_ids)
@@ -193,11 +184,13 @@ class LlamaAsEncoderDecoder(nn.Module):
                 position_ids=position_ids,
                 past_key_value=past_key_values,
                 output_attentions=False,
-                use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=decoder_position_embeddings,
                 **flash_attn_kwargs,
             )[0]  # [:, : input_ids.shape[1], :]
         # Only keep logits for masked tokens
         decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)
-        return self.decoder.lm_head(decoder_hidden_states)
+        decoded_tokens = self.decoder.lm_head(decoder_hidden_states)
+        if use_cache:
+            return decoded_tokens, past_key_values
+        return decoded_tokens
