@@ -20,28 +20,42 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-BLOCK_SIZE=32
-KEEP_EVERY_N_DECODER_LAYERS=8
-RUN_NAME=gsm8k-qwen3-e2d2-every${KEEP_EVERY_N_DECODER_LAYERS}-bs${BLOCK_SIZE}-freeze_enc-v3
+# Important variables (fix during hyperparam sweep)
+BLOCK_SIZE=32 # 16, 32, 64
+KEEP_EVERY_N_DECODER_LAYERS=8 # 2, 4, 8
+
+# Hyperparameters
+LR=1e-4 # 1e-5, 1e-4, 1e-3
+WARMUP_DURATION=5ba # 0.1, 0.2, 0.3, 0.4, 0.5
+LR_SCHEDULER=constant_with_warmup # constant_with_warmup, linear_decay_with_warmup, cosine_decay_with_warmup
+BATCH_SIZE=128 # 96, 128, 256
+SHIFT_LOGITS=true # true, false
+REINIT_DECODER=false # true, false
+
+TAG=test2
+RUN_NAME=gsm8k-bs${BATCH_SIZE}-block${BLOCK_SIZE}-keep${KEEP_EVERY_N_DECODER_LAYERS}-lr${LR}-warmup${WARMUP_DURATION}-sched${LR_SCHEDULER}-shift${SHIFT_LOGITS}-reinit${REINIT_DECODER}-${TAG}
 
 composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=Qwen/Qwen3-0.6B-Base \
   dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
+  composer.optimizer.lr=${LR} \
+  composer.trainer.eval_interval='1ep' \
+  composer/lr_scheduler=${LR_SCHEDULER} \
+  composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=bd3lm \
   model/backbone@model.config.backbone_config=llama_as_encoder_decoder \
   model.config.length=768 \
   model.config.backbone_config.keep_every_n_encoder_layers=1 \
   model.config.backbone_config.keep_every_n_decoder_layers=${KEEP_EVERY_N_DECODER_LAYERS} \
   model.config.backbone_config.freeze_encoder=true \
-  model.config.shift_logits=true \
-  training.global_batch_size=128 \
-  training.grad_accum=$(( 128 / SLURM_GPUS_ON_NODE )) \
+  model.config.backbone_config.reinit_decoder=${REINIT_DECODER} \
+  model.config.shift_logits=${SHIFT_LOGITS} \
+  training.global_batch_size=${BATCH_SIZE} \
+  training.grad_accum=$(( BATCH_SIZE / SLURM_GPUS_ON_NODE )) \
   ~composer.trainer.compile_config \
   ~composer.trainer.parallelism_config \
   block_size=${BLOCK_SIZE} \
   training.antithetic_sampling=false \
-  composer.optimizer.lr=1e-5 \
-  composer.trainer.eval_interval='1ep' \
   checkpointing.save_dir=/share/kuleshov/ma2238/runs/dllm-dev/${RUN_NAME}
