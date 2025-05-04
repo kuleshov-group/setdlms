@@ -1,4 +1,3 @@
-# TODO
 _target_: composer.optim.scheduler.CosineAnnealingWithWarmupScheduler
-t_warmup: 0.1
-t_max: 1.0
+t_warmup: ${eval:${composer.trainer.max_duration*0.1}}
+t_max: ${composer.trainer.max_duration}

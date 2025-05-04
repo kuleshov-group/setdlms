@@ -26,8 +26,8 @@ KEEP_EVERY_N_DECODER_LAYERS=8 # 2, 4, 8
 
 # Hyperparameters
 LR=1e-5 # 1e-5, 1e-4, 1e-3
-WARMUP_DURATION="1000ba" # 0.1, 0.2, 0.3, 0.4, 0.5
-LR_SCHEDULER=constant_with_warmup # constant_with_warmup, linear_decay_with_warmup, cosine_decay_with_warmup
+WARMUP_DURATION="1000ba" # 0.1, 0.3, 0.5
+LR_SCHEDULER=constant_with_warmup # linear_decay_with_warmup, cosine_decay_with_warmup
 BATCH_SIZE=128 # 96, 128, 256
 GRAD_CLIP=1.0 # 0.25, 0.5, 0.75, 1.0
 WEIGHT_DECAY=1e-5 # 1e-5, 1e-3, 1e-1
@@ -36,7 +36,7 @@ WEIGHT_DECAY=1e-5 # 1e-5, 1e-3, 1e-1
 SHIFT_LOGITS=true # true, false
 REINIT_DECODER=false # true, false
 
-TAG=test2
+TAG=test7
 RUN_NAME=gsm8k-bs${BATCH_SIZE}-block${BLOCK_SIZE}-keep${KEEP_EVERY_N_DECODER_LAYERS}-lr${LR}-warmup${WARMUP_DURATION}-sched${LR_SCHEDULER}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
 composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -64,5 +64,6 @@ composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denois
   ~composer.trainer.parallelism_config \
   block_size=${BLOCK_SIZE} \
   training.antithetic_sampling=false \
-  checkpointing.save_dir=/share/kuleshov/ma2238/runs/dllm-dev/${RUN_NAME} \
+  hydra.run.dir=/share/kuleshov/ma2238/runs/dllm-dev/${RUN_NAME} \
+  composer.trainer.save_interval="1ep" \
   composer.loggers.name=${RUN_NAME}
