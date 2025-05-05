@@ -1,6 +1,7 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections import OrderedDict
 from dataclasses import dataclass
+
 
 @dataclass
 class SamplerConfig(OrderedDict):
@@ -19,9 +20,11 @@ class SamplerConfig(OrderedDict):
     kv_caching: bool = False
     shift_logits: bool = False
 
+
 class Sampler(ABC):
     def __init__(self, config):
         self.config = config
+
 
 class AncestralSampler(Sampler):
     def __init__(self, config):
