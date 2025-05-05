@@ -722,7 +722,7 @@ class D3PM(Denoiser):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        if self.sampler_config.first_hitting:
+        if self.sampler.config.first_hitting:
             if max_seq_len is None:
                 raise ValueError("max_seq_len must be provided for first hitting.")
             timesteps = torch.tensor([1.0])
@@ -732,7 +732,7 @@ class D3PM(Denoiser):
                 timesteps = torch.cat((timesteps, next_t), dim=0)
             return timesteps[1:].to(device)
         timesteps = torch.linspace(
-            1, self.sampler_config.eps, self.sampler_config.num_steps + 1, device=device
+            1, self.sampler.config.eps, self.sampler.config.num_steps + 1, device=device
         )
         return timesteps
 
@@ -849,7 +849,7 @@ class D3PM(Denoiser):
             if device is not None
             else ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        max_blocks = max_seq_len // self.sampler_config.block_size
+        max_blocks = max_seq_len // self.sampler.config.block_size
         if context is not None:
             assert context.shape[-1] + max_seq_len <= self.config.length
             accumulated_samples = context.to(device)
@@ -872,13 +872,13 @@ class D3PM(Denoiser):
             xt = self._sample_prior(
                 device=device,
                 batch_size=batch_size,
-                length=self.sampler_config.block_size,
+                length=self.sampler.config.block_size,
             )
             timesteps = self._sample_generation_timesteps(
                 max_seq_len=max_seq_len, device=device
             )
             step_bar = tqdm(timesteps, desc="T", total=timesteps.shape[0], leave=False)
-            dt = (1 - self.sampler_config.eps) / len(timesteps)
+            dt = (1 - self.sampler.config.eps) / len(timesteps)
             cache = None
             for t in step_bar:
                 if cache is None:
@@ -891,7 +891,7 @@ class D3PM(Denoiser):
 
                 input_ids = xt
                 context_mask = None
-                if not self.sampler_config.kv_caching:
+                if not self.sampler.config.kv_caching:
                     input_ids = torch.cat((context, xt), dim=-1)
                     context_mask = torch.zeros(
                         (input_ids.shape[0], input_ids.shape[1]), device=device
@@ -1099,7 +1099,6 @@ class BD3LM(MDLM):
         h: int | None = None,  # needed for compat. with flex_attention
         block_size: int | None = None,
         seq_len: int | None = None,
-        recompute_kvs: bool = True,
     ) -> torch.Tensor:
         del b, h
 
@@ -1235,7 +1234,6 @@ class BD3LM(MDLM):
                     kv_idx=torch.arange(self.config.length * 2)[None, :],
                     block_size=self.config.block_size,
                     seq_len=self.config.length,
-                    recompute_kvs=self.config.backbone_config["recompute_kvs"],
                 )
             self.register_buffer(
                 "encoder_static_attention_mask",
