@@ -6,12 +6,14 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import hydra.utils
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import AutoTokenizer, PretrainedConfig, PreTrainedModel
+from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import ModelOutput
 
 try:
@@ -332,38 +334,58 @@ class Denoiser(ABC, PreTrainedModel):
         )
         return (categorical_probs / gumbel_norm).argmax(dim=-1)
 
+    def update_kv_cache(
+        self,
+        context: torch.Tensor,
+        past_key_values: DynamicCache | None = None,
+        **kwargs: Any,
+    ) -> DynamicCache:
+        """
+        Cache the key-value pairs for the context.
+        Args:
+            model (torch.nn.Module): The model to use for caching.
+            context (torch.Tensor): The context tensor.
+            past_key_values (DynamicCache | None): Previous key-value pairs.
+        Returns:
+            DynamicCache: Cached key-value pairs.
+        """
+        context_input = self._prepare_inputs_inference(
+            input_ids=context,
+            context_mask=torch.ones_like(context),
+            past_key_values=past_key_values,
+        )
+        past_key_values = self._backbone_forward(
+            context_input,
+            use_cache=True,
+            past_key_values=past_key_values,
+        )
+        return past_key_values
+
     @abstractmethod
     def generate(  # TODO: clean up signature and docstring
         self,
         max_seq_len: int,
-        num_steps: int,
-        nucleus_p: float = 1.0,
         batch_size: int | None = None,
-        eps: float = 1e-5,
         device: str | None = None,
-        disable_cache: bool = False,
-        prompt: torch.Tensor | None = None,
+        context: torch.Tensor | None = None,
         **kwargs: Any,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, int]:
         """Generates sample from denoising model.
         # TODO: will need to enable infilling / starting from partially noised sequences
 
         Args:
             batch_size (int): Batch size.
             max_seq_len (int): Maximum sequence length.
-            num_steps (int): Number of sampling steps.
-            nucleus_p (float, optional): Nucleus sampling probability.
-                Defaults to 1.0 (i.e., no nucleus sampling)
-            eps (float, optional): Minimum value for t. Defaults to 1e-5.
             device (str, optional): Device to use for computation.
                 Defaults to None, which will select cuda (if available).
             disable_cache (bool, optional): Whether to disable caching.
                 Defaults to False.
-            prompt (torch.Tensor, optional): Optional prompt tensor
+            context (torch.Tensor, optional): Optional prompt tensor
         Returns:
             torch.Tensor: Generated samples of token_ids (B, L).
+            int: Total number of function evaluations (NFEs).
         """
-        raise NotImplementedError
+        raise NotImplementedError("Denoiser subclasses must implement generate")
 
 
 class ARConfig(DenoiserConfig):
@@ -456,7 +478,7 @@ class AR(Denoiser):
         input_ids: torch.Tensor | None = None,
         input_attention_mask: torch.Tensor | None = None,
         **kwargs: Any,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, int]:
         # TODO implement ar sampler
         input_attention_mask = (
             torch.ones((batch_size, 1), device=device)
@@ -610,20 +632,14 @@ class D3PM(Denoiser):
     def _prepare_inputs_inference(
         self,
         input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
         context_mask: torch.Tensor | None = None,
-        t: torch.Tensor | None = None,
         past_key_values: torch.Tensor | None = None,
     ):
         attention_mask = torch.ones_like(input_ids, dtype=torch.float)
-        alpha_t, _ = self.noise_schedule(t)
         return DenoiserInput(
             xt=input_ids,
             attention_mask=attention_mask,
             context_mask=context_mask,
-            tokens_mask=attention_mask * (1 - context_mask),
-            t=t,
-            alpha_t=alpha_t,
             past_key_values=past_key_values,
         )
 
@@ -691,30 +707,230 @@ class D3PM(Denoiser):
             f"Diffusion type {self.diffusion_type} not implemented."
         )
 
-    def generate(
-        self,
-        batch_size: int,
-        max_seq_len: int,
-        num_steps: int,
-        eps: float = 1e-5,
-        device: str | None = None,
-        disable_cache: bool = False,
-        prompt: torch.Tensor | None = None,
-        block_size: int | None = None,
-        **kwargs: Any,
+    def _sample_generation_timesteps(
+        self, max_seq_len: int | None = None, device: str | None = None, **kwargs: Any
     ) -> torch.Tensor:
-        samples, NFEs = self.sampler(
-            model=self,
-            batch_size=batch_size,
-            max_seq_len=max_seq_len,
-            eps=eps,
-            device=device,
-            disable_cache=disable_cache,
-            num_steps=num_steps,
-            context=prompt,
-            block_size=block_size,
+        """
+        Sample timesteps for the diffusion process.
+        Args:
+            eps (float): Small value to avoid division by zero.
+            num_steps (int): Number of timesteps to sample.
+            device (str | None): Device to use for sampling.
+        Returns:
+            torch.Tensor: Sampled timesteps.
+        """
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if self.sampler_config.first_hitting:
+            if max_seq_len is None:
+                raise ValueError("max_seq_len must be provided for first hitting.")
+            timesteps = torch.tensor([1.0])
+            for i in range(max_seq_len, 0, -1):
+                u = torch.rand(1, device=device)
+                next_t = timesteps[-1] * u ** (1 / i)
+                timesteps = torch.cat((timesteps, next_t), dim=0)
+            return timesteps[1:].to(device)
+        timesteps = torch.linspace(
+            1, self.sampler_config.eps, self.sampler_config.num_steps + 1, device=device
         )
-        return samples, NFEs
+        return timesteps
+
+    def _compute_posterior(
+        self,
+        model: torch.nn.Module,
+        x: torch.Tensor,
+        xt: torch.Tensor,
+        alpha_t: torch.Tensor,
+        alpha_s: torch.Tensor,
+    ) -> torch.Tensor:
+        """Computes posterior / approximate posterior q(x_s | x_t, x),
+            where x represents clean sequence (as one-hots) or the output of the
+            denoising model.
+
+        Args:
+            x (torch.Tensor): True (one-hot) / predicted clean signal (B, L, V).
+            xt (torch.Tensor): Noised signal at time t (B, L).
+            alpha_t (torch.Tensor): Noise schedule parameter at time t (B, 1, 1).
+            alpha_s (torch.Tensor): Noise schedule parameter at time s (B, 1, 1).
+        """
+        if self.config.first_hitting:
+            return x
+
+        if model.diffusion_type == "absorbing":
+            q_xs = x * (alpha_s - alpha_t)
+            q_xs[..., model.mask_token_id] = 1 - alpha_s[..., 0]
+            q_xs /= 1 - alpha_t
+            return q_xs
+
+        alpha_ts = alpha_t / alpha_s
+        d_alpha = alpha_s - alpha_t
+        xt_one_hot = torch.nn.functional.one_hot(x, model.vocab_size)
+        limiting_distribution = torch.ones_like(xt_one_hot) / model.vocab_size
+        if model.diffusion_type == "uniform":
+            return (
+                alpha_t * model.vocab_size * x * xt_one_hot
+                + (alpha_ts - alpha_t) * xt_one_hot
+                + d_alpha * x
+                + (1 - alpha_ts) * (1 - alpha_s) * limiting_distribution
+            ) / (
+                alpha_t * model.vocab_size * torch.gather(x, -1, xt[..., None])
+                + (1 - alpha_t)
+            )
+        raise NotImplementedError(
+            f"Diffusion type {model.diffusion_type} not implemented."
+        )
+
+    def _generate_unconditional(  # TODO add CBG and CFG generation
+        self,
+        alpha_t: torch.Tensor,
+        alpha_s: torch.Tensor,
+        denoiser_inputs: DenoiserInput | None = None,
+        cache: Dict[str, torch.Tensor] | None = None,
+        past_key_values: DynamicCache | None = None,
+        **kwargs: Any,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        if cache is None:
+            # pad context with masks to match the training context (improves mdlm quality)
+            pad_len = 0
+            if (
+                self.config.pad_context
+                and denoiser_inputs.xt.shape[-1] < self.config.length
+            ):
+                # pad with masks
+                pad_len = self.config.length - denoiser_inputs.xt.shape[-1]
+                denoiser_inputs.xt = F.pad(
+                    denoiser_inputs.xt,
+                    pad=(0, pad_len),
+                    mode="constant",
+                    value=self.mask_token_id,
+                )
+                denoiser_inputs.backbone_kwargs["position_ids"] = torch.arange(
+                    denoiser_inputs.xt.shape[-1], device=denoiser_inputs.xt.device
+                )[None, :]
+            backbone_output = self._backbone_forward(
+                denoiser_inputs,
+                past_key_values=past_key_values,
+            )
+            # remove padding
+            if pad_len > 0:
+                backbone_output = backbone_output[:, :-pad_len]
+                denoiser_inputs.xt = denoiser_inputs.xt[:, :-pad_len]
+                denoiser_inputs.backbone_kwargs["position_ids"] = torch.arange(
+                    denoiser_inputs.xt.shape[-1], device=denoiser_inputs.xt.device
+                )[None, :]
+            if isinstance(backbone_output, ModelOutput) and hasattr(
+                backbone_output, "logits"
+            ):
+                backbone_output = backbone_output.logits
+            log_x_theta = self._forward_inference(
+                backbone_output,
+                denoiser_inputs,
+            )  # should be the log(x_\theta) with the shape of (B, Seq, Vocab)
+            x_theta = log_x_theta.exp()
+            x_theta = self._logit_transform(x_theta, **kwargs)
+        else:
+            x_theta = cache["x_theta"]
+        q_xs = self._compute_posterior(x_theta, denoiser_inputs.xt, alpha_t, alpha_s)
+        cache = {"x_theta": x_theta}
+        return q_xs, cache
+
+    def generate(  # TODO: clean up signature and docstring
+        self,
+        max_seq_len: int,
+        batch_size: int | None = None,
+        context: torch.Tensor | None = None,
+        disable_cache: bool = False,
+        device: str | None = None,
+        **kwargs: Any,
+    ) -> Tuple[torch.Tensor, int]:
+        device = (
+            device
+            if device is not None
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        max_blocks = max_seq_len // self.sampler_config.block_size
+        if context is not None:
+            assert context.shape[-1] + max_seq_len <= self.config.length
+            accumulated_samples = context.to(device)
+        else:
+            accumulated_samples = torch.empty(
+                (batch_size, 0), dtype=torch.int64, device=device
+            )
+
+        total_NFEs = 0
+        # cache kvs of context
+        past_key_values = None
+        if context is not None and self.config.kv_caching:
+            past_key_values = self.update_kv_cache(
+                context=context,
+                past_key_values=past_key_values,
+            )
+
+        block_pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)
+        for _ in block_pbar:
+            xt = self._sample_prior(
+                device=device,
+                batch_size=batch_size,
+                length=self.sampler_config.block_size,
+            )
+            timesteps = self._sample_generation_timesteps(
+                max_seq_len=max_seq_len, device=device
+            )
+            step_bar = tqdm(timesteps, desc="T", total=timesteps.shape[0], leave=False)
+            dt = (1 - self.sampler_config.eps) / len(timesteps)
+            cache = None
+            for t in step_bar:
+                if cache is None:
+                    total_NFEs += 1
+                # t is 0-dim tensor, reshape to (1, 1, 1) for broadcasting
+                alpha_t, _ = self.noise_schedule(t)
+                alpha_s, _ = self.noise_schedule(t - dt)
+                alpha_t = alpha_t[None, None, None]
+                alpha_s = alpha_s[None, None, None]
+
+                input_ids = xt
+                context_mask = None
+                if not self.sampler_config.kv_caching:
+                    input_ids = torch.cat((context, xt), dim=-1)
+                    context_mask = torch.zeros(
+                        (input_ids.shape[0], input_ids.shape[1]), device=device
+                    )
+                    context_mask[:, : context.shape[1]] = 1
+                denoiser_inputs = self._prepare_inputs_inference(
+                    input_ids=input_ids,
+                    context_mask=context_mask,
+                    past_key_values=past_key_values,
+                )
+
+                q_xs, cache = self._generate_unconditional(
+                    alpha_t=alpha_t,
+                    alpha_s=alpha_s,
+                    denoiser_inputs=denoiser_inputs,
+                    cache=cache,
+                    xt=xt,
+                    past_key_values=past_key_values,
+                )
+
+                xs = self._sample_categorical(q_xs)
+                xs = self._maybe_remask(xs, q_xs, xt, self.mask_token_id)
+
+                block_pbar.set_postfix(
+                    NFEs=total_NFEs,
+                    prob_check=(q_xs.sum() / xt.numel()).item(),
+                    nan_check=bool(q_xs.isnan().sum() > 0),
+                )
+
+                if not torch.allclose(xs, xt) or not disable_cache:
+                    cache = None
+                xt = xs
+            accumulated_samples = torch.cat((accumulated_samples, xt), dim=-1)
+            if self.config.kv_caching:
+                past_key_values = self.update_kv_cache(
+                    context=xt,
+                    past_key_values=past_key_values,
+                )
+        return accumulated_samples, total_NFEs
 
 
 class MDLMConfig(D3PMConfig):
@@ -883,6 +1099,7 @@ class BD3LM(MDLM):
         h: int | None = None,  # needed for compat. with flex_attention
         block_size: int | None = None,
         seq_len: int | None = None,
+        recompute_kvs: bool = True,
     ) -> torch.Tensor:
         del b, h
 
@@ -897,12 +1114,11 @@ class BD3LM(MDLM):
         block_kv = torch.where(
             x0_flag_kv, (kv_idx - seq_len) // block_size, kv_idx // block_size
         )
+        # **1. Offset Block-Causal Mask (M_OBC) **
+        offset_block_causal = (block_q == block_kv) & x0_flag_kv & ~x0_flag_q
 
-        # **1. Block Diagonal Mask (M_BD) **
-        block_diagonal = (block_q == block_kv) & (x0_flag_q == x0_flag_kv)
-
-        # **2. Offset Block-Causal Mask (M_OBC) **
-        offset_block_causal = (block_q > block_kv) & x0_flag_kv & ~x0_flag_q
+        # **2. Block Diagonal Mask (M_BD) **
+        block_diagonal = (block_q > block_kv) & (x0_flag_q == x0_flag_kv)
 
         # **3. Combine Masks **
         return block_diagonal | offset_block_causal
@@ -934,6 +1150,7 @@ class BD3LM(MDLM):
         Returns:
             Attention mask.
         """
+        # TODO
 
         del b, h, kv_idx
 
@@ -949,10 +1166,10 @@ class BD3LM(MDLM):
         block_kv = block_q
 
         # **1. Block Diagonal Mask (M_BD) **
-        block_diagonal = (block_q == block_kv) & (x0_flag_q == x0_flag_kv)
+        block_diagonal = (block_q > block_kv) & (x0_flag_q == x0_flag_kv)
 
         # **2. Offset Block-Causal Mask (M_OBC) **
-        offset_block_causal = (block_q > block_kv) & x0_flag_kv & ~x0_flag_q
+        offset_block_causal = (block_q == block_kv) & x0_flag_kv & ~x0_flag_q
 
         # **3. Block-Causal Mask (M_BC) **
         block_causal = (block_q >= block_kv) & x0_flag_kv & x0_flag_q
@@ -1018,6 +1235,7 @@ class BD3LM(MDLM):
                     kv_idx=torch.arange(self.config.length * 2)[None, :],
                     block_size=self.config.block_size,
                     seq_len=self.config.length,
+                    recompute_kvs=self.config.backbone_config["recompute_kvs"],
                 )
             self.register_buffer(
                 "encoder_static_attention_mask",
@@ -1097,67 +1315,40 @@ class BD3LM(MDLM):
     def _prepare_inputs_inference(
         self,
         input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-        context_mask: torch.Tensor | None = None,
-        t: torch.Tensor | None = None,
-        context_len: int | None = None,
-        cache_position: torch.Tensor | None = None,
+        context: torch.Tensor | None = None,
+        past_key_values: DynamicCache | None = None,
     ):
         batch_size = input_ids.shape[0]
-        xt = input_ids[~context_mask.bool()].view(input_ids.shape[0], -1)
-        x0 = input_ids[context_mask.bool()].view(input_ids.shape[0], -1)
-        alpha_t, alpha_t_prime = self.noise_schedule(t)
-        attention_mask = torch.ones_like(xt, dtype=torch.float)
         if self.config.backbone_is_decoder_only:
             raise NotImplementedError(
                 "Inference for decoder-only BD3LM is not implemented yet."
             )
         else:
-            full_seq_len = xt.shape[-1] + context_len
-
-            # full attention to xt and context
-            decoder_attention_mask = torch.ones(
-                (batch_size, xt.shape[1], full_seq_len),
-                device=xt.device,
-                dtype=attention_mask.dtype,
-            )
-            # block-causal attention within x0
-            encoder_attention_mask = (
-                self.encoder_static_attention_mask[None, :context_len, :context_len]
-            ).to(attention_mask.dtype)
-
-            # TODO encoder activations are APPENDED to decoder activations.. need to fix later
-            if cache_position is None:
-                position_ids_inference = (
-                    torch.arange(context_len, full_seq_len)
-                    .to(xt.device)[None, :]
-                    .repeat(batch_size, 1)
-                )
-                position_ids_inference = torch.cat(
-                    (
-                        position_ids_inference,
-                        torch.arange(context_len)
-                        .to(xt.device)[None, :]
-                        .repeat(batch_size, 1),
-                    ),
-                    dim=-1,
-                )
+            position_ids = None
+            if past_key_values is not None:
+                full_seq_len = past_key_values.get_seq_length() + input_ids.shape[1]
+                encoder_attention_mask = None
+                position_ids = torch.arange(
+                    past_key_values.get_seq_length(), full_seq_len
+                ).to(input_ids.device)[None, :]
             else:
-                position_ids_inference = cache_position
+                context_len = context.shape[1]
+                full_seq_len = context_len + input_ids.shape[1]
+                encoder_attention_mask = self.encoder_static_attention_mask[
+                    None, :context_len, :context_len
+                ]
+            decoder_attention_mask = torch.ones(
+                (batch_size, input_ids.shape[1], full_seq_len),
+                device=input_ids.device,
+            )
             return DenoiserInput(
-                xt=xt,
-                x0=x0,
-                context_mask=context_mask,
+                xt=input_ids,
                 attention_mask=decoder_attention_mask,
-                tokens_mask=attention_mask,
-                t=t,
-                alpha_t=alpha_t,
-                alpha_t_prime=alpha_t_prime,
+                past_key_values=past_key_values,
                 backbone_kwargs={
-                    "encoder_input_ids": x0,
+                    "encoder_input_ids": context,
                     "encoder_attention_mask": encoder_attention_mask,
-                    "position_ids": position_ids_inference,
-                    "context_len": context_len,
+                    "position_ids": position_ids,
                 },
             )
 

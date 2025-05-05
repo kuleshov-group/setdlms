@@ -31,6 +31,7 @@ def main(cfg: DictConfig) -> None:
         cfg.model,
         _convert_="all",  # required to enable json-serialization when saving checkpoint
     )
+    print(model)
     model = HuggingFaceModel(
         model,
         tokenizer=tokenizer,
