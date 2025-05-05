@@ -30,7 +30,6 @@ class LlamaAsEncoderDecoder(nn.Module):
         attn_backend: str = "sdpa",
         freeze_encoder: bool = False,
         reinit_decoder: bool = False,
-        recompute_kvs: bool = True,
     ):
         assert keep_every_n_encoder_layers <= keep_every_n_decoder_layers, (
             "Cannot remove more encoder than decoder layers."
@@ -112,7 +111,6 @@ class LlamaAsEncoderDecoder(nn.Module):
         del self.decoder.model.embed_tokens
         self.max_length = max_length
         self.freeze_encoder = freeze_encoder
-        self.recompute_kvs = recompute_kvs
 
     def forward(
         self,
