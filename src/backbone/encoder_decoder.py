@@ -31,6 +31,7 @@ class LlamaAsEncoderDecoder(nn.Module):
         attn_backend: str = "sdpa",
         freeze_encoder: bool = False,
         reinit_decoder: bool = False,
+        recompute_kvs: bool = True,
     ):
         assert keep_every_n_encoder_layers <= keep_every_n_decoder_layers, (
             "Cannot remove more encoder than decoder layers."
@@ -112,6 +113,7 @@ class LlamaAsEncoderDecoder(nn.Module):
         self.block_size = block_size
         self.max_length = max_length
         self.freeze_encoder = freeze_encoder
+        self.recompute_kvs = recompute_kvs
 
     def forward(
         self,
@@ -125,12 +127,12 @@ class LlamaAsEncoderDecoder(nn.Module):
         position_ids: Tensor | None = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tensor:
-        if use_cache and past_key_values is None:
+        decoder_use_cache_flag = use_cache or not self.recompute_kvs
+        if decoder_use_cache_flag and past_key_values is None:
             past_key_values = DynamicCache()
             cache_position = position_ids
 
         # Encode clean tokens
-        # encoder_hidden_states = self.llama.model.embed_tokens(encoder_input_ids)
         encoder_hidden_state = None
         if encoder_input_ids is not None and encoder_input_ids.shape[1] > 0:
             encoder_position_ids = torch.arange(
@@ -142,20 +144,16 @@ class LlamaAsEncoderDecoder(nn.Module):
                 encoder_attention_mask = encoder_attention_mask[:, None, ...].to(
                     self.encoder.dtype
                 )
+            # If we don't recompute KVs, we need to cache KVs from encoder
             encoder_hidden_state = self.encoder(
                 input_ids=encoder_input_ids,
                 attention_mask=encoder_attention_mask,
                 position_ids=encoder_position_ids,
                 output_hidden_states=True,
-                use_cache=use_cache,
+                use_cache=not self.recompute_kvs,
+                past_key_values=(past_key_values if not self.recompute_kvs else None),
+                cache_position=(cache_position if not self.recompute_kvs else None),
             )[-1]
-
-            if input_ids is None or input_ids.shape[1] == 0:
-                # If no input_ids are provided, we only need the encoder hidden states
-                if use_cache:
-                    return encoder_hidden_state, past_key_values
-                return encoder_hidden_state
-
         # Run decoder with xattn to clean tokens
         decoder_hidden_states = self.encoder.model.embed_tokens(input_ids)
 
@@ -184,13 +182,14 @@ class LlamaAsEncoderDecoder(nn.Module):
                 position_ids=position_ids,
                 past_key_value=past_key_values,
                 output_attentions=False,
+                use_cache=decoder_use_cache_flag,
                 cache_position=cache_position,
                 position_embeddings=decoder_position_embeddings,
                 **flash_attn_kwargs,
-            )[0]  # [:, : input_ids.shape[1], :]
+            )[0]
+        if use_cache:
+            return past_key_values
         # Only keep logits for masked tokens
         decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)
         decoded_tokens = self.decoder.lm_head(decoder_hidden_states)
-        if use_cache:
-            return decoded_tokens, past_key_values
         return decoded_tokens

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import ModelOutput
@@ -245,24 +246,42 @@ class AncestralSampler(Sampler):
             ):
                 # pad with masks
                 pad_len = model.config.length - denoiser_inputs.xt.shape[-1]
-                pad = torch.full(
-                    (denoiser_inputs.xt.shape[0], pad_len),
-                    model.mask_token_id,
-                    dtype=denoiser_inputs.xt.dtype,
-                    device=denoiser_inputs.xt.device,
+                denoiser_inputs.xt = F.pad(
+                    denoiser_inputs.xt,
+                    pad=(0, pad_len),
+                    mode="constant",
+                    value=model.mask_token_id,
                 )
-                denoiser_inputs.xt = torch.cat((denoiser_inputs.xt, pad), dim=-1)
-                denoiser_inputs.position_ids = torch.arange(
+                denoiser_inputs.backbone_kwargs["position_ids"] = torch.arange(
                     denoiser_inputs.xt.shape[-1], device=denoiser_inputs.xt.device
                 )[None, :]
+            # for kv caching, only pass in position ids for the new block
+            freeze_cache_len = None
+            if (
+                self.config.kv_caching
+                and denoiser_inputs.backbone_kwargs["context_len"]
+            ):
+                context_len = denoiser_inputs.backbone_kwargs["context_len"]
+                denoiser_inputs.backbone_kwargs["position_ids"] = (
+                    denoiser_inputs.backbone_kwargs["position_ids"][
+                        :, : denoiser_inputs.xt.shape[-1]
+                    ].clone()
+                )
+                freeze_cache_len = denoiser_inputs.backbone_kwargs["context_len"]
             backbone_output = model._backbone_forward(
-                denoiser_inputs, past_key_values=past_key_values
+                denoiser_inputs,
+                past_key_values=past_key_values,
+                use_cache=False,
+                freeze_cache_len=freeze_cache_len,
             )
+            # crop for newly added kvs
+            if past_key_values is not None:
+                past_key_values.crop(freeze_cache_len)
             # remove padding
             if pad_len > 0:
                 backbone_output = backbone_output[:, :-pad_len]
                 denoiser_inputs.xt = denoiser_inputs.xt[:, :-pad_len]
-                denoiser_inputs.position_ids = torch.arange(
+                denoiser_inputs.backbone_kwargs["position_ids"] = torch.arange(
                     denoiser_inputs.xt.shape[-1], device=denoiser_inputs.xt.device
                 )[None, :]
             if isinstance(backbone_output, ModelOutput) and hasattr(
@@ -343,8 +362,6 @@ class AncestralSampler(Sampler):
         xs[~unmask_flag] = mask_token_id
         return xs
 
-    # def _cache_kvs(self, model: torch.nn.Module, xt: torch.Tensor):
-
     def _sample_timesteps(
         self,
         eps: float,
@@ -402,10 +419,17 @@ class AncestralSampler(Sampler):
                 dtype=torch.long,
                 device=device,
             )
-        full_seq_len = context.shape[1] + max_seq_len
-        # indicates which logits are used for sampling
-        context_mask = torch.zeros((batch_size, full_seq_len), device=device)
-        context_mask[:, : context.shape[1]] = 1
+        # indicates which tokens are only used for conditioning
+        if self.config.kv_caching and self.config.shift_logits:
+            full_seq_len = max_seq_len + 1
+            context_mask = torch.zeros((batch_size, full_seq_len), device=device)
+            context_mask[:, 0] = 1
+        elif self.config.kv_caching:
+            context_mask = torch.zeros((batch_size, max_seq_len), device=device)
+        else:
+            full_seq_len = context.shape[1] + max_seq_len
+            context_mask = torch.zeros((batch_size, full_seq_len), device=device)
+            context_mask[:, : context.shape[1]] = 1
         if self.config.shift_logits:
             context_mask = context_mask[:, 1:]
 
@@ -420,15 +444,21 @@ class AncestralSampler(Sampler):
             alpha_s = alpha_s[None, None, None]
             # pass in context and xt to model
             input_ids = xt
-            if context is not None:
+            context_len = context.shape[1]
+            if context is not None and not self.config.kv_caching:
                 input_ids = torch.cat((context, input_ids), dim=1)
             if self.config.shift_logits:
+                # ensure the last context token is always passed in under shifting
+                if context is not None and self.config.kv_caching:
+                    input_ids = torch.cat((context[:, -1:], input_ids), dim=1)
                 # left-shift the input_ids
                 input_ids = input_ids[:, :-1]
+                context_len -= 1
             denoiser_inputs = model._prepare_inputs_inference(
                 input_ids=input_ids,
                 context_mask=context_mask,
                 t=t,
+                context_len=context_len,
             )
             q_xs, cache = self._generate_unconditional(
                 model=model,
@@ -455,10 +485,47 @@ class AncestralSampler(Sampler):
             if not torch.allclose(xs, xt) or not disable_cache:
                 cache = None
             xt = xs
-        # TODO: for e2d2, call encoder to cache kvs
-        # if self.config.kv_caching:
-        #     self._cache_kvs(model, xt)
         return xt, NFEs
+
+    def _cache_kvs(
+        self,
+        model: torch.nn.Module,
+        context: torch.Tensor,
+        device: str | None = None,
+        cache_position: torch.Tensor | None = None,
+        past_key_values: DynamicCache | None = None,
+        crop_last_token: bool | None = None,
+        **kwargs: Any,
+    ) -> DynamicCache:
+        """
+        Cache the key-value pairs for the context.
+        Args:
+            model (torch.nn.Module): The model to use for caching.
+            context (torch.Tensor): The context tensor.
+            device (str | None): Device to use for caching.
+            cache_position (torch.Tensor | None): Position of the cache.
+            past_key_values (DynamicCache | None): Previous key-value pairs.
+            crop_last_token (bool | None): Whether to crop the last token (for shifting)
+        Returns:
+            DynamicCache: Cached key-value pairs.
+        """
+        if crop_last_token is None:
+            crop_last_token = self.config.shift_logits
+        context_input = model._prepare_inputs_inference(
+            input_ids=context,
+            context_mask=torch.ones_like(context),
+            t=torch.tensor([0.0], device=device),
+            context_len=context.shape[1],
+            cache_position=cache_position,
+        )
+        past_key_values = model._backbone_forward(
+            context_input,
+            use_cache=True,
+            past_key_values=past_key_values,
+        )
+        if crop_last_token:
+            past_key_values.crop(past_key_values[0][0].shape[2] - 1)
+        return past_key_values
 
     def __call__(
         self,
@@ -489,22 +556,18 @@ class AncestralSampler(Sampler):
                 (batch_size, 0), dtype=torch.int64, device=device
             )
         total_NFEs = 0
+        # cache kvs of context
         past_key_values = None
-        # cache context
         if context is not None and self.config.kv_caching:
-            encoder_inputs = model._prepare_inputs_inference(
-                input_ids=context,
-                context_mask=torch.ones_like(context),
-                t=torch.tensor([0.0], device=device),
-            )
-            _, past_key_values = model._backbone_forward(
-                encoder_inputs,
-                use_cache=True,
+            past_key_values = self._cache_kvs(
+                model=model,
+                context=context[:, :-1],
+                device=device,
+                crop_last_token=False,
             )
 
         pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)
         for _ in pbar:
-            # pass in context somehow
             sampled_block, block_NFEs = self._sampling_loop(
                 model=model,
                 batch_size=batch_size,
@@ -516,10 +579,36 @@ class AncestralSampler(Sampler):
                 context=accumulated_samples,
                 past_key_values=past_key_values,
             )
-
             accumulated_samples = torch.cat(
                 [accumulated_samples, sampled_block], dim=-1
             )
+
+            # extra forward pass on clean block to cache kvs of new block
+            if self.config.kv_caching:
+                if self.config.shift_logits:
+                    # cache the first token (since it was skipped from the previous block)
+                    # don't cache the last token (we recompute its kvs in predicting the next block)
+                    block_to_cache = accumulated_samples[:, -(block_size + 1) : -1]
+                    cache_position = torch.arange(
+                        accumulated_samples.shape[1] - block_size - 1,
+                        accumulated_samples.shape[1] - 1,
+                        device=device,
+                    )[None, :]
+                else:
+                    block_to_cache = accumulated_samples[:, -block_size:]
+                    cache_position = torch.arange(
+                        accumulated_samples.shape[1] - block_size,
+                        accumulated_samples.shape[1],
+                        device=device,
+                    )[None, :]
+                past_key_values = self._cache_kvs(
+                    model=model,
+                    context=block_to_cache,
+                    device=device,
+                    cache_position=cache_position,
+                    past_key_values=past_key_values,
+                )
+
             total_NFEs += block_NFEs
             print(model.tokenizer.batch_decode(accumulated_samples))
             if self._check_stop_condition(
@@ -528,13 +617,6 @@ class AncestralSampler(Sampler):
                 condition_suffix=condition_suffix,
             ):
                 break
-
-        # extra forward pass on clean block to cache kvs
-        if self.config.kv_caching:
-            denoiser_inputs = model._prepare_inputs_inference(input_ids=sampled_block)
-            _, past_key_values = model._backbone_forward(
-                denoiser_inputs, use_cache=True, past_key_values=past_key_values
-            )
 
         # TODO after finishing this, set up notebook for testing on gsm8k
         return accumulated_samples, total_NFEs

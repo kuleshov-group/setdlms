@@ -1100,8 +1100,10 @@ class BD3LM(MDLM):
         attention_mask: torch.Tensor | None = None,
         context_mask: torch.Tensor | None = None,
         t: torch.Tensor | None = None,
-        past_key_values: torch.Tensor | None = None,
+        context_len: int | None = None,
+        cache_position: torch.Tensor | None = None,
     ):
+        batch_size = input_ids.shape[0]
         xt = input_ids[~context_mask.bool()].view(input_ids.shape[0], -1)
         x0 = input_ids[context_mask.bool()].view(input_ids.shape[0], -1)
         alpha_t, alpha_t_prime = self.noise_schedule(t)
@@ -1111,29 +1113,37 @@ class BD3LM(MDLM):
                 "Inference for decoder-only BD3LM is not implemented yet."
             )
         else:
+            full_seq_len = xt.shape[-1] + context_len
+
             # full attention to xt and context
             decoder_attention_mask = torch.ones(
-                (xt.shape[0], xt.shape[1], context_mask.shape[1]),
+                (batch_size, xt.shape[1], full_seq_len),
                 device=xt.device,
                 dtype=attention_mask.dtype,
             )
             # block-causal attention within x0
             encoder_attention_mask = (
-                self.encoder_static_attention_mask[None, : x0.shape[1], : x0.shape[1]]
+                self.encoder_static_attention_mask[None, :context_len, :context_len]
             ).to(attention_mask.dtype)
 
             # TODO encoder activations are APPENDED to decoder activations.. need to fix later
-            position_ids_inference = (
-                torch.cat(
-                    (
-                        torch.arange(x0.shape[1], context_mask.shape[1]),
-                        torch.arange(x0.shape[1]),
-                    )
+            if cache_position is None:
+                position_ids_inference = (
+                    torch.arange(context_len, full_seq_len)
+                    .to(xt.device)[None, :]
+                    .repeat(batch_size, 1)
                 )
-                .to(xt.device)[None, :]
-                .repeat(xt.shape[0], 1)
-            )
-
+                position_ids_inference = torch.cat(
+                    (
+                        position_ids_inference,
+                        torch.arange(context_len)
+                        .to(xt.device)[None, :]
+                        .repeat(batch_size, 1),
+                    ),
+                    dim=-1,
+                )
+            else:
+                position_ids_inference = cache_position
             return DenoiserInput(
                 xt=xt,
                 x0=x0,
@@ -1147,6 +1157,7 @@ class BD3LM(MDLM):
                     "encoder_input_ids": x0,
                     "encoder_attention_mask": encoder_attention_mask,
                     "position_ids": position_ids_inference,
+                    "context_len": context_len,
                 },
             )
 

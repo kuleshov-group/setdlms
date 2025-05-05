@@ -7,3 +7,4 @@ max_length: ${model.config.length}
 attn_backend: ${model.config.attn_backend}
 freeze_encoder: false
 reinit_decoder: false
+recompute_kvs: true

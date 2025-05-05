@@ -11,5 +11,5 @@ config:
   first_hitting: true
   low_confidence_remasking: true
   disable_cache: false
-  kv_caching: false
+  kv_caching: true
   shift_logits: ${model.config.shift_logits}

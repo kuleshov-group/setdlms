@@ -254,17 +254,32 @@ class Qwen3Attention(nn.Module):
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         q_index: Optional[int] = None,
+        freeze_cache_len: Optional[int] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        if q_index is not None:
+        if q_index is not None and q_index > 0:
             query_states = self.q_norm(
                 self.q_proj(hidden_states[:, :q_index, ...]).view(
                     (*input_shape[:-1], q_index, -1, self.head_dim)
                 )
             ).transpose(1, 2)
+        elif q_index is not None and q_index == 0:
+            # Cache KVs (from encoder), exit
+            assert past_key_value is not None
+            key_states = self.k_norm(
+                self.k_proj(hidden_states).view(hidden_shape)
+            ).transpose(1, 2)
+            value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+            cos, sin = position_embeddings
+            _, key_states = apply_rotary_pos_emb(key_states, key_states, cos, sin)
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_value.update(
+                key_states, value_states, self.layer_idx, cache_kwargs
+            )
+            return None
         else:
             query_states = self.q_norm(
                 self.q_proj(hidden_states).view(hidden_shape)
@@ -352,6 +367,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        freeze_cache_len: Optional[int] = None,
         position_embeddings: Optional[
             Tuple[torch.Tensor, torch.Tensor]
         ] = None,  # necessary, but kept here for BC
@@ -369,7 +385,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             if encoder_hidden_states is not None
             else hidden_states
         )
-        hidden_states, self_attn_weights = self.self_attn(
+        attn_out = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -379,8 +395,17 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             cache_position=cache_position,
             position_embeddings=position_embeddings,
             q_index=q_index,
+            freeze_cache_len=freeze_cache_len,
             **kwargs,
         )
+        if attn_out is not None:
+            hidden_states, self_attn_weights = attn_out
+        else:
+            # early exit from caching:
+            # preserve hidden state for caching kvs of next layer
+            if q_index is not None:
+                hidden_states = hidden_states[:, :q_index, ...]
+            return hidden_states, None
         hidden_states = residual + hidden_states
 
         # Fully Connected
