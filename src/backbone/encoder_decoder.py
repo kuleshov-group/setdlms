@@ -2,7 +2,7 @@ from typing import Union
 
 import torch
 from torch import Tensor, nn
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.processing_utils import Unpack
@@ -14,13 +14,10 @@ except ModuleNotFoundError:
     BlockMask = None
 
 
-from src.backbone.custom_modeling_llama import LlamaForCausalLM
-from src.backbone.custom_modeling_qwen3 import Qwen3ForCausalLM
-
 logger = logging.get_logger(__name__)
 
 
-class LlamaAsEncoderDecoder(nn.Module):
+class LLMasEncoderDecoder(nn.Module):
     def __init__(
         self,
         pretrained_model_name_or_path: str,
@@ -35,63 +32,31 @@ class LlamaAsEncoderDecoder(nn.Module):
             "Cannot remove more encoder than decoder layers."
         )
         super().__init__()
-        if "Qwen" in pretrained_model_name_or_path:
-            self.encoder = Qwen3ForCausalLM.from_pretrained(
+        self.encoder = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path,
+            trust_remote_code=True,
+            attn_implementation=attn_backend,
+        )
+
+        # freeze encoder layers
+        if freeze_encoder:
+            for param in self.encoder.parameters():
+                param.requires_grad = False
+
+        # reinitialize decoder layers
+        if reinit_decoder:
+            decoder_config = AutoConfig.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
             )
-
-            # freeze encoder layers
-            if freeze_encoder:
-                for param in self.encoder.parameters():
-                    param.requires_grad = False
-
-            # reinitialize decoder layers
-            if reinit_decoder:
-                decoder_config = AutoConfig.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
-                self.decoder = Qwen3ForCausalLM(decoder_config)
-            else:
-                self.decoder = Qwen3ForCausalLM.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
-        elif "Llama" in pretrained_model_name_or_path:
-            self.encoder = LlamaForCausalLM.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=True,
-                attn_implementation=attn_backend,
-            )
-            # freeze encoder layers
-            if freeze_encoder:
-                for param in self.encoder.parameters():
-                    param.requires_grad = False
-
-            # reinitialize decoder layers
-            if reinit_decoder:
-                decoder_config = AutoConfig.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
-                self.decoder = LlamaForCausalLM(decoder_config)
-            else:
-                self.decoder = LlamaForCausalLM.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
+            self.decoder = AutoModelForCausalLM(decoder_config)
         else:
-            raise ValueError(
-                f"Unsupported model type: {pretrained_model_name_or_path}. "
-                "Please use either Qwen or Llama."
+            self.decoder = AutoModelForCausalLM.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=True,
+                attn_implementation=attn_backend,
             )
-
         # delete layers from encoder / decoder
         if keep_every_n_encoder_layers < len(self.encoder.model.layers):
             encoder_layers_post_surgery = []
@@ -178,8 +143,8 @@ class LlamaAsEncoderDecoder(nn.Module):
                 **flash_attn_kwargs,
             )[0]
             if past_key_values is not None:
-                # DynamicCache extends along sequence dimension by default, truncating back to original
-                # encoder output length
+                # DynamicCache extends along sequence dimension by default
+                # truncating back to original, encoder output length
                 layer_idx = ((i + 1) * self.keep_every_n_decoder_layers) - 1
                 past_key_values.key_cache[layer_idx] = past_key_values.key_cache[
                     layer_idx
