@@ -6,3 +6,5 @@ max_length: ${model.config.length}
 attn_backend: ${model.config.attn_backend}
 freeze_encoder: false
 reinit_decoder: false
+tie_encoder_decoder_weights: false
+use_encoder_causal_mask: false
