@@ -164,14 +164,12 @@ class LLMasEncoderDecoder(nn.Module):
             if past_key_values is not None:
                 # DynamicCache extends along sequence dimension by default
                 # truncating back to original, encoder output length
-                layer_idx = ((i + 1) * self.keep_every_n_decoder_layers) - 1
-                past_key_values.key_cache[layer_idx] = past_key_values.key_cache[
-                    layer_idx
-                ][..., :prev_cache_len, :]
-                past_key_values.value_cache[layer_idx] = past_key_values.value_cache[
-                    layer_idx
-                ][..., :prev_cache_len, :]
-        # Only keep logits for masked tokens
+                past_key_values.key_cache[i] = past_key_values.key_cache[i][
+                    ..., :prev_cache_len, :
+                ]
+                past_key_values.value_cache[i] = past_key_values.value_cache[i][
+                    ..., :prev_cache_len, :
+                ]
         decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)
         decoded_tokens = self.decoder.lm_head(decoder_hidden_states)
         return decoded_tokens
