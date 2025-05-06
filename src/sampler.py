@@ -14,6 +14,7 @@ class SamplerConfig(OrderedDict):
     top_p: float = 0.9
     pad_context: bool = False
     greedy: bool = False
+    use_x0_pred: bool = False
     first_hitting: bool = False
     low_confidence_remasking: bool = False
     disable_cache: bool = False
