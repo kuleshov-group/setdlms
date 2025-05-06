@@ -7,7 +7,7 @@ from transformers import PreTrainedTokenizer
 from datasets import load_dataset
 
 _QUESTION_PREFIX = (
-    ("Please reason step by step, and put your final answer within $\\boxed{}$. "),
+    "Please reason step by step, and put your final answer within $\\boxed{}$. "
 )
 
 

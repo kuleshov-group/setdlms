@@ -449,7 +449,7 @@ class AR(Denoiser):
         return DenoiserInput(
             xt=input_ids,
             x0=labels,
-            attention_mask=attention_mask,
+            attention_mask=attention_mask.to(torch.bool),
             context_mask=context_mask,
             tokens_mask=attention_mask * (1 - context_mask),
             past_key_values=past_key_values,
@@ -622,7 +622,7 @@ class D3PM(Denoiser):
         return DenoiserInput(
             xt=xt,
             x0=input_ids,
-            attention_mask=attention_mask,
+            attention_mask=attention_mask.to(torch.bool),
             context_mask=context_mask,
             tokens_mask=attention_mask * (1 - context_mask),
             t=t,
@@ -1346,14 +1346,14 @@ class BD3LM(MDLM):
             return DenoiserInput(
                 xt=xt,
                 x0=input_ids,
-                attention_mask=decoder_attention_mask,
+                attention_mask=decoder_attention_mask.to(torch.bool),
                 tokens_mask=attention_mask * (1 - context_mask),
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
                 backbone_kwargs={
                     "encoder_input_ids": input_ids,
-                    "encoder_attention_mask": encoder_attention_mask,
+                    "encoder_attention_mask": encoder_attention_mask.to(torch.bool),
                 },
             )
 
@@ -1392,11 +1392,11 @@ class BD3LM(MDLM):
             )
             return DenoiserInput(
                 xt=input_ids,
-                attention_mask=decoder_attention_mask,
+                attention_mask=decoder_attention_mask.to(torch.bool),
                 past_key_values=past_key_values,
                 backbone_kwargs={
                     "encoder_input_ids": context,
-                    "encoder_attention_mask": encoder_attention_mask,
+                    "encoder_attention_mask": encoder_attention_mask.to(torch.bool),
                     "position_ids": position_ids,
                 },
             )

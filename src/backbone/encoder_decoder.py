@@ -27,6 +27,8 @@ class LLMasEncoderDecoder(nn.Module):
         attn_backend: str = "sdpa",
         freeze_encoder: bool = False,
         reinit_decoder: bool = False,
+        tie_encoder_decoder_weights: bool = False,
+        use_encoder_causal_mask: bool = False,
     ):
         assert keep_every_n_encoder_layers <= keep_every_n_decoder_layers, (
             "Cannot remove more encoder than decoder layers."
@@ -40,23 +42,30 @@ class LLMasEncoderDecoder(nn.Module):
 
         # freeze encoder layers
         if freeze_encoder:
+            assert use_encoder_causal_mask
             for param in self.encoder.parameters():
                 param.requires_grad = False
 
-        # reinitialize decoder layers
-        if reinit_decoder:
-            decoder_config = AutoConfig.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=True,
-                attn_implementation=attn_backend,
-            )
-            self.decoder = AutoModelForCausalLM(decoder_config)
+        # tie encoder and decoder weights
+        if tie_encoder_decoder_weights:
+            assert not freeze_encoder
+            self.decoder = self.encoder
         else:
-            self.decoder = AutoModelForCausalLM.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=True,
-                attn_implementation=attn_backend,
-            )
+            # reinitialize decoder layers
+            if reinit_decoder:
+                decoder_config = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    attn_implementation=attn_backend,
+                )
+                self.decoder = AutoModelForCausalLM(decoder_config)
+            else:
+                self.decoder = AutoModelForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    attn_implementation=attn_backend,
+                )
+
         # delete layers from encoder / decoder
         if keep_every_n_encoder_layers < len(self.encoder.model.layers):
             encoder_layers_post_surgery = []
@@ -64,18 +73,23 @@ class LLMasEncoderDecoder(nn.Module):
                 if (i + 1) % keep_every_n_encoder_layers == 0:
                     encoder_layers_post_surgery.append(encoder_layer)
             self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
-        del self.encoder.lm_head
-
-        if keep_every_n_decoder_layers < len(self.decoder.model.layers):
+        if not tie_encoder_decoder_weights:
+            del self.encoder.lm_head
+        if (
+            keep_every_n_decoder_layers < len(self.decoder.model.layers)
+            and not tie_encoder_decoder_weights
+        ):
             decoder_layers_post_surgery = []
             for i, decoder_layer in enumerate(self.decoder.model.layers):
                 if (i + 1) % keep_every_n_decoder_layers == 0:
                     decoder_layers_post_surgery.append(decoder_layer)
             self.decoder.model.layers = nn.ModuleList(decoder_layers_post_surgery)
         self.keep_every_n_decoder_layers = keep_every_n_decoder_layers
-        del self.decoder.model.embed_tokens
+        self.use_encoder_causal_mask = use_encoder_causal_mask
+        self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
+        if not tie_encoder_decoder_weights:
+            del self.decoder.model.embed_tokens
         self.max_length = max_length
-        self.freeze_encoder = freeze_encoder
 
     def forward(
         self,
@@ -97,7 +111,7 @@ class LLMasEncoderDecoder(nn.Module):
             encoder_position_ids = torch.arange(
                 encoder_input_ids.shape[-1], device=encoder_input_ids.device
             ).unsqueeze(0)
-            if self.freeze_encoder:
+            if self.use_encoder_causal_mask:
                 encoder_attention_mask = None  # must use causal mask
             if encoder_attention_mask is not None:
                 encoder_attention_mask = encoder_attention_mask[:, None, ...].to(
@@ -128,6 +142,11 @@ class LLMasEncoderDecoder(nn.Module):
         attention_mask = attention_mask[:, None, ...].to(self.decoder.dtype)
 
         for i, decoder_layer in enumerate(self.decoder.model.layers):
+            if (
+                self.tie_encoder_decoder_weights
+                and (i + 1) % self.keep_every_n_decoder_layers != 0
+            ):
+                continue
             if past_key_values is not None:
                 prev_cache_len = past_key_values.get_seq_length()
             # cross-attend to encoder kvs
