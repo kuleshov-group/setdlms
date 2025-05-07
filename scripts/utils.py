@@ -54,6 +54,11 @@ def maybe_add_missing_special_tokens(tokenizer: PreTrainedTokenizer):
                 # qwen
                 tokenizer.mask_token = "<|fim_middle|>"
                 tokenizer.mask_token_id = tokenizer.get_added_vocab()["<|fim_middle|>"]
+            elif "_MASK" in tokenizer.vocab:
+                tokenizer.mask_token = "_MASK"
+                tokenizer.mask_token_id = tokenizer.vocab["_MASK"]
+            else:
+                raise ValueError("[MASK] token not specified for this tokenizer")
     return tokenizer
 
 
