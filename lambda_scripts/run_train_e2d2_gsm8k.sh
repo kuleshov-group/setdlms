@@ -1,28 +1,15 @@
-#!/bin/bash
-#SBATCH -J gsm8k_llama_e2d2              # Job name
-#SBATCH -o ../watch_folder/%x_%j.out  # Output file (%j expands to jobID)
-#SBATCH -e ../watch_folder/%x_%j.err  # Error file (%j expands to jobID)
-#SBATCH --get-user-env                # Retrieve the users login environment
-#SBATCH --partition=kuleshov               # Request partition
-#SBATCH --constraint="[a100|a6000|a5000|3090]"
-#SBATCH -t 960:00:00                  # Time limit (hh:mm:ss)
-#SBATCH --mem=64000                   # Server memory requested (per node)
-#SBATCH -N 1                          # Total number of nodes requested
-#SBATCH --ntasks-per-node=8
-#SBATCH --gres=gpu:8                  # Type/number of GPUs needed
-#SBATCH --open-mode=append            # Do not overwrite logs
-#SBATCH --requeue                     # Requeue upon preemption
-#SBATCH --mail-user=yzs2@cornell.edu  # Email
-#SBATCH --mail-type=END               # Request status by email
-
-
 # Setup environment
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
+CUDA_VISIBLE_DEVICES=0
+# GPUS_ON_NODE=$(nvidia-smi -L | wc -l)
+GPUS_ON_NODE=1
+
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=32 # 16, 32, 64
-KEEP_EVERY_N_DECODER_LAYERS=7 # 2, 7
+KEEP_EVERY_N_ENCODER_LAYERS=7 # set to > 1 for debugging
+KEEP_EVERY_N_DECODER_LAYERS=14 # 2, 7
 
 # Hyperparameters
 LR=1e-4 # 1e-5, 1e-4, 1e-3
@@ -41,7 +28,7 @@ PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/
 TAG=qwen1
 RUN_NAME=gsm8k-bs${BATCH_SIZE}-block${BLOCK_SIZE}-keep${KEEP_EVERY_N_DECODER_LAYERS}-tie${TIE_ENCODER_DECODER_WEIGHTS}-causalenc${USE_ENCODER_CAUSAL_MASK}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
-composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denoiser.py \
+composer -n ${GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
   dataset@train_dataset=gsm8k_train \
@@ -57,16 +44,17 @@ composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denois
   model=bd3lm \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
   model.config.length=768 \
-  model.config.backbone_config.keep_every_n_encoder_layers=1 \
+  model.config.backbone_config.keep_every_n_encoder_layers=${KEEP_EVERY_N_ENCODER_LAYERS} \
   model.config.backbone_config.keep_every_n_decoder_layers=${KEEP_EVERY_N_DECODER_LAYERS} \
   model.config.backbone_config.tie_encoder_decoder_weights=${TIE_ENCODER_DECODER_WEIGHTS} \
   model.config.backbone_config.use_encoder_causal_mask=${USE_ENCODER_CAUSAL_MASK} \
   training.global_batch_size=${BATCH_SIZE} \
-  training.grad_accum=$(( BATCH_SIZE / SLURM_GPUS_ON_NODE )) \
+  training.grad_accum=$(( BATCH_SIZE / GPUS_ON_NODE )) \
   ~composer.trainer.compile_config \
   ~composer.trainer.parallelism_config \
   block_size=${BLOCK_SIZE} \
   training.antithetic_sampling=false \
-  hydra.run.dir=/share/kuleshov/ma2238/runs/dllm-dev/${RUN_NAME} \
+  hydra.run.dir=/home/ubuntu/runs/dllm-dev/${RUN_NAME} \
   composer.trainer.save_interval="5ep" \
-  composer.loggers.name=${RUN_NAME}
+  composer.loggers.name=${RUN_NAME} \
+  composer.loggers=null

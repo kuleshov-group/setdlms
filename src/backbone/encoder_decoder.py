@@ -2,7 +2,7 @@ from typing import Union
 
 import torch
 from torch import Tensor, nn
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.processing_utils import Unpack
@@ -14,13 +14,10 @@ except ModuleNotFoundError:
     BlockMask = None
 
 
-from src.backbone.custom_modeling_llama import LlamaForCausalLM
-from src.backbone.custom_modeling_qwen3 import Qwen3ForCausalLM
-
 logger = logging.get_logger(__name__)
 
 
-class LlamaAsEncoderDecoder(nn.Module):
+class LLMasEncoderDecoder(nn.Module):
     def __init__(
         self,
         pretrained_model_name_or_path: str,
@@ -30,67 +27,51 @@ class LlamaAsEncoderDecoder(nn.Module):
         attn_backend: str = "sdpa",
         freeze_encoder: bool = False,
         reinit_decoder: bool = False,
+        tie_encoder_decoder_weights: bool = False,
+        use_encoder_causal_mask: bool = False,
     ):
         assert keep_every_n_encoder_layers <= keep_every_n_decoder_layers, (
             "Cannot remove more encoder than decoder layers."
         )
+        assert keep_every_n_decoder_layers % keep_every_n_encoder_layers == 0, (
+            "Encoder-Decoder layers are mismatched; cross attention will not work."
+        )
         super().__init__()
-        if "Qwen" in pretrained_model_name_or_path:
-            self.encoder = Qwen3ForCausalLM.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=True,
-                attn_implementation=attn_backend,
+        self.encoder = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path,
+            trust_remote_code=True,
+            attn_implementation=attn_backend,
+        )
+
+        # freeze encoder layers
+        if freeze_encoder:
+            assert use_encoder_causal_mask
+            for param in self.encoder.parameters():
+                param.requires_grad = False
+
+        # tie encoder and decoder weights
+        if tie_encoder_decoder_weights:
+            assert not freeze_encoder
+            self.decoder = self.encoder
+            self.keep_every_n_decoder_layers = (
+                keep_every_n_decoder_layers // keep_every_n_encoder_layers
             )
-
-            # freeze encoder layers
-            if freeze_encoder:
-                for param in self.encoder.parameters():
-                    param.requires_grad = False
-
-            # reinitialize decoder layers
-            if reinit_decoder:
-                decoder_config = AutoConfig.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
-                self.decoder = Qwen3ForCausalLM(decoder_config)
-            else:
-                self.decoder = Qwen3ForCausalLM.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
-        elif "Llama" in pretrained_model_name_or_path:
-            self.encoder = LlamaForCausalLM.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=True,
-                attn_implementation=attn_backend,
-            )
-            # freeze encoder layers
-            if freeze_encoder:
-                for param in self.encoder.parameters():
-                    param.requires_grad = False
-
-            # reinitialize decoder layers
-            if reinit_decoder:
-                decoder_config = AutoConfig.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
-                self.decoder = LlamaForCausalLM(decoder_config)
-            else:
-                self.decoder = LlamaForCausalLM.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
         else:
-            raise ValueError(
-                f"Unsupported model type: {pretrained_model_name_or_path}. "
-                "Please use either Qwen or Llama."
-            )
+            self.keep_every_n_decoder_layers = keep_every_n_decoder_layers
+            # reinitialize decoder layers
+            if reinit_decoder:
+                decoder_config = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    attn_implementation=attn_backend,
+                )
+                self.decoder = AutoModelForCausalLM(decoder_config)
+            else:
+                self.decoder = AutoModelForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    attn_implementation=attn_backend,
+                )
 
         # delete layers from encoder / decoder
         if keep_every_n_encoder_layers < len(self.encoder.model.layers):
@@ -99,18 +80,23 @@ class LlamaAsEncoderDecoder(nn.Module):
                 if (i + 1) % keep_every_n_encoder_layers == 0:
                     encoder_layers_post_surgery.append(encoder_layer)
             self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
-        del self.encoder.lm_head
-
-        if keep_every_n_decoder_layers < len(self.decoder.model.layers):
+        if not tie_encoder_decoder_weights:
+            del self.encoder.lm_head
+        if (
+            keep_every_n_decoder_layers < len(self.decoder.model.layers)
+            and not tie_encoder_decoder_weights
+        ):
             decoder_layers_post_surgery = []
             for i, decoder_layer in enumerate(self.decoder.model.layers):
                 if (i + 1) % keep_every_n_decoder_layers == 0:
                     decoder_layers_post_surgery.append(decoder_layer)
             self.decoder.model.layers = nn.ModuleList(decoder_layers_post_surgery)
-        self.keep_every_n_decoder_layers = keep_every_n_decoder_layers
-        del self.decoder.model.embed_tokens
+        self.keep_every_n_encoder_layers = keep_every_n_encoder_layers
+        self.use_encoder_causal_mask = use_encoder_causal_mask
+        self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
+        if not tie_encoder_decoder_weights:
+            del self.decoder.model.embed_tokens
         self.max_length = max_length
-        self.freeze_encoder = freeze_encoder
 
     def forward(
         self,
@@ -132,12 +118,12 @@ class LlamaAsEncoderDecoder(nn.Module):
             encoder_position_ids = torch.arange(
                 encoder_input_ids.shape[-1], device=encoder_input_ids.device
             ).unsqueeze(0)
-            if self.freeze_encoder:
+            if self.use_encoder_causal_mask:
                 encoder_attention_mask = None  # must use causal mask
             if encoder_attention_mask is not None:
-                encoder_attention_mask = encoder_attention_mask[:, None, ...].to(
-                    self.encoder.dtype
-                )
+                encoder_attention_mask = encoder_attention_mask[:, None, ...].to(self.encoder.dtype)
+                min_dtype = torch.finfo(self.encoder.dtype).min
+                encoder_attention_mask = torch.where(encoder_attention_mask == 0., min_dtype, 0.)
             past_key_values = self.encoder.model(
                 input_ids=encoder_input_ids,
                 attention_mask=encoder_attention_mask,
@@ -160,11 +146,33 @@ class LlamaAsEncoderDecoder(nn.Module):
             decoder_hidden_states, position_ids
         )
 
+        if cache_position is None:
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position = torch.arange(
+                past_seen_tokens, past_seen_tokens + decoder_hidden_states.shape[1], device=decoder_hidden_states.device
+            )
+        
         attention_mask = attention_mask[:, None, ...].to(self.decoder.dtype)
+        min_dtype = torch.finfo(self.encoder.dtype).min
+        attention_mask = torch.where(attention_mask == 0., min_dtype, 0.)
+        attention_mask = self.decoder.model._update_causal_mask(
+            attention_mask=attention_mask,
+            input_tensor=decoder_hidden_states,
+            cache_position=cache_position,
+            past_key_values=past_key_values, 
+            output_attentions=False
+        )
 
         for i, decoder_layer in enumerate(self.decoder.model.layers):
+            if (
+                self.tie_encoder_decoder_weights
+                and (i + 1) % self.keep_every_n_decoder_layers != 0
+            ):
+                continue
             if past_key_values is not None:
                 prev_cache_len = past_key_values.get_seq_length()
+            # TODO maybe adopt gradient checkpointing from transformers
+
             # cross-attend to encoder kvs
             decoder_hidden_states = decoder_layer(
                 hidden_states=decoder_hidden_states,
@@ -178,16 +186,15 @@ class LlamaAsEncoderDecoder(nn.Module):
                 **flash_attn_kwargs,
             )[0]
             if past_key_values is not None:
-                # DynamicCache extends along sequence dimension by default, truncating back to original
-                # encoder output length
-                layer_idx = ((i + 1) * self.keep_every_n_decoder_layers) - 1
-                past_key_values.key_cache[layer_idx] = past_key_values.key_cache[
-                    layer_idx
-                ][..., :prev_cache_len, :]
-                past_key_values.value_cache[layer_idx] = past_key_values.value_cache[
-                    layer_idx
-                ][..., :prev_cache_len, :]
-        # Only keep logits for masked tokens
+                # DynamicCache extends along sequence dimension by default
+                # truncating back to original, encoder output length
+                layer_idx = decoder_layer.self_attn.layer_idx
+                past_key_values.key_cache[layer_idx] = past_key_values.key_cache[layer_idx][
+                    ..., :prev_cache_len, :
+                ]
+                past_key_values.value_cache[layer_idx] = past_key_values.value_cache[layer_idx][
+                    ..., :prev_cache_len, :
+                ]
         decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)
         decoded_tokens = self.decoder.lm_head(decoder_hidden_states)
         return decoded_tokens
