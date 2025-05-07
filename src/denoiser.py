@@ -20,6 +20,7 @@ from transformers import (
 )
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import ModelOutput
+from typing_extensions import Self
 
 try:
     from torch.nn.attention.flex_attention import (
@@ -1126,7 +1127,21 @@ class BD3LM(MDLM):
 
     def __init__(self, config: BD3LMConfig):
         super().__init__(config)
+        self.static_attention_mask = None
+        self.encoder_static_attention_mask = None
         self._create_static_mask()
+
+    def to(self, *args, **kwargs) -> Self:
+        if self.config.attn_backend != "flex_attention":
+            if hasattr(self, "static_attention_mask"):
+                self.static_attention_mask = self.static_attention_mask.to(
+                    *args, **kwargs
+                )
+            if hasattr(self, "encoder_static_attention_mask"):
+                self.encoder_static_attention_mask = (
+                    self.encoder_static_attention_mask.to(*args, **kwargs)
+                )
+        return super().to(*args, **kwargs)
 
     @staticmethod
     def _encoder_block_mask(
@@ -1308,7 +1323,7 @@ class BD3LM(MDLM):
                     seq_len=self.config.length,
                 )
             self.encoder_static_attention_mask = encoder_static_mask
-            self.decoder_static_attention_mask = decoder_static_mask
+            self.static_attention_mask = decoder_static_mask
 
     def _prepare_inputs(
         self,
@@ -1335,13 +1350,10 @@ class BD3LM(MDLM):
             alpha_t_prime = alpha_t_prime[..., None]
         xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, context_mask=context_mask)
 
-        self.decoder_static_attention_mask = self.decoder_static_attention_mask.to(
-            xt.device
-        )
         if self.config.backbone_is_decoder_only:
             # TODO: check attention mask is correct
             decoder_attention_mask = (
-                self.decoder_static_attention_mask[None, ...]
+                self.static_attention_mask[None, ...]
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask[..., None]
             )
@@ -1357,12 +1369,9 @@ class BD3LM(MDLM):
             )
         else:
             decoder_attention_mask = (
-                self.decoder_static_attention_mask[None, ...]
+                self.static_attention_mask[None, ...]
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask[..., None]
-            )
-            self.encoder_static_attention_mask = self.encoder_static_attention_mask.to(
-                xt.device
             )
             encoder_attention_mask = (
                 self.encoder_static_attention_mask[None, ...]
