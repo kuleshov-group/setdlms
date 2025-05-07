@@ -164,11 +164,11 @@ class LMEvalHarness(LM):
         res = []
         res_for_json = []
         for elem in tqdm(ds, desc="Generating"):
-            sample = self.model.generate(
+            sample, _ = self.model.generate(
                 max_length=len(elem["prefix"]) + self.max_cont_length,
                 context=elem["prefix"][None, ...].to(self.device),
                 device=self.device,
-                tokenizer=self.tokenizer,
+                # tokenizer=self.tokenizer,  # For debugging
             )
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
