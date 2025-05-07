@@ -176,7 +176,8 @@ class LLMasEncoderDecoder(nn.Module):
             ):
                 continue
             if past_key_values is not None:
-                prev_cache_len = past_key_values.get_seq_length()
+                layer_idx = decoder_layer.self_attn.layer_idx
+                prev_cache_len = past_key_values[layer_idx][0].shape[-2]
             # TODO maybe adopt gradient checkpointing from transformers
 
             # cross-attend to encoder kvs
@@ -194,7 +195,6 @@ class LLMasEncoderDecoder(nn.Module):
             if past_key_values is not None:
                 # DynamicCache extends along sequence dimension by default
                 # truncating back to original, encoder output length
-                layer_idx = decoder_layer.self_attn.layer_idx
                 past_key_values.key_cache[layer_idx] = past_key_values.key_cache[layer_idx][
                     ..., :prev_cache_len, :
                 ]
