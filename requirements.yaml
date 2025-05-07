@@ -17,6 +17,7 @@ dependencies:
       - fire
       - hydra-core
       - ipdb
+      - magic-wormhole
       - mosaicml
       - mosaicml-streaming
       - pre-commit
