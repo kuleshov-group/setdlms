@@ -12,7 +12,12 @@ import hydra.utils
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-from transformers import AutoTokenizer, PretrainedConfig, PreTrainedModel
+from transformers import (
+    AutoTokenizer,
+    PretrainedConfig,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+)
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import ModelOutput
 
@@ -173,7 +178,7 @@ class Denoiser(ABC, PreTrainedModel):
             if config.time_conditioned_backbone is not None
             else "noise" in inspect.getfullargspec(self.backbone.forward).args
         )
-        self.sampler = (
+        self.sampler_config = (
             hydra.utils.instantiate(config.sampler_config)
             if config.sampler_config is not None
             else None
@@ -722,7 +727,7 @@ class D3PM(Denoiser):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        if self.sampler.config.first_hitting:
+        if self.sampler_config.first_hitting:
             if max_seq_len is None:
                 raise ValueError("max_seq_len must be provided for first hitting.")
             timesteps = torch.tensor([1.0])
@@ -733,8 +738,8 @@ class D3PM(Denoiser):
             return timesteps[1:].to(device)
         timesteps = torch.linspace(
             1,
-            self.sampler.config.min_t,
-            self.sampler.config.num_steps + 1,
+            self.sampler_config.min_t,
+            self.sampler_config.num_steps + 1,
             device=device,
         )
         return timesteps
@@ -747,8 +752,8 @@ class D3PM(Denoiser):
         Returns:
             torch.Tensor: Transformed logits.
         """
-        if self.sampler.config.top_p < 1.0:
-            p = self.sampler.config.top_p
+        if self.sampler_config.top_p < 1.0:
+            p = self.sampler_config.top_p
             sorted_probs, sorted_indices = logits.sort(dim=-1, descending=True)
             cum_probs = sorted_probs.cumsum(dim=-1)
             nucleus_mask = cum_probs <= p
@@ -778,11 +783,11 @@ class D3PM(Denoiser):
         if self.config.shift_logits:
             xt = xt[:, 1:]
 
-        if self.sampler.config.first_hitting:
+        if self.sampler_config.first_hitting:
             # uniformly select an index (among masked tokens)
             num_masked = (xt == self.mask_token_id).sum(-1)
 
-            if self.sampler.config.low_confidence_remasking:
+            if self.sampler_config.low_confidence_remasking:
                 # select the index with the highest confidence
                 xs_q = q_xs.gather(-1, xs[..., None]).squeeze(-1)
                 xs_q[xt != self.mask_token_id] = 0
@@ -856,7 +861,7 @@ class D3PM(Denoiser):
             # (improves mdlm quality)
             pad_len = 0
             if (
-                self.sampler.config.pad_context
+                self.sampler_config.pad_context
                 and denoiser_inputs.xt.shape[-1] < self.config.length
             ):
                 # pad with masks
@@ -895,28 +900,41 @@ class D3PM(Denoiser):
         else:
             x_theta = cache["x_theta"]
         cache = {"x_theta": x_theta}
-        if self.sampler.config.use_x0_pred:
+        if self.sampler_config.use_x0_pred:
             return x_theta, cache
         q_xs = self._compute_posterior(x_theta, denoiser_inputs.xt, alpha_t, alpha_s)
         return q_xs, cache
 
     def generate(  # TODO: clean up signature and docstring
         self,
-        max_seq_len: int,
+        max_length: int | None = None,
         batch_size: int | None = None,
-        context: torch.Tensor | None = None,
-        disable_cache: bool = False,
+        disable_cache: bool | None = None,
         device: str | None = None,
+        context: torch.Tensor | None = None,
+        tokenizer: PreTrainedTokenizer | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, int]:
+        max_length = (
+            max_length if max_length is not None else self.sampler_config.max_length
+        )
+        batch_size = (
+            batch_size if batch_size is not None else self.sampler_config.batch_size
+        )
+        disable_cache = (
+            disable_cache
+            if disable_cache is not None
+            else self.sampler_config.disable_cache
+        )
         device = (
             device
             if device is not None
             else ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        max_blocks = max_seq_len // self.sampler.config.block_size
+
+        max_blocks = max_length // self.sampler_config.block_size
         if context is not None:
-            assert context.shape[-1] + max_seq_len <= self.config.length
+            assert context.shape[-1] + max_length <= self.config.length
             accumulated_samples = context.to(device)
         else:
             accumulated_samples = torch.empty(
@@ -926,12 +944,12 @@ class D3PM(Denoiser):
         total_NFEs = 0
         # cache kvs of context
         past_key_values = None
-        if context is not None and self.sampler.config.kv_caching:
+        if context is not None and self.sampler_config.kv_caching:
             past_key_values = self.update_kv_cache(
                 context=context,
                 past_key_values=past_key_values,
             )
-        block_size = self.sampler.config.block_size
+        block_size = self.sampler_config.block_size
         block_pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)
         for _ in block_pbar:
             block_NFEs = 0
@@ -948,7 +966,7 @@ class D3PM(Denoiser):
                 max_seq_len=block_size, device=device
             )
             step_bar = tqdm(timesteps, desc="T", total=timesteps.shape[0], leave=False)
-            dt = (1 - self.sampler.config.min_t) / len(timesteps)
+            dt = (1 - self.sampler_config.min_t) / len(timesteps)
             cache = None
 
             for t in step_bar:
@@ -994,9 +1012,9 @@ class D3PM(Denoiser):
                 xt = xs
             accumulated_samples = torch.cat((accumulated_samples, xt), dim=-1)
 
-            # TODO FOR DEBUGGING
-            print(self.tokenizer.batch_decode(accumulated_samples))
-            if self.sampler.config.kv_caching:
+            if tokenizer is not None:
+                print(tokenizer.batch_decode(accumulated_samples))
+            if self.sampler_config.kv_caching:
                 past_key_values = self.update_kv_cache(
                     context=xt,
                     past_key_values=past_key_values,
@@ -1224,7 +1242,9 @@ class BD3LM(MDLM):
         return block_diagonal | offset_block_causal | block_causal
 
     def _create_static_mask(self) -> None:
-        assert self.config.attn_backend != "flex_attention", "FlexAttention not supported yet"
+        assert self.config.attn_backend != "flex_attention", (
+            "FlexAttention not supported yet"
+        )
         if self.config.backbone_is_decoder_only:
             if self.config.attn_backend == "flex_attention":
                 static_mask = create_block_mask(
@@ -1250,7 +1270,6 @@ class BD3LM(MDLM):
             )
         else:
             if self.config.attn_backend == "flex_attention":
-                import ipdb ; ipdb.set_trace()
                 encoder_static_mask = create_block_mask(
                     partial(
                         self._encoder_block_mask,
@@ -1315,8 +1334,10 @@ class BD3LM(MDLM):
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
         xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, context_mask=context_mask)
-        
-        self.decoder_static_attention_mask = self.decoder_static_attention_mask.to(xt.device)
+
+        self.decoder_static_attention_mask = self.decoder_static_attention_mask.to(
+            xt.device
+        )
         if self.config.backbone_is_decoder_only:
             # TODO: check attention mask is correct
             decoder_attention_mask = (
@@ -1324,7 +1345,7 @@ class BD3LM(MDLM):
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask[..., None]
             )
-                
+
             return DenoiserInput(
                 xt=xt,
                 x0=input_ids,
@@ -1340,7 +1361,9 @@ class BD3LM(MDLM):
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask[..., None]
             )
-            self.encoder_static_attention_mask = self.encoder_static_attention_mask.to(xt.device)
+            self.encoder_static_attention_mask = self.encoder_static_attention_mask.to(
+                xt.device
+            )
             encoder_attention_mask = (
                 self.encoder_static_attention_mask[None, ...]
                 & attention_mask[:, None, :]

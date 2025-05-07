@@ -1,4 +1,3 @@
-from abc import ABC
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -20,13 +19,3 @@ class SamplerConfig(OrderedDict):
     disable_cache: bool = False
     kv_caching: bool = False
     shift_logits: bool = False
-
-
-class Sampler(ABC):
-    def __init__(self, config):
-        self.config = config
-
-
-class AncestralSampler(Sampler):
-    def __init__(self, config):
-        super().__init__(config)
