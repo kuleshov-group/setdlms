@@ -20,6 +20,7 @@ dependencies:
       - mosaicml
       - mosaicml-streaming
       - pre-commit
+      - sentencepiece
       - ruff
       - transformers
       - wandb

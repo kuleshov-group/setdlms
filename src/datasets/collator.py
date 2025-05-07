@@ -15,39 +15,90 @@ class DenoisingCollator:
         max_length: int | None = None,
         pad_to_multiple_of: int | None = None,
         return_tensors: str = "pt",
-        # Use to bias sampling in certain region
+        predict_padding: bool = False,
         restricted_t_range: tuple[float, float] | None = None,
         sampling_eps: float = 0.05,
         antithetic_sampling: bool = False,
+        block_size: int | None = None,
+        base_collator: Callable | None = None,
     ):
-        self.base_collate_fn = DataCollatorWithPadding(
-            tokenizer=tokenizer,
-            padding=padding,
-            max_length=max_length,
-            pad_to_multiple_of=pad_to_multiple_of,
-            return_tensors=return_tensors,
-        )
+        """
+        Parameters:
+            tokenizer (PreTrainedTokenizerBase): Tokenizer used in base collator
+            padding (bool; default: True): Whether to pad the sequences
+            max_length: (Optional: int): Maximum length of the sequences.
+            pad_to_multiple_of: (Optional: int): if specified,
+                pad sequences to a multiple of this value.
+            return_tensors: (str; default: "pt"): Format of the returned tensors.
+            predict_padding (bool; default: False): Whether to predict padding tokens.
+            restricted_t_range (Optional: tuple[min: float, max: float]): If specified,
+                sampling of timestep (t) sampling is restricted to [min, max] range,
+                as opposed to [0, 1].
+            sampling_eps (float; default: 0.05): Effective minimum sampled t.
+            antithetic_sampling (bool; default: False): Whether to use antithetic
+                sampling.
+            block_size (int): Specified when using block-denoising;
+                if specified, sampled t will have shape (batch_size, max_length),
+                where within each block the same sampled_t will be repeated.
+                If not specified, sampled t will have shape (batch_size,)
+            base_collator (Optional: Callable): The base collator that is being wrapped.
+                If None, defaults to transformers.DataCollatorWithPadding.
+        """
+        if base_collator is not None:
+            self.base_collate_fn = base_collator
+        else:
+            self.base_collate_fn = DataCollatorWithPadding(
+                tokenizer=tokenizer,
+                padding=padding,
+                max_length=max_length,
+                pad_to_multiple_of=pad_to_multiple_of,
+                return_tensors=return_tensors,
+            )
+        self.predict_padding = predict_padding
         self.restricted_t_range = restricted_t_range
         self.sampling_eps = sampling_eps
         self.antithetic_sampling = antithetic_sampling
+        self.max_length = max_length
+        self.block_size = block_size
 
     def _sample_t(self, batch_size, device):
-        _eps_t = torch.rand(batch_size, device=device)
+        num_blocks = self.max_length // self.block_size if self.block_size else 1
+        if self.block_size is not None and self.block_size > 0:
+            _eps_t = torch.rand(batch_size, num_blocks, device=device)
+        else:
+            _eps_t = torch.rand(batch_size, device=device)
         if self.antithetic_sampling:
-            offset = torch.arange(batch_size, device=device) / batch_size
-            _eps_t = (_eps_t / batch_size + offset) % 1
+            offset = torch.arange(batch_size * num_blocks, device=device) / (
+                batch_size * num_blocks
+            )
+            offset = offset.view(batch_size, num_blocks)
+            _eps_t = (_eps_t / (batch_size * num_blocks) + offset) % 1
         t = (1 - self.sampling_eps) * _eps_t + self.sampling_eps
         if self.restricted_t_range is not None:
             low, high = self.restricted_t_range
             t = (low - high) * t + high
+        t = t.repeat_interleave(self.block_size, dim=1) if self.block_size else t
         return t
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        context_mask = [f.pop("context_mask", None) for f in features]
         batch = self.base_collate_fn(features)
         t = self._sample_t(
             batch_size=batch["input_ids"].shape[0], device=batch["input_ids"].device
         )
+        if all([c is not None for c in context_mask]):
+            context_mask = torch.nn.utils.rnn.pad_sequence(
+                context_mask, batch_first=True
+            )[..., : self.max_length]  # noqa: type
+            context_mask = torch.nn.functional.pad(
+                context_mask, (0, self.max_length - context_mask.shape[-1])
+            )
+            batch.update({"context_mask": context_mask})
         batch.update({"t": t})
+
+        # Override the attention mask to attend to all tokens (including [PAD])
+        if self.predict_padding:
+            batch["attention_mask"] = torch.ones_like(batch["input_ids"])
         return batch
 
 

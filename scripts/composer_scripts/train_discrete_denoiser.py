@@ -8,6 +8,7 @@ from streaming import StreamingDataset
 
 from scripts.utils import (
     format_number,
+    maybe_add_missing_special_tokens,
     print_and_save_config,
     register_useful_resolvers,
 )
@@ -23,14 +24,14 @@ def main(cfg: DictConfig) -> None:
 
     # Tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
-    if getattr(tokenizer, "pad_token", None) is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
     # Model
     model = hydra.utils.instantiate(
         cfg.model,
         _convert_="all",  # required to enable json-serialization when saving checkpoint
     )
+    print(model)
     model = HuggingFaceModel(
         model,
         tokenizer=tokenizer,

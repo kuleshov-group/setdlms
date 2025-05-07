@@ -1,0 +1,19 @@
+#file: noinspection LongLine
+defaults:
+  - tokenizer: autotokenizer
+  - dataset@train: null
+  - dataset@validation: null
+  - dataset@test: null
+  - _self_
+
+seed: 1
+pretrained_model_name_or_path: null  # Use for pretrained backbones
+
+hydra:
+  output_subdir: null
+  run:
+    dir: ${cwd:}
+  job:
+    chdir: true
+  job_logging: none
+  hydra_logging: none

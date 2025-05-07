@@ -7,6 +7,7 @@ defaults:
   - dataset@eval_dataset: ???
   - metrics: [loss, nll, bpd, perplexity]
   - model: mdlm
+  - sampler@model.config.sampler_config: ancestral
   - noise@model.config.noise_config: linear
   - model/backbone@model.config.backbone_config: ???
   - _self_
@@ -15,6 +16,7 @@ run_name: ???
 seed: 1
 backend: ${set_backend:}
 pretrained_model_name_or_path: null  # Use for pretrained backbones
+block_size: null  # Use for BD3LMs
 
 train_dataloader:
   _target_: torch.utils.data.DataLoader
@@ -25,8 +27,8 @@ train_dataloader:
 
 eval_dataloader:
   _target_: torch.utils.data.DataLoader
-  # Note: batch_size is **per device**
-  batch_size: ${div_up:${training.eval_global_batch_size}, ${get_world_size:}}
+  # Note: batch_size is **per device** (if grad_accum is used, reduce size to avoid OOM)
+  batch_size: ${eval:${div_up:${div_up:${training.eval_global_batch_size}, ${get_world_size:}}, ${training.grad_accum}}*2}
   num_workers: ${train_dataloader.num_workers}
   pin_memory: ${train_dataloader.pin_memory}
 
@@ -37,7 +39,7 @@ training:
   lr: 3e-4  # Peak learning rate
   global_batch_size: 512
   eval_global_batch_size: ${.global_batch_size}
-  grad_accum: ${div_up:${training.global_batch_size}, ${eval:${get_world_size:} * ${train_dataloader.batch_size}}}
+  grad_accum: 1
   # Parameters for sampling t
   antithetic_sampling: True
   sampling_eps: 1e-3

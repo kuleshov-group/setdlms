@@ -44,6 +44,9 @@ class NLL(Metric):
     def update(self, output: Mapping | Tensor, target: Tensor) -> None:
         value = output["nlls"]
         weight = output.get("tokens_mask", None)
+        # TODO hack for logit shifting
+        if weight is not None:
+            weight = weight[:, -value.shape[1] :]
 
         # broadcast weight to value shape; copied from:
         # https://github.com/Lightning-AI/torchmetrics/blob/master/src/torchmetrics/aggregation.py#L501-L625  # noqa: E501

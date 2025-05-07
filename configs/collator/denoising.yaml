@@ -3,6 +3,8 @@ padding: "max_length"
 max_length: ${model.config.length}
 pad_to_multiple_of: null
 return_tensors: "pt"
+predict_padding: false
 restricted_t_range: ${training.restricted_t_range}
 sampling_eps: ${training.sampling_eps}
 antithetic_sampling: ${training.antithetic_sampling}
+block_size: ${block_size}
