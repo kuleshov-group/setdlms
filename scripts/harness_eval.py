@@ -16,7 +16,10 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from datasets import Dataset
-from scripts.utils import load_model_from_ckpt_dir_path
+from scripts.utils import (
+    load_model_from_ckpt_dir_path,
+    maybe_add_missing_special_tokens,
+)
 from src.sampler import SamplerConfig
 
 
@@ -29,15 +32,16 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-@register_model("lm_eval_harness")
+@register_model("lm_eval_harness_model")
 class LMEvalHarness(LM):
     def __init__(
         self,
         # Model args
-        max_cont_len: int,
-        model_path: str,
-        tokenizer_name_or_path: str,
+        max_cont_len: int = 128,
+        model_path: str = "",
+        tokenizer_name_or_path: str = "",
         device: str = "cuda",
+        load_ema_weights: bool = True,
         # Sampler args
         num_samples: int = 1,
         batch_size: int = 1,
@@ -60,7 +64,6 @@ class LMEvalHarness(LM):
             max_cont_len (int): Max length of continuation tokens.
             model_path (str): Checkpoint path.
             tokenizer_name_or_path (str): Tokenizer name or path.
-            device (str): Device to use.
         """
         super().__init__()
 
@@ -76,16 +79,21 @@ class LMEvalHarness(LM):
             model_kwargs.update({"device_map": {"": f"{self.accelerator.device}"}})
 
         self.device = torch.device(device)
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name_or_path, trust_remote_code=True
+        self.tokenizer = maybe_add_missing_special_tokens(
+            AutoTokenizer.from_pretrained(
+                tokenizer_name_or_path, trust_remote_code=True
+            )
         )
         try:
-            self.model = load_model_from_ckpt_dir_path(model_path)
+            self.model = load_model_from_ckpt_dir_path(
+                path_to_ckpt_dir=model_path,
+                load_ema_weights=load_ema_weights,
+            ).to(self.device)
         except FileNotFoundError:
             self.model = AutoModel.from_pretrained(
                 model_path,
                 trust_remote_code=True,
-            )
+            ).to(self.device)
         self.model.eval()
         assert (
             self.model.mask_token_id is not None
@@ -96,7 +104,7 @@ class LMEvalHarness(LM):
         )
         self.sampler_config = SamplerConfig(
             num_samples=num_samples,
-            batch_size=batch_size,
+            batch_size=int(batch_size),
             num_steps=num_steps,
             min_t=min_t,
             top_p=top_p,
@@ -126,14 +134,20 @@ class LMEvalHarness(LM):
         raise NotImplementedError
 
     def generate_until(self, requests, **generation_kwargs):
-        def _tokenize(e):
-            ctx = e["prefix"]
+        def _tokenize(
+            e,
+            prefix_text: str | None = (
+                "Please reason step by step, and put your "
+                + "final answer within $\\boxed{}$. "
+            ),
+        ):
+            ctx = (prefix_text if prefix_text is not None else "") + e["prefix"]
             n_spaces = len(ctx) - len(ctx.rstrip())
             if n_spaces > 0:
                 ctx = ctx[:-n_spaces]
             prefix_tokens = self.tokenizer(ctx)["input_ids"]
             return {
-                "prefix_text": e["prefix"],
+                "prefix_text": ctx,
                 "prefix": prefix_tokens,
                 "target": e["target"],
             }
@@ -152,7 +166,9 @@ class LMEvalHarness(LM):
         for elem in tqdm(ds, desc="Generating"):
             sample = self.model.generate(
                 max_length=len(elem["prefix"]) + self.max_cont_length,
-                context=elem["prefix"],
+                context=elem["prefix"][None, ...].to(self.device),
+                device=self.device,
+                tokenizer=self.tokenizer,
             )
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [

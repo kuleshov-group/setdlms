@@ -18,24 +18,28 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-python -u scripts/harness_eval \
+MODEL_PATH="/share/kuleshov/yzs2/dllm-dev/outputs/gsm8k_train/2025.05.04/221638/checkpoints/HF_best-rank0"
+
+python scripts/harness_eval.py \
   --tasks gsm8k \
-  --model lm_eval_harness \
+  --model lm_eval_harness_model \
+  --num_fewshot 0 \
+  --batch_size 1 \
+  --device cuda:0 \
   --model_args \
     max_cont_len=128,\
-model_path=/share/kuleshov/yzs2/dllm-dev/outputs/gsm8k_train/2025.05.04/221638/checkpoints/HF_best-rank0,\
-tokenizer_name_or_path=/share/kuleshov/yzs2/dllm-dev/outputs/gsm8k_train/2025.05.04/221638/checkpoints/HF_best-rank0,\
-device=cuda,\
+model_path=${MODEL_PATH},\
+load_ema_weights=False,\
+tokenizer_name_or_path=microsoft/Phi-4-mini-reasoning,\
 num_samples=1,\
-batch_size=1,\
-num_steps=1000,\
+num_steps=4,\
 min_t=1e-5,\
 top_p=0.9,\
 pad_context=False,\
-greedy=False,\
-use_x0_pred=False,\
-first_hitting=False,\
-low_confidence_remasking=False,\
+greedy=True,\
+use_x0_pred=True,\
+first_hitting=True,\
+low_confidence_remasking=True,\
 disable_cache=False,\
 kv_caching=False,\
 max_length=768,\
