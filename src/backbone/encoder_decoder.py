@@ -148,7 +148,7 @@ class LLMasEncoderDecoder(nn.Module):
             position_ids = torch.arange(
                 input_ids.shape[1], device=input_ids.device
             ).unsqueeze(0)
-        decoder_position_embeddings = self.decoder.model.rotary_emb(
+        decoder_position_embeddings = self.encoder.model.rotary_emb(
             decoder_hidden_states, position_ids
         )
 
