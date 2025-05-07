@@ -127,6 +127,7 @@ def print_and_save_config(
 def load_model_from_ckpt_dir_path(
     path_to_ckpt_dir: str,
     ckpt_file: str = "best-rank0.pt",
+    load_ema_weights: bool = True,
 ) -> Denoiser:
     """Load a model from a checkpoint path (and file).
 
@@ -135,6 +136,7 @@ def load_model_from_ckpt_dir_path(
             Assumed to have `checkpoints` subdirectory with checkpoint file(s).
         ckpt_file (str): Name of the checkpoint file inside `checkpoints` directory.
             Defaults to "best-rank0.pt".
+        load_ema_weights (bool): Whether to load the EMA weights. Defaults to True.
 
     Returns:
         Denoiser: The loaded denoiser model.
@@ -149,17 +151,24 @@ def load_model_from_ckpt_dir_path(
         _convert_="all",
     )
 
-    try:
-        ckpt = torch.load(
-            os.path.join(path_to_ckpt_dir, "checkpoints", ckpt_file), weights_only=False
-        )
-        state_dict = ckpt["state"]["model"]
+    ckpt = torch.load(
+        os.path.join(path_to_ckpt_dir, "checkpoints", ckpt_file), weights_only=False
+    )
+    if load_ema_weights:
+        state_dict = None
+        for alg in ckpt["state"]["algorithms"]:
+            # algorithms stored as list[tuple[str, dict]]
+            if alg[0] == "EMA":
+                state_dict = alg[1]["ema_model"]["named_parameters_dict"]
+                break
         torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
-            state_dict, "model."
+            state_dict, "module."
         )
-        model.load_state_dict(state_dict)
-
-    except FileNotFoundError as e:
-        print(e)
+        if state_dict is None:
+            raise ValueError("EMA weights not found in checkpoint.")
+    else:
+        state_dict = ckpt["state"]["model"]
+    torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(state_dict, "model.")
+    model.load_state_dict(state_dict, strict=False)
 
     return model
