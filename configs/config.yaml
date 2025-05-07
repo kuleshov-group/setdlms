@@ -7,7 +7,7 @@ defaults:
   - dataset@eval_dataset: ???
   - metrics: [loss, nll, bpd, perplexity]
   - model: mdlm
-  - sampler@model.config.sampler_config: ancestral
+  - sampler@model.config.sampler_config: default
   - noise@model.config.noise_config: linear
   - model/backbone@model.config.backbone_config: ???
   - _self_

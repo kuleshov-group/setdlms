@@ -80,8 +80,6 @@ class LLMasEncoderDecoder(nn.Module):
                 if (i + 1) % keep_every_n_encoder_layers == 0:
                     encoder_layers_post_surgery.append(encoder_layer)
             self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
-        if not tie_encoder_decoder_weights:
-            del self.encoder.lm_head
         if (
             keep_every_n_decoder_layers < len(self.decoder.model.layers)
             and not tie_encoder_decoder_weights
@@ -96,6 +94,14 @@ class LLMasEncoderDecoder(nn.Module):
         self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
         if not tie_encoder_decoder_weights:
             del self.decoder.model.embed_tokens
+            del self.decoder.model.norm
+            del self.decoder.model.rotary_emb
+            # if lm head is weight-tied to embedding, point decoder lm head to encoder
+            # (instead of initializing a separate lm head)
+            if 'lm_head.weight' not in dict(self.encoder.named_parameters()):
+                self.decoder.lm_head = self.encoder.lm_head
+            else:
+                del self.encoder.lm_head
         self.max_length = max_length
 
     def forward(
@@ -142,7 +148,7 @@ class LLMasEncoderDecoder(nn.Module):
             position_ids = torch.arange(
                 input_ids.shape[1], device=input_ids.device
             ).unsqueeze(0)
-        decoder_position_embeddings = self.decoder.model.rotary_emb(
+        decoder_position_embeddings = self.encoder.model.rotary_emb(
             decoder_hidden_states, position_ids
         )
 
@@ -170,7 +176,8 @@ class LLMasEncoderDecoder(nn.Module):
             ):
                 continue
             if past_key_values is not None:
-                prev_cache_len = past_key_values.get_seq_length()
+                layer_idx = decoder_layer.self_attn.layer_idx
+                prev_cache_len = past_key_values[layer_idx][0].shape[-2]
             # TODO maybe adopt gradient checkpointing from transformers
 
             # cross-attend to encoder kvs
@@ -188,13 +195,12 @@ class LLMasEncoderDecoder(nn.Module):
             if past_key_values is not None:
                 # DynamicCache extends along sequence dimension by default
                 # truncating back to original, encoder output length
-                layer_idx = decoder_layer.self_attn.layer_idx
                 past_key_values.key_cache[layer_idx] = past_key_values.key_cache[layer_idx][
                     ..., :prev_cache_len, :
                 ]
                 past_key_values.value_cache[layer_idx] = past_key_values.value_cache[layer_idx][
                     ..., :prev_cache_len, :
                 ]
-        decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)
+        decoder_hidden_states = self.encoder.model.norm(decoder_hidden_states)
         decoded_tokens = self.decoder.lm_head(decoder_hidden_states)
         return decoded_tokens
