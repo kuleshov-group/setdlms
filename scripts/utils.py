@@ -6,9 +6,12 @@ import hydra
 import rich.syntax
 import rich.tree
 import torch
+import yaml
 from composer.utils import dist
 from omegaconf import DictConfig, OmegaConf
 from transformers import PreTrainedTokenizer
+
+from src.denoiser import Denoiser
 
 
 def _make_tokenization_config(tokenizer_cfg: DictConfig) -> dict[str, Any]:
@@ -119,3 +122,44 @@ def print_and_save_config(
             rich.print(tree, file=fp)
         with fsspec.open(f"{os.getcwd()}/config.yaml", "w") as fp:
             OmegaConf.save(cfg, fp, resolve=resolve)
+
+
+def load_model_from_ckpt_dir_path(
+    path_to_ckpt_dir: str,
+    ckpt_file: str = "best-rank0.pt",
+) -> Denoiser:
+    """Load a model from a checkpoint path (and file).
+
+    Args:
+        path_to_ckpt_dir (str): Path to the checkpoint directory.
+            Assumed to have `checkpoints` subdirectory with checkpoint file(s).
+        ckpt_file (str): Name of the checkpoint file inside `checkpoints` directory.
+            Defaults to "best-rank0.pt".
+
+    Returns:
+        Denoiser: The loaded denoiser model.
+    """
+
+    with open(os.path.join(path_to_ckpt_dir, "config.yaml"), "rb") as f:
+        config = yaml.safe_load(f)
+    config = OmegaConf.create(config)
+
+    model = hydra.utils.instantiate(
+        config.model,
+        _convert_="all",
+    )
+
+    try:
+        ckpt = torch.load(
+            os.path.join(path_to_ckpt_dir, "checkpoints", ckpt_file), weights_only=False
+        )
+        state_dict = ckpt["state"]["model"]
+        torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
+            state_dict, "model."
+        )
+        model.load_state_dict(state_dict)
+
+    except FileNotFoundError as e:
+        print(e)
+
+    return model

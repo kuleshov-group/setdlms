@@ -1,0 +1,16 @@
+_target_: src.sampler.SamplerConfig
+num_samples: 1
+batch_size: 1
+max_length: 512
+num_steps: 1000
+min_t: 1e-5
+disable_cache: false
+block_size: ${model.config.length}
+top_p: 0.85
+pad_context: false
+greedy: false
+use_x0_pred: false
+first_hitting: false
+low_confidence_remasking: false
+kv_caching: false
+shift_logits: ${model.config.shift_logits}
