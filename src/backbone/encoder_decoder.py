@@ -93,6 +93,13 @@ class LLMasEncoderDecoder(nn.Module):
             del self.decoder.model.embed_tokens
             del self.decoder.model.norm
             del self.decoder.model.rotary_emb
+            self.encoder.model.layers[-1].self_attn.o_proj.weight.requires_grad = False
+            self.encoder.model.layers[-1].mlp.gate_up_proj.weight.requires_grad = False
+            self.encoder.model.layers[-1].mlp.down_proj.weight.requires_grad = False
+            self.encoder.model.layers[
+                -1
+            ].post_attention_layernorm.weight.requires_grad = False
+
             # if lm head is weight-tied to embedding, point decoder lm head to encoder
             # (instead of initializing a separate lm head)
             if "lm_head.weight" not in dict(self.encoder.named_parameters()):
