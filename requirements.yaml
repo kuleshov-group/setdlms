@@ -12,11 +12,13 @@ dependencies:
   - pytorch-cuda=12.4
   - pip
   - pip:
+      - accelerate
       - datasets
       - einops
       - fire
       - hydra-core
       - ipdb
+      - lm-eval
       - magic-wormhole
       - mosaicml
       - mosaicml-streaming
