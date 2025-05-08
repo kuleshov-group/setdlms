@@ -163,7 +163,7 @@ class LMEvalHarness(LM):
 
         res = []
         res_for_json = []
-        for elem in tqdm(ds, desc="Generating"):
+        for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds)):
             sample, _ = self.model.generate(
                 max_length=len(elem["prefix"]) + self.max_cont_length,
                 context=elem["prefix"][None, ...].to(self.device),
@@ -178,6 +178,7 @@ class LMEvalHarness(LM):
                 result = result.split(until)[0]
             print("=" * 20)
             print("prefix: ", elem["prefix_text"], result)
+            print("(Ground truth): ", requests[i].doc["answer"])
             print("=" * 20, end="\n\n")
             res.append(result)
             res_for_json.append(

@@ -117,6 +117,7 @@ class LLMasEncoderDecoder(nn.Module):
         past_key_values: DynamicCache | None = None,
         cache_position: torch.LongTensor | None = None,
         position_ids: Tensor | None = None,
+        encoder_position_ids: Tensor | None = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tensor:
         if past_key_values is None:
@@ -125,9 +126,10 @@ class LLMasEncoderDecoder(nn.Module):
 
         # Encode clean tokens
         if encoder_input_ids is not None:
-            encoder_position_ids = torch.arange(
-                encoder_input_ids.shape[-1], device=encoder_input_ids.device
-            ).unsqueeze(0)
+            if encoder_position_ids is None:
+                encoder_position_ids = torch.arange(
+                    encoder_input_ids.shape[-1], device=encoder_input_ids.device
+                ).unsqueeze(0)
             if self.use_encoder_causal_mask:
                 encoder_attention_mask = None  # must use causal mask
             if encoder_attention_mask is not None:
