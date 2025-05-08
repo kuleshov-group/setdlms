@@ -20,7 +20,7 @@ PRETRAINED_MODEL_NAME_OR_PATH=microsoft/Phi-4-mini-reasoning # Qwen/Qwen3-0.6B-B
 TAG=ar_phi_v1
 RUN_NAME=gsm8k-bs${BATCH_SIZE}-keep${KEEP_EVERY_N_LAYERS}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
-MICRO_BATCH_SIZE=1 # TODO: tune
+MICRO_BATCH_SIZE=2 # TODO: tune
 NUM_WORKERS=64 # TODO: tune
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -48,5 +48,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   hydra.run.dir=/home/ubuntu/runs/dllm-dev/${RUN_NAME} \
   composer.trainer.save_interval="4ep" \
   composer.loggers.name=${RUN_NAME} \
-  train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.loggers=null
+  train_dataloader.num_workers=${NUM_WORKERS}
