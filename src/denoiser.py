@@ -330,9 +330,10 @@ class Denoiser(ABC, PreTrainedModel):
             nlls=nlls,
         )
 
-    @staticmethod
-    def _sample_categorical(categorical_probs):
+    def _sample_categorical(self, categorical_probs):
         """Helper function to sample from a categorical distribution."""
+        if self.sampler_config.greedy:
+            return categorical_probs.argmax(dim=-1)
         categorical_probs = categorical_probs.to(torch.float64)
         gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()).to(
             categorical_probs.dtype
@@ -355,7 +356,8 @@ class Denoiser(ABC, PreTrainedModel):
             DynamicCache: Cached key-value pairs.
         """
         context_input = self._prepare_inputs_inference(
-            input_ids=context,
+            input_ids=None,
+            context=context,
             past_key_values=past_key_values,
         )
         past_key_values = self._backbone_forward(
@@ -784,7 +786,7 @@ class D3PM(Denoiser):
             xt = xt[:, 1:]
 
         if self.sampler_config.first_hitting:
-            # uniformly select an index (among masked tokens)
+            # unmask a token (among currently masked tokens)
             num_masked = (xt == self.mask_token_id).sum(-1)
 
             if self.sampler_config.low_confidence_remasking:
@@ -793,6 +795,7 @@ class D3PM(Denoiser):
                 xs_q[xt != self.mask_token_id] = 0
                 ind = xs_q.argmax(dim=-1)
             else:
+                # uniformly select an index (among masked tokens)
                 ind = torch.randint(0, num_masked.item(), (xs.shape[0],))
                 ind = (xt == self.mask_token_id).nonzero()[ind, 1]
 
@@ -945,6 +948,8 @@ class D3PM(Denoiser):
         # cache kvs of context
         past_key_values = None
         if context is not None and self.sampler_config.kv_caching:
+            if self.config.shift_logits:
+                context = context[..., :-1]
             past_key_values = self.update_kv_cache(
                 context=context,
                 past_key_values=past_key_values,
@@ -982,7 +987,9 @@ class D3PM(Denoiser):
                 input_ids = xt
                 denoiser_inputs = self._prepare_inputs_inference(
                     input_ids=input_ids,
-                    context=accumulated_samples,
+                    context=None
+                    if self.sampler_config.kv_caching
+                    else accumulated_samples,
                     past_key_values=past_key_values,
                 )
 
@@ -1015,6 +1022,8 @@ class D3PM(Denoiser):
             if tokenizer is not None:
                 print(tokenizer.batch_decode(accumulated_samples))
             if self.sampler_config.kv_caching:
+                if self.config.shift_logits:
+                    xt = xt[:, :-1]
                 past_key_values = self.update_kv_cache(
                     context=xt,
                     past_key_values=past_key_values,
@@ -1393,49 +1402,75 @@ class BD3LM(MDLM):
                 },
             )
 
+    def _get_past_key_values_seqlen(self, past_key_values):
+        seqlen = 0
+        for i in range(len(past_key_values)):
+            if past_key_values[i][0].shape[0] > 0:
+                seqlen = max(past_key_values[i][0].shape[-2], seqlen)
+        return seqlen
+
     def _prepare_inputs_inference(
         self,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None = None,
         context: torch.Tensor | None = None,
         past_key_values: DynamicCache | None = None,
         **kwargs: Any,
     ):
-        batch_size = input_ids.shape[0]
+        # TODO this assumes encoder-decoder backboneNone
+        assert input_ids is not None or context is not None
+        device = input_ids.device if input_ids is not None else context.device
+        batch_size = input_ids.shape[0] if input_ids is not None else context.shape[0]
         if self.config.backbone_is_decoder_only:
             raise NotImplementedError(
                 "Inference for decoder-only BD3LM is not implemented yet."
             )
-        else:
-            position_ids = None
-            if past_key_values is not None:
-                full_seq_len = past_key_values.get_seq_length() + input_ids.shape[1]
+        position_ids, encoder_position_ids = None, None
+        if past_key_values is not None:
+            cache_len = self._get_past_key_values_seqlen(past_key_values)
+            if input_ids is not None:
+                full_seq_len = cache_len + input_ids.shape[1]
                 encoder_attention_mask = None
-                position_ids = torch.arange(
-                    past_key_values.get_seq_length(), full_seq_len
-                ).to(input_ids.device)[None, :]
+                position_ids = torch.arange(cache_len, full_seq_len).to(device)[None, :]
             else:
-                context_len = context.shape[1]
-                full_seq_len = context_len + input_ids.shape[1]
+                full_seq_len = cache_len + context.shape[-1]
                 encoder_attention_mask = self.encoder_static_attention_mask[
-                    None, :context_len, :context_len
+                    None, cache_len:full_seq_len, :full_seq_len
                 ]
-                position_ids = torch.arange(context_len, full_seq_len).to(
-                    input_ids.device
-                )[None, :]
+                encoder_position_ids = torch.arange(cache_len, full_seq_len).to(device)[
+                    None, :
+                ]
+        else:
+            if context is not None:
+                context_len = context.shape[1]
+            else:
+                context_len = 0
+            if input_ids is not None:
+                full_seq_len = context_len + input_ids.shape[1]
+            else:
+                full_seq_len = context_len
+            encoder_attention_mask = self.encoder_static_attention_mask[
+                None, :context_len, :context_len
+            ]
+            position_ids = torch.arange(context_len, full_seq_len).to(device)[None, :]
+        if input_ids is not None:
+            # TODO for profiling index the attn mask
             decoder_attention_mask = torch.ones(
                 (batch_size, input_ids.shape[1], full_seq_len),
-                device=input_ids.device,
+                device=device,
             )
-            return DenoiserInput(
-                xt=input_ids,
-                attention_mask=decoder_attention_mask,
-                past_key_values=past_key_values,
-                backbone_kwargs={
-                    "encoder_input_ids": context,
-                    "encoder_attention_mask": encoder_attention_mask,
-                    "position_ids": position_ids,
-                },
-            )
+        else:
+            decoder_attention_mask = None
+        return DenoiserInput(
+            xt=input_ids,
+            attention_mask=decoder_attention_mask,
+            past_key_values=past_key_values,
+            backbone_kwargs={
+                "encoder_input_ids": context,
+                "encoder_position_ids": encoder_position_ids,
+                "encoder_attention_mask": encoder_attention_mask,
+                "position_ids": position_ids,
+            },
+        )
 
 
 # TODO

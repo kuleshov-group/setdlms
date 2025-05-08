@@ -93,6 +93,13 @@ class LLMasEncoderDecoder(nn.Module):
             del self.decoder.model.embed_tokens
             del self.decoder.model.norm
             del self.decoder.model.rotary_emb
+            self.encoder.model.layers[-1].self_attn.o_proj.weight.requires_grad = False
+            self.encoder.model.layers[-1].mlp.gate_up_proj.weight.requires_grad = False
+            self.encoder.model.layers[-1].mlp.down_proj.weight.requires_grad = False
+            self.encoder.model.layers[
+                -1
+            ].post_attention_layernorm.weight.requires_grad = False
+
             # if lm head is weight-tied to embedding, point decoder lm head to encoder
             # (instead of initializing a separate lm head)
             if "lm_head.weight" not in dict(self.encoder.named_parameters()):
@@ -110,6 +117,7 @@ class LLMasEncoderDecoder(nn.Module):
         past_key_values: DynamicCache | None = None,
         cache_position: torch.LongTensor | None = None,
         position_ids: Tensor | None = None,
+        encoder_position_ids: Tensor | None = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tensor:
         if past_key_values is None:
@@ -118,9 +126,10 @@ class LLMasEncoderDecoder(nn.Module):
 
         # Encode clean tokens
         if encoder_input_ids is not None:
-            encoder_position_ids = torch.arange(
-                encoder_input_ids.shape[-1], device=encoder_input_ids.device
-            ).unsqueeze(0)
+            if encoder_position_ids is None:
+                encoder_position_ids = torch.arange(
+                    encoder_input_ids.shape[-1], device=encoder_input_ids.device
+                ).unsqueeze(0)
             if self.use_encoder_causal_mask:
                 encoder_attention_mask = None  # must use causal mask
             if encoder_attention_mask is not None:

@@ -18,15 +18,16 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="/home/ubuntu/dllm-dev/outputs/gsm8k/e2d2"
+MODEL_PATH="/home/ubuntu/runs/dllm-dev/gsm8k-block4-bs96-keep4-causalencfalse-max20000ba-lr1e-4-warmup1000ba-gc1.0-wd1e-5-bd3_phi_untie_v5"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 mkdir -p ${OUTPUT_DIR}
 L=128
 BLOCK_SIZE=4
-GREEDY=False
-USE_X0_PRED=False
-FIRST_HITTING=False
-LOW_CONFIDENCE_REMASKING=False
+GREEDY=True
+USE_X0_PRED=True
+FIRST_HITTING=True
+LOW_CONFIDENCE_REMASKING=True
+KV_CACHING=True
 
 OUTPUT_PATH="${OUTPUT_DIR}/L=${L}-block_size=${BLOCK_SIZE}-greedy=${GREEDY}-use_x0_pred=${USE_X0_PRED}-first_hitting=${FIRST_HITTING}-low_confidence_remasking=${LOW_CONFIDENCE_REMASKING}.json"
 
@@ -52,7 +53,7 @@ use_x0_pred=${USE_X0_PRED},\
 first_hitting=${FIRST_HITTING},\
 low_confidence_remasking=${LOW_CONFIDENCE_REMASKING},\
 disable_cache=False,\
-kv_caching=False,\
+kv_caching=${KV_CACHING},\
 max_length=768,\
 block_size=${BLOCK_SIZE},\
 shift_logits=True"
