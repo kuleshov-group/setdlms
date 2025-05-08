@@ -74,16 +74,13 @@ class LLMasEncoderDecoder(nn.Module):
                 )
 
         # delete layers from encoder / decoder
-        if keep_every_n_encoder_layers < len(self.encoder.model.layers):
+        if keep_every_n_encoder_layers > 1:
             encoder_layers_post_surgery = []
             for i, encoder_layer in enumerate(self.encoder.model.layers):
                 if (i + 1) % keep_every_n_encoder_layers == 0:
                     encoder_layers_post_surgery.append(encoder_layer)
             self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
-        if (
-            keep_every_n_decoder_layers < len(self.decoder.model.layers)
-            and not tie_encoder_decoder_weights
-        ):
+        if keep_every_n_decoder_layers > 1 and not tie_encoder_decoder_weights:
             decoder_layers_post_surgery = []
             for i, decoder_layer in enumerate(self.decoder.model.layers):
                 if (i + 1) % keep_every_n_decoder_layers == 0:
