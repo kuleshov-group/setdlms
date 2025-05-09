@@ -2,7 +2,6 @@
 This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 """
 
-import json
 import random
 from typing import List, Tuple
 
@@ -13,7 +12,7 @@ from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from datasets import Dataset
 from scripts.utils import (
@@ -66,7 +65,6 @@ class LMEvalHarness(LM):
             tokenizer_name_or_path (str): Tokenizer name or path.
         """
         super().__init__()
-
         self.max_cont_length = max_cont_len
         accelerator = accelerate.Accelerator()
         if accelerator.num_processes > 1:
@@ -90,17 +88,18 @@ class LMEvalHarness(LM):
                 load_ema_weights=load_ema_weights,
             ).to(self.device)
         except FileNotFoundError:
-            self.model = AutoModel.from_pretrained(
+            self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 trust_remote_code=True,
             ).to(self.device)
         self.model.eval()
-        assert (
-            self.model.mask_token_id is not None
-            or self.tokenizer.mask_token_id is not None
-        ), "Mask token id must be set in either the model or tokenizer."
+        # assert (
+        #     getattr(self.model, "mask_token_id", None) is not None
+        #     or getattr(self.tokenizer, "mask_token_id", None) is not None
+        # ), "Mask token id must be set in either the model or tokenizer."
+        self.mask_token_id = None
         self.mask_token_id = getattr(
-            self.model, "mask_token_id", self.tokenizer.mask_token_id
+            self.model, "mask_token_id", getattr(self.tokenizer, "mask_token_id", None)
         )
         self.sampler_config = SamplerConfig(
             num_samples=num_samples,
@@ -162,7 +161,7 @@ class LMEvalHarness(LM):
         )
 
         res = []
-        res_for_json = []
+        # res_for_json = []
         for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds)):
             sample, _ = self.model.generate(
                 max_length=len(elem["prefix"]) + self.max_cont_length,
@@ -170,6 +169,11 @@ class LMEvalHarness(LM):
                 device=self.device,
                 # tokenizer=self.tokenizer,  # For debugging
             )
+            # sample = self.model.generate(
+            #     input_ids=elem["prefix"][None, ...].to(self.device),
+            #     max_length=len(elem["prefix"]) + self.max_cont_length,
+            #     num_return_sequences=1
+            # )
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
                 "<|eot_id|>",
@@ -181,19 +185,19 @@ class LMEvalHarness(LM):
             print("(Ground truth): ", requests[i].doc["answer"])
             print("=" * 20, end="\n\n")
             res.append(result)
-            res_for_json.append(
-                {
-                    "prefix": elem["prefix_text"],
-                    "result": result,
-                }
-            )
+            # res_for_json.append(
+            #     {
+            #         "prefix": elem["prefix_text"],
+            #         "result": result,
+            #     }
+            # )
             torch.cuda.empty_cache()
-        with open(self.model.config.eval.generated_samples_path, "w") as f:
-            json.dump(
-                res_for_json,
-                f,  # type: ignore
-                indent=2,
-            )
+        # with open(self.model.config.eval.generated_samples_path, "w") as f:
+        #     json.dump(
+        #         res_for_json,
+        #         f,  # type: ignore
+        #         indent=2,
+        #     )
         return res
 
 
