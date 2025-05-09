@@ -128,6 +128,7 @@ def load_model_from_ckpt_dir_path(
     path_to_ckpt_dir: str,
     ckpt_file: str = "best-rank0.pt",
     load_ema_weights: bool = True,
+    verbose: bool = False,
 ) -> Denoiser:
     """Load a model from a checkpoint path (and file).
 
@@ -137,6 +138,8 @@ def load_model_from_ckpt_dir_path(
         ckpt_file (str): Name of the checkpoint file inside `checkpoints` directory.
             Defaults to "best-rank0.pt".
         load_ema_weights (bool): Whether to load the EMA weights. Defaults to True.
+        verbose (bool): Whether to print information about the loaded checkpoint,
+            e.g., step, metric values. Defaults to False.
 
     Returns:
         Denoiser: The loaded denoiser model.
@@ -154,6 +157,23 @@ def load_model_from_ckpt_dir_path(
     ckpt = torch.load(
         os.path.join(path_to_ckpt_dir, "checkpoints", ckpt_file), weights_only=False
     )
+    if verbose:
+        if (
+            "callbacks" in ckpt["state"]
+            and "SaveBestCheckpointing" in ckpt["state"]["callbacks"]
+        ):
+            timestamp = ckpt["state"]["callbacks"]["SaveBestCheckpointing"][
+                "all_saved_checkpoints_to_timestamp"
+            ][-1][1]
+            metric_dict = ckpt["state"]["callbacks"]["SaveBestCheckpointing"][
+                "all_saved_checkpoints_to_timestamp"
+            ][-1][-1]
+            print(
+                f"Loaded ckpt from ep: {timestamp['epoch']}; "
+                f"batch: {timestamp['batch']}."
+            )
+            print("Metric value at best checkpoint:", metric_dict)
+
     if load_ema_weights:
         state_dict = None
         for alg in ckpt["state"]["algorithms"]:
