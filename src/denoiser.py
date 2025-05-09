@@ -476,61 +476,78 @@ class AR(Denoiser):
 
         return LossAndNllOutput(loss=token_nll, nlls=nlls)
 
-    def generate(
+    def generate(  # TODO: clean up signature and docstring
         self,
-        max_seq_len: int,
-        nucleus_p: float = 1.0,
+        max_length: int | None = None,
         batch_size: int | None = None,
+        disable_cache: bool | None = None,
         device: str | None = None,
-        disable_cache: bool = False,
-        input_ids: torch.Tensor | None = None,
-        input_attention_mask: torch.Tensor | None = None,
+        context: torch.Tensor | None = None,
+        tokenizer: PreTrainedTokenizer | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, int]:
-        # TODO implement ar sampler
-        input_attention_mask = (
-            torch.ones((batch_size, 1), device=device)
-            if input_ids is None
-            else input_attention_mask
+        outputs = self.backbone.model.generate(
+            input_ids=context, max_length=max_length, num_return_sequences=1
         )
-        input_ids = (
-            torch.ones((batch_size, 1), device=device) * self.bos_token_id
-            if input_ids is None
-            else input_ids
-        )
-        generated = torch.empty((input_ids.shape[0], max_seq_len), device=device)
-        max_seq_len = max_seq_len - input_ids.shape[-1]
-        past_key_values = None
-        for i in range(max_seq_len):
-            denoiser_output = self.forward(
-                input_ids=input_ids,
-                attention_mask=input_attention_mask,
-                past_key_values=past_key_values,
-                compute_loss=False,
-            )
-            past_key_values = denoiser_output.past_key_values
-            log_probs = denoiser_output.denoiser_output
-            if nucleus_p < 1.0:
-                sorted_probs, sorted_indices = torch.sort(
-                    log_probs[:, -1, :], descending=True, dim=-1
-                )
-                cumulative_probs = torch.cumsum(
-                    torch.nn.functional.softmax(sorted_probs, dim=-1), dim=-1
-                )
-                top_p_mask = cumulative_probs <= nucleus_p
-                top_p_mask[..., 0] = True
-                nucleus_probs = torch.zeros_like(log_probs[:, -1, :])
-                nucleus_probs.scatter_(
-                    -1,
-                    sorted_indices,
-                    torch.nn.functional.softmax(
-                        sorted_probs * top_p_mask.float(), dim=-1
-                    ),
-                )
-                log_probs[:, -1, :] = nucleus_probs.log()
-            input_ids = self._sample_categorical(log_probs[:, -1, :])
-            generated[:, i] = input_ids
-        return generated
+
+        # Decode output
+        return outputs, -1
+
+    # def generate(
+    #     self,
+    #     max_seq_len: int,
+    #     nucleus_p: float = 1.0,
+    #     batch_size: int | None = None,
+    #     device: str | None = None,
+    #     disable_cache: bool = False,
+    #     input_ids: torch.Tensor | None = None,
+    #     input_attention_mask: torch.Tensor | None = None,
+    #     **kwargs: Any,
+    # ) -> Tuple[torch.Tensor, int]:
+    #     # TODO implement ar sampler
+    #     input_attention_mask = (
+    #         torch.ones((batch_size, 1), device=device)
+    #         if input_ids is None
+    #         else input_attention_mask
+    #     )
+    #     input_ids = (
+    #         torch.ones((batch_size, 1), device=device) * self.bos_token_id
+    #         if input_ids is None
+    #         else input_ids
+    #     )
+    #     generated = torch.empty((input_ids.shape[0], max_seq_len), device=device)
+    #     max_seq_len = max_seq_len - input_ids.shape[-1]
+    #     past_key_values = None
+    #     for i in range(max_seq_len):
+    #         denoiser_output = self.forward(
+    #             input_ids=input_ids,
+    #             attention_mask=input_attention_mask,
+    #             past_key_values=past_key_values,
+    #             compute_loss=False,
+    #         )
+    #         past_key_values = denoiser_output.past_key_values
+    #         log_probs = denoiser_output.denoiser_output
+    #         if nucleus_p < 1.0:
+    #             sorted_probs, sorted_indices = torch.sort(
+    #                 log_probs[:, -1, :], descending=True, dim=-1
+    #             )
+    #             cumulative_probs = torch.cumsum(
+    #                 torch.nn.functional.softmax(sorted_probs, dim=-1), dim=-1
+    #             )
+    #             top_p_mask = cumulative_probs <= nucleus_p
+    #             top_p_mask[..., 0] = True
+    #             nucleus_probs = torch.zeros_like(log_probs[:, -1, :])
+    #             nucleus_probs.scatter_(
+    #                 -1,
+    #                 sorted_indices,
+    #                 torch.nn.functional.softmax(
+    #                     sorted_probs * top_p_mask.float(), dim=-1
+    #                 ),
+    #             )
+    #             log_probs[:, -1, :] = nucleus_probs.log()
+    #         input_ids = self._sample_categorical(log_probs[:, -1, :])
+    #         generated[:, i] = input_ids
+    #     return generated
 
 
 class D3PMConfig(DenoiserConfig):
