@@ -47,7 +47,7 @@ class LLMasEncoderDecoder(nn.Module):
         if freeze_encoder:
             assert use_encoder_causal_mask
             for name, param in self.encoder.named_parameters():
-                if 'embed_tokens' not in name:
+                if "embed_tokens" not in name:
                     param.requires_grad = False
 
         # tie encoder and decoder weights
@@ -93,15 +93,19 @@ class LLMasEncoderDecoder(nn.Module):
         if not tie_encoder_decoder_weights:
             del self.decoder.model.embed_tokens
             # del self.decoder.model.norm
-            unused_self_attn_params = ['o_proj', 'q_norm', 'q_proj']
-            unused_layernorm_params = ['input_layernorm', 'post_attention_layernorm']
+            unused_self_attn_params = ["o_proj", "q_norm", "q_proj"]
+            unused_layernorm_params = ["input_layernorm", "post_attention_layernorm"]
             for unused_param in unused_self_attn_params:
                 if hasattr(self.encoder.model.layers[-1].self_attn, unused_param):
-                    getattr(self.encoder.model.layers[-1].self_attn, unused_param).requires_grad = False
+                    getattr(
+                        self.encoder.model.layers[-1].self_attn, unused_param
+                    ).requires_grad = False
             self.encoder.model.layers[-1].mlp.requires_grad_(False)
             for unused_param in unused_layernorm_params:
                 if hasattr(self.encoder.model.layers[-1], unused_param):
-                    getattr(self.encoder.model.layers[-1], unused_param).requires_grad = False            
+                    getattr(
+                        self.encoder.model.layers[-1], unused_param
+                    ).requires_grad = False
             # if lm head is weight-tied to embedding, point decoder lm head to encoder
             # (instead of initializing a separate lm head)
             if "lm_head.weight" not in dict(self.encoder.named_parameters()):
