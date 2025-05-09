@@ -192,12 +192,10 @@ class LMEvalHarness(LM):
 
             # log accuracy
             ground_truth_ans = requests[i].doc["answer"].split("### ")[1]
-            try:
+            if "\\boxed{" in result:
                 predicted_ans = result.split("\\boxed{")[1].split("}")[0]
                 if ground_truth_ans == predicted_ans:
                     correct += 1
-            except:
-                pass
             total += 1
 
             # res_for_json.append(
@@ -218,4 +216,5 @@ class LMEvalHarness(LM):
 
 
 if __name__ == "__main__":
+    set_seed(1234)
     cli_evaluate()
