@@ -143,7 +143,7 @@ class LMEvalHarness(LM):
             ctx = (prefix_text if prefix_text is not None else "") + e["prefix"]
             # TODO: Hacks to make data look like training set
             ctx = ctx.replace("Question: ", "")
-            ctx = ctx.replace("\nAnswer:", "<|im_end|>Answer: ")
+            ctx = ctx.replace("\nAnswer:", "<|im_end|>Answer:")
             n_spaces = len(ctx) - len(ctx)
             if n_spaces > 0:
                 ctx = ctx[:-n_spaces]
@@ -165,6 +165,7 @@ class LMEvalHarness(LM):
 
         res = []
         # res_for_json = []
+        correct, total = 0, 0
         for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds)):
             sample, _ = self.model.generate(
                 max_length=len(elem["prefix"]) + self.max_cont_length,
@@ -188,6 +189,17 @@ class LMEvalHarness(LM):
             print("(Ground truth): ", requests[i].doc["answer"])
             print("=" * 20, end="\n\n")
             res.append(result)
+
+            # log accuracy
+            ground_truth_ans = requests[i].doc["answer"].split("### ")[1]
+            try:
+                predicted_ans = result.split("\\boxed{")[1].split("}")[0]
+                if ground_truth_ans == predicted_ans:
+                    correct += 1
+            except:
+                pass
+            total += 1
+
             # res_for_json.append(
             #     {
             #         "prefix": elem["prefix_text"],
@@ -195,6 +207,7 @@ class LMEvalHarness(LM):
             #     }
             # )
             torch.cuda.empty_cache()
+            print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
         # with open(self.model.config.eval.generated_samples_path, "w") as f:
         #     json.dump(
         #         res_for_json,
