@@ -46,8 +46,9 @@ class LLMasEncoderDecoder(nn.Module):
         # freeze encoder layers
         if freeze_encoder:
             assert use_encoder_causal_mask
-            for param in self.encoder.parameters():
-                param.requires_grad = False
+            for name, param in self.encoder.named_parameters():
+                if 'embed_tokens' not in name:
+                    param.requires_grad = False
 
         # tie encoder and decoder weights
         if tie_encoder_decoder_weights:
@@ -91,15 +92,16 @@ class LLMasEncoderDecoder(nn.Module):
         self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
         if not tie_encoder_decoder_weights:
             del self.decoder.model.embed_tokens
-            del self.decoder.model.norm
-            del self.decoder.model.rotary_emb
-            self.encoder.model.layers[-1].self_attn.o_proj.weight.requires_grad = False
-            self.encoder.model.layers[-1].mlp.gate_up_proj.weight.requires_grad = False
-            self.encoder.model.layers[-1].mlp.down_proj.weight.requires_grad = False
-            self.encoder.model.layers[
-                -1
-            ].post_attention_layernorm.weight.requires_grad = False
-
+            # del self.decoder.model.norm
+            unused_self_attn_params = ['o_proj', 'q_norm', 'q_proj']
+            unused_layernorm_params = ['input_layernorm', 'post_attention_layernorm']
+            for unused_param in unused_self_attn_params:
+                if hasattr(self.encoder.model.layers[-1].self_attn, unused_param):
+                    getattr(self.encoder.model.layers[-1].self_attn, unused_param).requires_grad = False
+            self.encoder.model.layers[-1].mlp.requires_grad_(False)
+            for unused_param in unused_layernorm_params:
+                if hasattr(self.encoder.model.layers[-1], unused_param):
+                    getattr(self.encoder.model.layers[-1], unused_param).requires_grad = False            
             # if lm head is weight-tied to embedding, point decoder lm head to encoder
             # (instead of initializing a separate lm head)
             if "lm_head.weight" not in dict(self.encoder.named_parameters()):
@@ -158,7 +160,7 @@ class LLMasEncoderDecoder(nn.Module):
             position_ids = torch.arange(
                 input_ids.shape[1], device=input_ids.device
             ).unsqueeze(0)
-        decoder_position_embeddings = self.encoder.model.rotary_emb(
+        decoder_position_embeddings = self.decoder.model.rotary_emb(
             decoder_hidden_states, position_ids
         )
 
@@ -217,6 +219,6 @@ class LLMasEncoderDecoder(nn.Module):
                 past_key_values.value_cache[layer_idx] = past_key_values.value_cache[
                     layer_idx
                 ][..., :prev_cache_len, :]
-        decoder_hidden_states = self.encoder.model.norm(decoder_hidden_states)
+        decoder_hidden_states = self.decoder.model.norm(decoder_hidden_states)
         decoded_tokens = self.decoder.lm_head(decoder_hidden_states)
         return decoded_tokens

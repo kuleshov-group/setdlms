@@ -40,6 +40,9 @@ def main(cfg: DictConfig) -> None:
     log.info(
         f"Num. parameters: {format_number(sum(p.numel() for p in model.parameters()))}"
     )
+    log.info(
+        f"Num. trainable parameters: {format_number(sum(p.numel() for p in model.parameters() if p.requires_grad))}"
+    )
 
     # Setup distributed
     if not dist.is_initialized():
