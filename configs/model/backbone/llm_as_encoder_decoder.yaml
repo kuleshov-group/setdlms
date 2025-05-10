@@ -8,3 +8,4 @@ freeze_encoder: false
 reinit_decoder: false
 tie_encoder_decoder_weights: false
 use_encoder_causal_mask: false
+keep_top_n_decoder_layers: -1
