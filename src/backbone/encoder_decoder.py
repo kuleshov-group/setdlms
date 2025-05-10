@@ -29,6 +29,7 @@ class LLMasEncoderDecoder(nn.Module):
         reinit_decoder: bool = False,
         tie_encoder_decoder_weights: bool = False,
         use_encoder_causal_mask: bool = False,
+        keep_top_n_decoder_layers: int = -1,
     ):
         assert keep_every_n_encoder_layers <= keep_every_n_decoder_layers, (
             "Cannot remove more encoder than decoder layers."
@@ -75,6 +76,11 @@ class LLMasEncoderDecoder(nn.Module):
                 )
 
         # delete layers from encoder / decoder
+        keep_top_n_decoder_layers = (
+            len(self.decoder.model.layers)
+            if keep_top_n_decoder_layers == -1
+            else keep_top_n_decoder_layers
+        )
         if keep_every_n_encoder_layers > 1:
             encoder_layers_post_surgery = []
             for i, encoder_layer in enumerate(self.encoder.model.layers):
@@ -83,10 +89,18 @@ class LLMasEncoderDecoder(nn.Module):
             self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
         if keep_every_n_decoder_layers > 1 and not tie_encoder_decoder_weights:
             decoder_layers_post_surgery = []
-            for i, decoder_layer in enumerate(self.decoder.model.layers):
+            for i, decoder_layer in enumerate(
+                self.decoder.model.layers[-keep_top_n_decoder_layers:]
+            ):
                 if (i + 1) % keep_every_n_decoder_layers == 0:
                     decoder_layers_post_surgery.append(decoder_layer)
             self.decoder.model.layers = nn.ModuleList(decoder_layers_post_surgery)
+        self.layers_to_keep = [
+            i
+            for i in range(len(self.decoder.model.layers))
+            if ((i + 1) % keep_every_n_decoder_layers == 0)
+            and (i >= keep_top_n_decoder_layers)
+        ]
         self.keep_every_n_encoder_layers = keep_every_n_encoder_layers
         self.use_encoder_causal_mask = use_encoder_causal_mask
         self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
@@ -194,10 +208,12 @@ class LLMasEncoderDecoder(nn.Module):
             layer_idx = decoder_layer.self_attn.layer_idx
             if (
                 self.tie_encoder_decoder_weights
-                and (layer_idx + 1) % self.keep_every_n_decoder_layers != 0
+                and layer_idx not in self.layers_to_keep
             ):
                 continue
-            if past_key_values is not None:
+            if past_key_values is not None and len(past_key_values) == len(
+                self.encoder.model.layers
+            ):
                 prev_cache_len = past_key_values[layer_idx][0].shape[-2]
             else:
                 prev_cache_len = 0
