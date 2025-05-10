@@ -87,7 +87,7 @@ class LLMasEncoderDecoder(nn.Module):
                 if (i + 1) % keep_every_n_encoder_layers == 0:
                     encoder_layers_post_surgery.append(encoder_layer)
             self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
-        if keep_every_n_decoder_layers > 1 and not tie_encoder_decoder_weights:
+        if not tie_encoder_decoder_weights:
             decoder_layers_post_surgery = []
             for i, decoder_layer in enumerate(
                 self.decoder.model.layers[-keep_top_n_decoder_layers:]
@@ -95,16 +95,11 @@ class LLMasEncoderDecoder(nn.Module):
                 if (i + 1) % keep_every_n_decoder_layers == 0:
                     decoder_layers_post_surgery.append(decoder_layer)
             self.decoder.model.layers = nn.ModuleList(decoder_layers_post_surgery)
-        self.layers_to_keep = [
-            i
-            for i in range(len(self.decoder.model.layers))
-            if ((i + 1) % keep_every_n_decoder_layers == 0)
-            and (i >= keep_top_n_decoder_layers)
-        ]
         self.keep_every_n_encoder_layers = keep_every_n_encoder_layers
         self.use_encoder_causal_mask = use_encoder_causal_mask
         self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
         if not tie_encoder_decoder_weights:
+            keep_top_n_decoder_layers = 0
             del self.decoder.model.embed_tokens
             # del self.decoder.model.norm
             unused_self_attn_params = ["o_proj", "q_norm", "q_proj"]
@@ -127,6 +122,12 @@ class LLMasEncoderDecoder(nn.Module):
                 self.decoder.lm_head = self.encoder.lm_head
             else:
                 del self.encoder.lm_head
+        self.layers_to_keep = [
+            i
+            for i in range(len(self.decoder.model.layers))
+            if ((i + 1) % keep_every_n_decoder_layers == 0)
+            and (i >= keep_top_n_decoder_layers)
+        ]
         self.max_length = max_length
 
     def forward(
