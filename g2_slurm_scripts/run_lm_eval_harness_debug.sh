@@ -20,7 +20,8 @@ source setup_env.sh
 
 #MODEL_PATH="/home/ubuntu/runs/dllm-dev/gsm8k-block4-bs96-keep4-causalencfalse-max20000ba-lr1e-4-warmup1000ba-gc1.0-wd1e-5-bd3_phi_untie_v5"
 #MODEL_PATH="/home/ubuntu/test_ckpts"
-MODEL_PATH="/home/ubuntu/qwen3_600M_gsm8k_ckpts"
+MODEL_PATH="/home/ubuntu/runs/dllm-dev/gsm8k-block4-bs96-keep2-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen2B_v1"
+
 #MODEL_PATH="microsoft/Phi-4-mini-reasoning"
 #MODEL_PATH="Qwen/Qwen3-0.6B-Base"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
@@ -32,13 +33,13 @@ GREEDY=False
 USE_X0_PRED=True
 FIRST_HITTING=True
 LOW_CONFIDENCE_REMASKING=True
-KV_CACHING=False
-TOP_P=1.0
+KV_CACHING=True
+TOP_P=1.0 # not used if greedy=True
 
 OUTPUT_PATH="${OUTPUT_DIR}/L=${L}-block_size=${BLOCK_SIZE}-greedy=${GREEDY}-use_x0_pred=${USE_X0_PRED}-first_hitting=${FIRST_HITTING}-low_confidence_remasking=${LOW_CONFIDENCE_REMASKING}"
 #OUTPUT_PATH="${OUTPUT_DIR}/outputs.json"
 
-python scripts/harness_eval.py \
+python scripts/harness_eval_debug_train.py \
   --tasks gsm8k \
   --model lm_eval_harness_model \
   --num_fewshot 0 \

@@ -332,9 +332,9 @@ class Denoiser(ABC, PreTrainedModel):
 
     def _sample_categorical(self, categorical_probs):
         """Helper function to sample from a categorical distribution."""
+        categorical_probs = categorical_probs.to(torch.float64)
         if self.sampler_config.greedy:
             return categorical_probs.argmax(dim=-1)
-        categorical_probs = categorical_probs.to(torch.float64)
         gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()).to(
             categorical_probs.dtype
         )
@@ -805,6 +805,8 @@ class D3PM(Denoiser):
         if self.sampler_config.first_hitting:
             # unmask a token (among currently masked tokens)
             num_masked = (xt == self.mask_token_id).sum(-1)
+            if num_masked == 0:
+                return xs
 
             if self.sampler_config.low_confidence_remasking:
                 # select the index with the highest confidence
@@ -915,8 +917,7 @@ class D3PM(Denoiser):
                 denoiser_inputs,
             )  # should be the log(x_\theta) with the shape of (B, Seq, Vocab)
             x_theta = log_x_theta.exp()
-            # TODO add from old implementation
-            # x_theta = self._logit_transform(x_theta, **kwargs)
+            x_theta = self._logit_transform(x_theta, **kwargs)
         else:
             x_theta = cache["x_theta"]
         cache = {"x_theta": x_theta}
@@ -935,6 +936,7 @@ class D3PM(Denoiser):
         tokenizer: PreTrainedTokenizer | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, int]:
+        assert self.config.shift_logits, "Aligned logits not support yet for sampling"
         max_length = (
             max_length if max_length is not None else self.sampler_config.max_length
         )
@@ -953,43 +955,33 @@ class D3PM(Denoiser):
         )
 
         max_blocks = max_length // self.sampler_config.block_size
-        if context is not None:
-            assert context.shape[-1] + max_length <= self.config.length
-            accumulated_samples = context.to(device)
-        else:
-            accumulated_samples = torch.empty(
-                (batch_size, 0), dtype=torch.int64, device=device
-            )
-
         total_NFEs = 0
         # cache kvs of context
         past_key_values = None
-        if context is not None and self.sampler_config.kv_caching:
-            if self.config.shift_logits:
-                context = context[..., :-1]
-            past_key_values = self.update_kv_cache(
-                context=context,
-                past_key_values=past_key_values,
-            )
         block_size = self.sampler_config.block_size
         block_pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)
-        for _ in block_pbar:
+        accumulated_samples = self._sample_prior(
+            device=device,
+            batch_size=batch_size,
+            length=max_blocks * block_size,
+        )
+        accumulated_samples[:, : context.shape[-1]] = context
+        for block_id in block_pbar:
             block_NFEs = 0
-            xt = self._sample_prior(
-                device=device,
-                batch_size=batch_size,
-                length=block_size,
-            )
-            if self.config.shift_logits and context is not None:
-                xt = torch.cat((accumulated_samples[:, -1:], xt), dim=-1)
-                accumulated_samples = accumulated_samples[:, :-1]
-
+            xt = accumulated_samples[
+                :, block_id * block_size : ((block_id + 1) * block_size) + 1
+            ]
             timesteps = self._sample_generation_timesteps(
                 max_seq_len=block_size, device=device
             )
             step_bar = tqdm(timesteps, desc="T", total=timesteps.shape[0], leave=False)
             dt = (1 - self.sampler_config.min_t) / len(timesteps)
             cache = None
+            context_block = (
+                accumulated_samples[:, : block_id * block_size]
+                if block_id > 0
+                else None
+            )
 
             for t in step_bar:
                 if cache is None:
@@ -1000,13 +992,9 @@ class D3PM(Denoiser):
                 alpha_s, _ = self.noise_schedule(t - dt)
                 alpha_t = alpha_t[None, None, None]
                 alpha_s = alpha_s[None, None, None]
-
-                input_ids = xt
                 denoiser_inputs = self._prepare_inputs_inference(
-                    input_ids=input_ids,
-                    context=None
-                    if self.sampler_config.kv_caching
-                    else accumulated_samples,
+                    input_ids=xt,
+                    context=None if self.sampler_config.kv_caching else context_block,
                     past_key_values=past_key_values,
                 )
 
@@ -1034,8 +1022,9 @@ class D3PM(Denoiser):
                 if not torch.allclose(xs, xt) or not disable_cache:
                     cache = None
                 xt = xs
-            accumulated_samples = torch.cat((accumulated_samples, xt), dim=-1)
-
+            accumulated_samples[
+                :, (block_id * block_size) + 1 : ((block_id + 1) * block_size) + 1
+            ] = xt[:, 1:]
             if tokenizer is not None:
                 print(tokenizer.batch_decode(accumulated_samples))
             if self.sampler_config.kv_caching:

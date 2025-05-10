@@ -14,11 +14,11 @@ from lm_eval.api.registry import register_model
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from datasets import Dataset
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
 )
+from src.datasets.tokenize_on_demand import GSM8KDataset
 from src.sampler import SamplerConfig
 
 
@@ -125,6 +125,11 @@ class LMEvalHarness(LM):
             else self.model.config.shift_logits,
         )
         self.model.sampler_config = self.sampler_config
+        self.train_dataset = GSM8KDataset(
+            tokenizer=self.tokenizer,
+            split="train",
+            max_seq_len=self.model.config.length,
+        )
 
     def loglikelihood(self, requests) -> List[Tuple[float, bool]]:
         raise NotImplementedError
@@ -136,7 +141,7 @@ class LMEvalHarness(LM):
         def _tokenize(
             e,
             prefix_text: str | None = (
-                "<|im_end|>Please reason step by step, and put your "
+                "Please reason step by step, and put your "
                 + "final answer within $\\boxed{}$. "
             ),
         ):
@@ -154,42 +159,56 @@ class LMEvalHarness(LM):
                 "target": e["target"],
             }
 
-        ds = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
-        ds = Dataset.from_list(ds)
-        ds = ds.map(_tokenize)
-        ds = ds.with_format("torch")
-        total_len = [len(x["prefix"]) + self.max_cont_length for x in ds]
-        assert max(total_len) <= self.sampler_config.max_length, (
-            "Input length(s) exceeds max_length"
-        )
-
-        res = []
-        # res_for_json = []
+        # ds = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
+        # ds = Dataset.from_list(ds)
+        # ds = ds.map(_tokenize)
+        # ds = ds.with_format("torch")
+        # total_len = [len(x["prefix"]) + self.max_cont_length for x in ds]
+        # assert max(total_len) <= self.sampler_config.max_length, (
+        #     "Input length(s) exceeds max_length"
+        # )
+        #
+        # res = []
+        # # res_for_json = []
+        del requests
         correct, total = 0, 0
-        for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds)):
-            prefix = elem["prefix"][:-1]
+        for elem in tqdm(self.train_dataset, desc="Generating"):
+            context_mask = elem["context_mask"]
+            context_mask[(context_mask == 0).nonzero()[:1]] = 1
             sample, _ = self.model.generate(
-                max_length=len(prefix) + self.max_cont_length,
-                context=prefix[None, ...].to(self.device),
+                max_length=context_mask.sum() + self.max_cont_length,
+                context=elem["input_ids"][context_mask.bool()][None, ...].to(
+                    self.device
+                ),
                 device=self.device,
-                tokenizer=self.tokenizer,  # For debugging
+                # tokenizer=self.tokenizer,  # For debugging
             )
-            result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
-            for until in elem["target"]["until"] + [
-                "<|eot_id|>",
-                self.tokenizer.eos_token,
-            ]:
-                result = result.split(until)[0]
+            # sample = self.model.generate(
+            #     input_ids=elem["prefix"][None, ...].to(self.device),
+            #     max_length=len(elem["prefix"]) + self.max_cont_length,
+            #     num_return_sequences=1
+            # )
+            result = self.tokenizer.decode(sample[0])
+            question = result.split("Answer: ")[0]
+            result = result.split("Answer: ")[1]
+            # for until in elem["target"]["until"] + [
+            #     "<|eot_id|>",
+            #     self.tokenizer.eos_token,
+            # ]:
+            #     result = result.split(until)[0]
+            ground_truth = self.tokenizer.decode(
+                elem["input_ids"][~elem["context_mask"].bool()]
+            )
             print("=" * 20)
-            print("prefix: ", elem["prefix_text"], result)
-            print("(Ground truth): ", requests[i].doc["answer"])
+            print("Question: ", question)
+            print("\nAnswer: ", result)
+            print("\n(Ground truth): ", ground_truth)
             print("=" * 20, end="\n\n")
-            res.append(result)
 
             # log accuracy
-            ground_truth_ans = requests[i].doc["answer"].split("### ")[1]
-            if "boxed{" in result:
-                predicted_ans = result.split("boxed{")[1].split("}")[0]
+            ground_truth_ans = ground_truth.split("\\boxed{")[1].split("}")[0]
+            if "\\boxed{" in result:
+                predicted_ans = result.split("\\boxed{")[1].split("}")[0]
                 if ground_truth_ans == predicted_ans:
                     correct += 1
             total += 1
@@ -208,7 +227,7 @@ class LMEvalHarness(LM):
         #         f,  # type: ignore
         #         indent=2,
         #     )
-        return res
+        return []
 
 
 if __name__ == "__main__":
