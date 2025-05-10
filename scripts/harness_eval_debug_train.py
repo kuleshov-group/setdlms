@@ -141,7 +141,7 @@ class LMEvalHarness(LM):
         def _tokenize(
             e,
             prefix_text: str | None = (
-                "<|im_end|>Please reason step by step, and put your "
+                "Please reason step by step, and put your "
                 + "final answer within $\\boxed{}$. "
             ),
         ):
@@ -173,9 +173,11 @@ class LMEvalHarness(LM):
         del requests
         correct, total = 0, 0
         for elem in tqdm(self.train_dataset, desc="Generating"):
+            context_mask = elem["context_mask"]
+            context_mask[(context_mask == 0).nonzero()[:1]] = 1
             sample, _ = self.model.generate(
-                max_length=elem["context_mask"].sum() + self.max_cont_length,
-                context=elem["input_ids"][elem["context_mask"].bool()][None, ...].to(
+                max_length=context_mask.sum() + self.max_cont_length,
+                context=elem["input_ids"][context_mask.bool()][None, ...].to(
                     self.device
                 ),
                 device=self.device,

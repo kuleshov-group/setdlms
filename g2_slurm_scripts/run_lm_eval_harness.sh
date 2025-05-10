@@ -26,13 +26,14 @@ MODEL_PATH="/home/ubuntu/qwen3_600M_gsm8k_ckpts"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 #OUTPUT_DIR="home/ubuntu/qwen3_lm_eval_harness_output"
 mkdir -p ${OUTPUT_DIR}
-L=128
+L=256
 BLOCK_SIZE=4
-GREEDY=True
+GREEDY=False
 USE_X0_PRED=True
 FIRST_HITTING=True
 LOW_CONFIDENCE_REMASKING=True
-KV_CACHING=True
+KV_CACHING=False
+TOP_P=1.0
 
 OUTPUT_PATH="${OUTPUT_DIR}/L=${L}-block_size=${BLOCK_SIZE}-greedy=${GREEDY}-use_x0_pred=${USE_X0_PRED}-first_hitting=${FIRST_HITTING}-low_confidence_remasking=${LOW_CONFIDENCE_REMASKING}"
 #OUTPUT_PATH="${OUTPUT_DIR}/outputs.json"
@@ -52,7 +53,7 @@ tokenizer_name_or_path=Qwen/Qwen3-0.6B-Base,\
 num_samples=1,\
 num_steps=8,\
 min_t=1e-5,\
-top_p=0.9,\
+top_p=${TOP_P},\
 pad_context=False,\
 greedy=${GREEDY},\
 use_x0_pred=${USE_X0_PRED},\

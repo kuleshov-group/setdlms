@@ -167,17 +167,13 @@ class LMEvalHarness(LM):
         # res_for_json = []
         correct, total = 0, 0
         for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds)):
+            prefix = elem["prefix"][:-1]
             sample, _ = self.model.generate(
-                max_length=len(elem["prefix"]) + self.max_cont_length,
-                context=elem["prefix"][None, ...].to(self.device),
+                max_length=len(prefix) + self.max_cont_length,
+                context=prefix[None, ...].to(self.device),
                 device=self.device,
-                # tokenizer=self.tokenizer,  # For debugging
+                tokenizer=self.tokenizer,  # For debugging
             )
-            # sample = self.model.generate(
-            #     input_ids=elem["prefix"][None, ...].to(self.device),
-            #     max_length=len(elem["prefix"]) + self.max_cont_length,
-            #     num_return_sequences=1
-            # )
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
                 "<|eot_id|>",
@@ -192,8 +188,8 @@ class LMEvalHarness(LM):
 
             # log accuracy
             ground_truth_ans = requests[i].doc["answer"].split("### ")[1]
-            if "\\boxed{" in result:
-                predicted_ans = result.split("\\boxed{")[1].split("}")[0]
+            if "boxed{" in result:
+                predicted_ans = result.split("boxed{")[1].split("}")[0]
                 if ground_truth_ans == predicted_ans:
                     correct += 1
             total += 1
