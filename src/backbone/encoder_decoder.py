@@ -99,16 +99,17 @@ class LLMasEncoderDecoder(nn.Module):
                 if hasattr(self.encoder.model.layers[-1].self_attn, unused_param):
                     getattr(
                         self.encoder.model.layers[-1].self_attn, unused_param
-                    ).requires_grad = False
+                    ).requires_grad_(False)
             self.encoder.model.layers[-1].mlp.requires_grad_(False)
+            self.encoder.model.norm.requires_grad_(False)
             for unused_param in unused_layernorm_params:
                 if hasattr(self.encoder.model.layers[-1], unused_param):
-                    getattr(
-                        self.encoder.model.layers[-1], unused_param
-                    ).requires_grad = False
+                    getattr(self.encoder.model.layers[-1], unused_param).requires_grad_(
+                        False
+                    )
             # if lm head is weight-tied to embedding, point decoder lm head to encoder
             # (instead of initializing a separate lm head)
-            if "lm_head.weight" not in dict(self.encoder.named_parameters()):
+            if not hasattr(self.encoder, "lm_head"):
                 self.decoder.lm_head = self.encoder.lm_head
             else:
                 del self.encoder.lm_head
