@@ -126,7 +126,7 @@ class LLMasEncoderDecoder(nn.Module):
             i
             for i in range(len(self.decoder.model.layers))
             if ((i + 1) % keep_every_n_decoder_layers == 0)
-            and (i >= keep_top_n_decoder_layers)
+            and (i >= len(self.decoder.model.layers) - keep_top_n_decoder_layers)
         ]
         self.max_length = max_length
 
