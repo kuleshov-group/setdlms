@@ -1354,6 +1354,10 @@ class BD3LM(MDLM):
         if context_mask is None:
             context_mask = torch.zeros_like(attention_mask)
 
+        if attention_mask.dtype == torch.is_floating_point(attention_mask):
+            attention_mask = attention_mask.to(torch.int)
+            context_mask = context_mask.to(torch.int)
+
         if t is None:
             t = torch.rand(
                 input_ids.shape[0],
