@@ -3,6 +3,7 @@ This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 """
 
 import random
+import re
 from typing import List, Tuple
 
 import accelerate
@@ -12,7 +13,7 @@ from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria
 
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
@@ -20,8 +21,6 @@ from scripts.utils import (
 )
 from src.datasets.tokenize_on_demand import GSM8KDataset
 from src.sampler import SamplerConfig
-from transformers import StoppingCriteria
-import re
 
 
 class BoxedStoppingCriteria(StoppingCriteria):
@@ -29,15 +28,16 @@ class BoxedStoppingCriteria(StoppingCriteria):
         self.tokenizer = tokenizer
         self.pattern = pattern
 
-    def __call__(self, input_ids: torch.LongTensor, 
-        scores: None | torch.FloatTensor, 
-        **kwargs) -> bool:
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
+    ) -> bool:
         if input_ids.numel() == 0:
             return False
         match = re.search(self.pattern, self.tokenizer.decode(input_ids[0]))
         if match:
             return True
         return False
+
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -56,6 +56,8 @@ class LMEvalHarness(LM):
         max_cont_len: int = 128,
         model_path: str = "",
         tokenizer_name_or_path: str = "",
+        ckpt_file: str = "best-rank0.ckpt",
+        data_split: str = "test",
         device: str = "cuda",
         load_ema_weights: bool = True,
         # Sampler args
@@ -104,6 +106,7 @@ class LMEvalHarness(LM):
             self.model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=model_path,
                 load_ema_weights=load_ema_weights,
+                ckpt_file=ckpt_file,
             ).to(self.device)
         except FileNotFoundError:
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -142,7 +145,7 @@ class LMEvalHarness(LM):
         self.model.sampler_config = self.sampler_config
         self.train_dataset = GSM8KDataset(
             tokenizer=self.tokenizer,
-            split="train",
+            split=data_split,
             max_seq_len=self.model.config.length,
         )
 
@@ -154,6 +157,7 @@ class LMEvalHarness(LM):
 
     def generate_until(self, requests, **generation_kwargs):
         del requests
+
         def _tokenize(
             e,
             prefix_text: str | None = (
@@ -176,8 +180,7 @@ class LMEvalHarness(LM):
             }
 
         boxed_stopping_criteria = BoxedStoppingCriteria(
-            tokenizer=self.tokenizer,
-            pattern=r"\\boxed\{.*?\}"
+            tokenizer=self.tokenizer, pattern=r"\\boxed\{.*?\}"
         )
 
         correct, total = 0, 0
