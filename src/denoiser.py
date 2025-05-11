@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
+import re
 
 import hydra.utils
 import torch
@@ -17,6 +18,7 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizer,
+    StoppingCriteria
 )
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import ModelOutput
@@ -933,6 +935,7 @@ class D3PM(Denoiser):
         disable_cache: bool | None = None,
         device: str | None = None,
         context: torch.Tensor | None = None,
+        stopping_criteria: StoppingCriteria | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, int]:
@@ -943,6 +946,7 @@ class D3PM(Denoiser):
         batch_size = (
             batch_size if batch_size is not None else self.sampler_config.batch_size
         )
+        assert batch_size == 1, "Batched sampling not supported yet"
         disable_cache = (
             disable_cache
             if disable_cache is not None
@@ -954,22 +958,42 @@ class D3PM(Denoiser):
             else ("cuda" if torch.cuda.is_available() else "cpu")
         )
 
-        max_blocks = max_length // self.sampler_config.block_size
+        block_size = self.sampler_config.block_size
+        max_blocks = max_length // block_size
         total_NFEs = 0
         # cache kvs of context
         past_key_values = None
-        block_size = self.sampler_config.block_size
-        block_pbar = tqdm(range(max_blocks), desc="Sampling blocks", leave=False)
+        blocks_to_cache = 0
+        context_len = context.shape[-1] if context is not None else 0
+
         accumulated_samples = self._sample_prior(
             device=device,
             batch_size=batch_size,
             length=max_blocks * block_size,
         )
-        accumulated_samples[:, : context.shape[-1]] = context
+        
+        if context is not None:
+            accumulated_samples[:, : context_len] = context
+
+        if self.sampler_config.kv_caching and context is not None:
+            past_key_values = DynamicCache()
+            blocks_to_cache = context_len // block_size
+            # start sampling with the last block with clean tokens
+            cache_len = block_size * blocks_to_cache
+            if context.shape[-1] % block_size == 0:
+                blocks_to_cache -= 1
+                cache_len -= block_size
+            past_key_values = DynamicCache()
+            past_key_values = self.update_kv_cache(
+                context=accumulated_samples[:, :cache_len],
+                past_key_values=past_key_values,
+            )
+
+        block_pbar = tqdm(range(blocks_to_cache, max_blocks), desc="Sampling blocks", leave=False)
         for block_id in block_pbar:
             block_NFEs = 0
             xt = accumulated_samples[
-                :, block_id * block_size : ((block_id + 1) * block_size) + 1
+                :, (block_id * block_size) : (((block_id + 1) * block_size) + 1)
             ]
             timesteps = self._sample_generation_timesteps(
                 max_seq_len=block_size, device=device
@@ -978,7 +1002,7 @@ class D3PM(Denoiser):
             dt = (1 - self.sampler_config.min_t) / len(timesteps)
             cache = None
             context_block = (
-                accumulated_samples[:, : block_id * block_size]
+                accumulated_samples[:, : (block_id * block_size)]
                 if block_id > 0
                 else None
             )
@@ -1025,8 +1049,13 @@ class D3PM(Denoiser):
             accumulated_samples[
                 :, (block_id * block_size) + 1 : ((block_id + 1) * block_size) + 1
             ] = xt[:, 1:]
-            if tokenizer is not None:
-                print(tokenizer.batch_decode(accumulated_samples))
+            if stopping_criteria is not None:
+                stop_criteria_met = stopping_criteria(
+                    input_ids=accumulated_samples[:, context_len:], 
+                    scores=None)
+                if stop_criteria_met:
+                    accumulated_samples = accumulated_samples[:, :((block_id + 1) * block_size) + 1]
+                    break
             if self.sampler_config.kv_caching:
                 if self.config.shift_logits:
                     xt = xt[:, :-1]
@@ -1034,6 +1063,7 @@ class D3PM(Denoiser):
                     context=xt,
                     past_key_values=past_key_values,
                 )
+        accumulated_samples = accumulated_samples[:, context_len:]
         return accumulated_samples, total_NFEs
 
 

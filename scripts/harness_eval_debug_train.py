@@ -20,7 +20,24 @@ from scripts.utils import (
 )
 from src.datasets.tokenize_on_demand import GSM8KDataset
 from src.sampler import SamplerConfig
+from transformers import StoppingCriteria
+import re
 
+
+class BoxedStoppingCriteria(StoppingCriteria):
+    def __init__(self, tokenizer, pattern):
+        self.tokenizer = tokenizer
+        self.pattern = pattern
+
+    def __call__(self, input_ids: torch.LongTensor, 
+        scores: None | torch.FloatTensor, 
+        **kwargs) -> bool:
+        if input_ids.numel() == 0:
+            return False
+        match = re.search(self.pattern, self.tokenizer.decode(input_ids[0]))
+        if match:
+            return True
+        return False
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -82,6 +99,7 @@ class LMEvalHarness(LM):
                 tokenizer_name_or_path, trust_remote_code=True
             )
         )
+        self.hf_model = False
         try:
             self.model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=model_path,
@@ -92,11 +110,8 @@ class LMEvalHarness(LM):
                 model_path,
                 trust_remote_code=True,
             ).to(self.device)
+            self.hf_model = True
         self.model.eval()
-        # assert (
-        #     getattr(self.model, "mask_token_id", None) is not None
-        #     or getattr(self.tokenizer, "mask_token_id", None) is not None
-        # ), "Mask token id must be set in either the model or tokenizer."
         self.mask_token_id = None
         self.mask_token_id = getattr(
             self.model, "mask_token_id", getattr(self.tokenizer, "mask_token_id", None)
@@ -138,6 +153,7 @@ class LMEvalHarness(LM):
         raise NotImplementedError
 
     def generate_until(self, requests, **generation_kwargs):
+        del requests
         def _tokenize(
             e,
             prefix_text: str | None = (
@@ -159,43 +175,44 @@ class LMEvalHarness(LM):
                 "target": e["target"],
             }
 
-        # ds = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
-        # ds = Dataset.from_list(ds)
-        # ds = ds.map(_tokenize)
-        # ds = ds.with_format("torch")
-        # total_len = [len(x["prefix"]) + self.max_cont_length for x in ds]
-        # assert max(total_len) <= self.sampler_config.max_length, (
-        #     "Input length(s) exceeds max_length"
-        # )
-        #
-        # res = []
-        # # res_for_json = []
-        del requests
+        boxed_stopping_criteria = BoxedStoppingCriteria(
+            tokenizer=self.tokenizer,
+            pattern=r"\\boxed\{.*?\}"
+        )
+
         correct, total = 0, 0
+        throughputs = []
         for elem in tqdm(self.train_dataset, desc="Generating"):
             context_mask = elem["context_mask"]
             context_mask[(context_mask == 0).nonzero()[:1]] = 1
-            sample, _ = self.model.generate(
-                max_length=context_mask.sum() + self.max_cont_length,
-                context=elem["input_ids"][context_mask.bool()][None, ...].to(
-                    self.device
-                ),
-                device=self.device,
-                # tokenizer=self.tokenizer,  # For debugging
-            )
-            # sample = self.model.generate(
-            #     input_ids=elem["prefix"][None, ...].to(self.device),
-            #     max_length=len(elem["prefix"]) + self.max_cont_length,
-            #     num_return_sequences=1
-            # )
+
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            if not self.hf_model:
+                sample, _ = self.model.generate(
+                    max_length=context_mask.sum() + self.max_cont_length,
+                    context=elem["input_ids"][context_mask.bool()][None, ...].to(
+                        self.device
+                    ),
+                    device=self.device,
+                    stopping_criteria=boxed_stopping_criteria,
+                    tokenizer=self.tokenizer,  # For debugging
+                )
+            else:
+                sample = self.model.generate(
+                    input_ids=elem["prefix"][None, ...].to(self.device),
+                    max_length=len(elem["prefix"]) + self.max_cont_length,
+                    num_return_sequences=1,
+                    stopping_criteria=boxed_stopping_criteria,
+                )
+            end_event.record()
+            torch.cuda.synchronize()
+            elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+            throughputs.append(sample.numel() / elapsed_time_s)
+
             result = self.tokenizer.decode(sample[0])
-            question = result.split("Answer: ")[0]
-            result = result.split("Answer: ")[1]
-            # for until in elem["target"]["until"] + [
-            #     "<|eot_id|>",
-            #     self.tokenizer.eos_token,
-            # ]:
-            #     result = result.split(until)[0]
+            question = elem["input_ids"][elem["context_mask"].bool()]
             ground_truth = self.tokenizer.decode(
                 elem["input_ids"][~elem["context_mask"].bool()]
             )
@@ -221,6 +238,7 @@ class LMEvalHarness(LM):
             # )
             torch.cuda.empty_cache()
             print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
+            print(f"Throughput (tok/s): {np.mean(throughputs)}")
         # with open(self.model.config.eval.generated_samples_path, "w") as f:
         #     json.dump(
         #         res_for_json,
