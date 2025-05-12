@@ -20,7 +20,7 @@ MAX_DURATION="20000ba" # 20000ba, 10000ba, 5000ba
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
 
-TAG=e2d2_qwen2B_v2
+TAG=e2d2_qwen2B_v1
 RUN_NAME=gsm8k-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keep${KEEP_EVERY_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
 MICRO_BATCH_SIZE=2 # TODO: tune
@@ -55,5 +55,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   hydra.run.dir=/home/ubuntu/runs/dllm-dev/${RUN_NAME} \
   composer.trainer.save_interval="8ep" \
   composer.loggers.name=${RUN_NAME} \
-  train_dataloader.num_workers=${NUM_WORKERS} \
-  eval_dataloader.num_workers=0
+  train_dataloader.num_workers=${NUM_WORKERS}
