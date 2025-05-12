@@ -12,7 +12,8 @@ from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
+import re
 
 from datasets import Dataset
 from scripts.utils import (
@@ -21,6 +22,31 @@ from scripts.utils import (
 )
 from src.sampler import SamplerConfig
 
+class BoxedStoppingCriteria(StoppingCriteria):
+    def __init__(self, tokenizer, pattern):
+        self.tokenizer = tokenizer
+        self.pattern = pattern
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
+    ) -> bool:
+        if input_ids.numel() == 0:
+            return False
+        matches = re.findall(self.pattern, self.tokenizer.decode(input_ids[0]))
+        if len(matches) > 1:
+            return True
+        return False
+
+class LengthStoppingCriteria(StoppingCriteria):
+    def __init__(self, max_length):
+        self.max_length = max_length
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
+    ) -> bool:
+        if input_ids.shape[-1] >= self.max_length:
+            return True
+        else:
+            return False
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -89,6 +115,7 @@ class LMEvalHarness(LM):
                 tokenizer_name_or_path, trust_remote_code=True
             )
         )
+        self.hf_model = False
         try:
             self.model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=model_path,
@@ -100,6 +127,7 @@ class LMEvalHarness(LM):
                 model_path,
                 trust_remote_code=True,
             )
+            self.hf_model = True
         self.model.eval()
         self.model = self.model.to(self.device)
 
@@ -181,17 +209,42 @@ class LMEvalHarness(LM):
             "Input length(s) exceeds max_length"
         )
 
+        boxed_stopping_criteria = BoxedStoppingCriteria(
+            tokenizer=self.tokenizer, pattern=r"\\boxed\{.*?\}"
+        )
+
         res = []
         # res_for_json = []
         correct, total = 0, 0
+        throughputs = []
         for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds)):
             prefix = elem["prefix"][:-1]
-            sample, _ = self.model.generate(
-                max_length=len(prefix) + self.max_cont_length,
-                context=prefix[None, ...].to(self.device),
-                device=self.device,
-                # tokenizer=self.tokenizer,  # For debugging
-            )
+            length_stopping_criteria = LengthStoppingCriteria(max_length=len(prefix) + self.max_cont_length)
+            stopping_criteria = StoppingCriteriaList([boxed_stopping_criteria, length_stopping_criteria])
+            if self.rank == 0:
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
+            if not self.hf_model:
+                sample, _ = self.model.generate(
+                    max_length=len(prefix) + self.max_cont_length,
+                    context=prefix[None, ...].to(self.device),
+                    device=self.device,
+                    stopping_criteria=stopping_criteria,
+                    # tokenizer=self.tokenizer,
+                )
+            else:
+                sample = self.model.generate(
+                    input_ids=elem["prefix"][None, ...].to(self.device),
+                    max_length=len(elem["prefix"]) + self.max_cont_length,
+                    num_return_sequences=1,
+                    stopping_criteria=stopping_criteria,
+                )
+            if self.rank == 0:
+                end_event.record()
+                torch.cuda.synchronize()
+                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+                throughputs.append(sample.numel() / elapsed_time_s)
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
                 "<|eot_id|>",
@@ -222,6 +275,7 @@ class LMEvalHarness(LM):
             torch.cuda.empty_cache()
             if self.rank == 0:
                 print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
+                print(f"Throughput (tok/s): {np.mean(throughputs)} +/- {np.std(throughputs)}")
         # with open(self.model.config.eval.generated_samples_path, "w") as f:
         #     json.dump(
         #         res_for_json,
