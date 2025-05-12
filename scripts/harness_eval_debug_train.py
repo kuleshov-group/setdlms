@@ -60,6 +60,7 @@ class LMEvalHarness(LM):
         data_split: str = "test",
         device: str = "cuda",
         load_ema_weights: bool = True,
+        ckpt_file: str = "best-rank0.pt",  # best-rank0.pt or latest-rank0.pt
         # Sampler args
         num_samples: int = 1,
         batch_size: int = 1,
@@ -92,10 +93,16 @@ class LMEvalHarness(LM):
             self.accelerator = None
 
         model_kwargs = {}
+        self.device = torch.device(device)
         if self.accelerator is not None:
             model_kwargs.update({"device_map": {"": f"{self.accelerator.device}"}})
+            self.device = torch.device(f"{self.accelerator.device}")
+            self._rank = self.accelerator.local_process_index
+            self._world_size = self.accelerator.num_processes
+        else:
+            self._rank = 0
+            self._world_size = 1
 
-        self.device = torch.device(device)
         self.tokenizer = maybe_add_missing_special_tokens(
             AutoTokenizer.from_pretrained(
                 tokenizer_name_or_path, trust_remote_code=True
@@ -143,11 +150,20 @@ class LMEvalHarness(LM):
             else self.model.config.shift_logits,
         )
         self.model.sampler_config = self.sampler_config
+
         self.train_dataset = GSM8KDataset(
             tokenizer=self.tokenizer,
             split=data_split,
             max_seq_len=self.model.config.length,
         )
+
+    @property
+    def rank(self):
+        return self._rank
+
+    @property
+    def world_size(self):
+        return self._world_size
 
     def loglikelihood(self, requests) -> List[Tuple[float, bool]]:
         raise NotImplementedError
@@ -241,7 +257,7 @@ class LMEvalHarness(LM):
             # )
             torch.cuda.empty_cache()
             print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
-            print(f"Throughput (tok/s): {np.mean(throughputs)}")
+            print(f"Throughput (tok/s): {np.mean(throughputs)} +/- {np.std(throughputs)}")
         # with open(self.model.config.eval.generated_samples_path, "w") as f:
         #     json.dump(
         #         res_for_json,

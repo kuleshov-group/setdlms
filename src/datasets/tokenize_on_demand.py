@@ -175,6 +175,7 @@ class CNNDailyMailDataset(Dataset):
         add_special_tokens: bool = True,
         article_prompt_text: str | None = _SUMMARY_PREFIX,
         summary_prompt_text: str | None = "Summary: ",
+        separate_input_output: bool = False,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -187,6 +188,7 @@ class CNNDailyMailDataset(Dataset):
         self.add_special_tokens = add_special_tokens
         self.article_prompt_text = article_prompt_text
         self.summary_prompt_text = summary_prompt_text
+        self.separate_input_output = separate_input_output
 
     def __len__(self):
         return len(self.dataset)
@@ -211,24 +213,39 @@ class CNNDailyMailDataset(Dataset):
             truncation=True,
         )
 
-        input_ids = torch.cat(
-            [torch.LongTensor(t) for t in seq2seq_tokenized["input_ids"]], dim=-1
-        )
-        attention_mask = torch.cat(
-            [torch.LongTensor(a) for a in seq2seq_tokenized["attention_mask"]], dim=-1
-        )
-        context_mask = torch.cat(
-            (
-                torch.LongTensor(seq2seq_tokenized["attention_mask"][0]),
-                torch.zeros_like(torch.LongTensor(seq2seq_tokenized["input_ids"][1])),
-            ),
-            dim=-1,
-        )
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "context_mask": context_mask,
-        }
+        if self.separate_input_output:
+            input_ids = torch.LongTensor(seq2seq_tokenized["input_ids"][0])
+            attention_mask = torch.LongTensor(seq2seq_tokenized["attention_mask"][0])
+            context_mask = torch.LongTensor(seq2seq_tokenized["attention_mask"][0])
+            output_ids = torch.LongTensor(seq2seq_tokenized["input_ids"][1])
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "context_mask": context_mask,
+                "output_ids": output_ids,
+            }
+        else:
+            input_ids = torch.cat(
+                [torch.LongTensor(t) for t in seq2seq_tokenized["input_ids"]], dim=-1
+            )
+            attention_mask = torch.cat(
+                [torch.LongTensor(a) for a in seq2seq_tokenized["attention_mask"]],
+                dim=-1,
+            )
+            context_mask = torch.cat(
+                (
+                    torch.LongTensor(seq2seq_tokenized["attention_mask"][0]),
+                    torch.zeros_like(
+                        torch.LongTensor(seq2seq_tokenized["input_ids"][1])
+                    ),
+                ),
+                dim=-1,
+            )
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "context_mask": context_mask,
+            }
 
 
 class WMTDataset(Dataset):
@@ -251,6 +268,7 @@ class WMTDataset(Dataset):
         add_special_tokens: bool = True,
         source_prompt_text: str | None = _TRANSLATION_PREFIX,
         target_prompt_text: str | None = "Translation: ",
+        separate_input_output: bool = False,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -268,6 +286,7 @@ class WMTDataset(Dataset):
             target=self._LANGUAGE[subset.split("-")[1]],
         )
         self.target_prompt_text = target_prompt_text
+        self.separate_input_output = separate_input_output
 
     def __len__(self):
         return len(self.dataset)
@@ -291,22 +310,36 @@ class WMTDataset(Dataset):
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
         )
-
-        input_ids = torch.cat(
-            [torch.LongTensor(t) for t in seq2seq_tokenized["input_ids"]], dim=-1
-        )
-        attention_mask = torch.cat(
-            [torch.LongTensor(a) for a in seq2seq_tokenized["attention_mask"]], dim=-1
-        )
-        context_mask = torch.cat(
-            (
-                torch.LongTensor(seq2seq_tokenized["attention_mask"][0]),
-                torch.zeros_like(torch.LongTensor(seq2seq_tokenized["input_ids"][1])),
-            ),
-            dim=-1,
-        )
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "context_mask": context_mask,
-        }
+        if self.separate_input_output:
+            input_ids = torch.LongTensor(seq2seq_tokenized["input_ids"][0])
+            attention_mask = torch.LongTensor(seq2seq_tokenized["attention_mask"][0])
+            context_mask = torch.LongTensor(seq2seq_tokenized["attention_mask"][0])
+            output_ids = torch.LongTensor(seq2seq_tokenized["input_ids"][1])
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "context_mask": context_mask,
+                "output_ids": output_ids,
+            }
+        else:
+            input_ids = torch.cat(
+                [torch.LongTensor(t) for t in seq2seq_tokenized["input_ids"]], dim=-1
+            )
+            attention_mask = torch.cat(
+                [torch.LongTensor(a) for a in seq2seq_tokenized["attention_mask"]],
+                dim=-1,
+            )
+            context_mask = torch.cat(
+                (
+                    torch.LongTensor(seq2seq_tokenized["attention_mask"][0]),
+                    torch.zeros_like(
+                        torch.LongTensor(seq2seq_tokenized["input_ids"][1])
+                    ),
+                ),
+                dim=-1,
+            )
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "context_mask": context_mask,
+            }

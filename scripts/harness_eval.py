@@ -41,6 +41,7 @@ class LMEvalHarness(LM):
         tokenizer_name_or_path: str = "",
         device: str = "cuda",
         load_ema_weights: bool = True,
+        ckpt_file: str = "best-rank0.pt",  # best-rank0.pt or latest-rank0.pt
         # Sampler args
         num_samples: int = 1,
         batch_size: int = 1,
@@ -73,10 +74,16 @@ class LMEvalHarness(LM):
             self.accelerator = None
 
         model_kwargs = {}
+        self.device = torch.device(device)
         if self.accelerator is not None:
             model_kwargs.update({"device_map": {"": f"{self.accelerator.device}"}})
+            self.device = torch.device(f"{self.accelerator.device}")
+            self._rank = self.accelerator.local_process_index
+            self._world_size = self.accelerator.num_processes
+        else:
+            self._rank = 0
+            self._world_size = 1
 
-        self.device = torch.device(device)
         self.tokenizer = maybe_add_missing_special_tokens(
             AutoTokenizer.from_pretrained(
                 tokenizer_name_or_path, trust_remote_code=True
@@ -86,6 +93,7 @@ class LMEvalHarness(LM):
             self.model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=model_path,
                 load_ema_weights=load_ema_weights,
+                ckpt_file=ckpt_file,
             ).to(self.device)
         except FileNotFoundError:
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -93,6 +101,9 @@ class LMEvalHarness(LM):
                 trust_remote_code=True,
             ).to(self.device)
         self.model.eval()
+        # if self.accelerator is not None:
+        #     self.model = self.accelerator.prepare(self.model)
+
         # assert (
         #     getattr(self.model, "mask_token_id", None) is not None
         #     or getattr(self.tokenizer, "mask_token_id", None) is not None
@@ -125,6 +136,14 @@ class LMEvalHarness(LM):
             else self.model.config.shift_logits,
         )
         self.model.sampler_config = self.sampler_config
+
+    @property
+    def rank(self):
+        return self._rank
+
+    @property
+    def world_size(self):
+        return self._world_size
 
     def loglikelihood(self, requests) -> List[Tuple[float, bool]]:
         raise NotImplementedError
@@ -172,7 +191,7 @@ class LMEvalHarness(LM):
                 max_length=len(prefix) + self.max_cont_length,
                 context=prefix[None, ...].to(self.device),
                 device=self.device,
-                tokenizer=self.tokenizer,  # For debugging
+                # tokenizer=self.tokenizer,  # For debugging
             )
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
@@ -180,10 +199,11 @@ class LMEvalHarness(LM):
                 self.tokenizer.eos_token,
             ]:
                 result = result.split(until)[0]
-            print("=" * 20)
-            print("prefix: ", elem["prefix_text"], result)
-            print("(Ground truth): ", requests[i].doc["answer"])
-            print("=" * 20, end="\n\n")
+            if self.rank == 0:
+                print("=" * 20)
+                print("prefix: ", elem["prefix_text"], result)
+                print("(Ground truth): ", requests[i].doc["answer"])
+                print("=" * 20, end="\n\n")
             res.append(result)
 
             # log accuracy
@@ -201,7 +221,8 @@ class LMEvalHarness(LM):
             #     }
             # )
             torch.cuda.empty_cache()
-            print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
+            if self.rank == 0:
+                print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
         # with open(self.model.config.eval.generated_samples_path, "w") as f:
         #     json.dump(
         #         res_for_json,
