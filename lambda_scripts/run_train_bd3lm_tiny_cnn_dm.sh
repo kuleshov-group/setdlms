@@ -7,7 +7,7 @@ NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
 KEEP_EVERY_N_ENCODER_LAYERS=1
-KEEP_BOTTOM_N_ENCODER_LAYERS=21 # use < 28
+KEEP_BOTTOM_N_ENCODER_LAYERS=18 # use < 28
 USE_ENCODER_CAUSAL_MASK=false # true, false
 
 # Hyperparameters
@@ -20,8 +20,8 @@ MAX_DURATION="10000ba" # 20000ba, 10000ba, 5000ba
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
 
-TAG=bd3_small_qwen600m_v2
-RUN_NAME=wmt-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keep${KEEP_EVERY_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
+TAG=bd3_tiny_qwen600m_v1
+RUN_NAME=cnn-dm-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keep${KEEP_EVERY_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
 MICRO_BATCH_SIZE=8 # TODO: tune
 NUM_WORKERS=128 # TODO: tune
@@ -29,8 +29,8 @@ NUM_WORKERS=128 # TODO: tune
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
-  dataset@train_dataset=wmt_train \
-  dataset@eval_dataset=wmt_eval \
+  dataset@train_dataset=cnn_dailymail_train \
+  dataset@eval_dataset=cnn_dailymail_eval \
   composer.optimizer.lr=${LR} \
   composer.optimizer.weight_decay=${WEIGHT_DECAY} \
   composer.algorithms.gradient_clipping.clipping_threshold=${GRAD_CLIP} \

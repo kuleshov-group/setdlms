@@ -20,10 +20,10 @@ MAX_DURATION="10000ba" # 20000ba, 10000ba, 5000ba
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
 
-TAG=bd3_small_qwen600m_v1
+TAG=bd3_small_qwen600m_v2
 RUN_NAME=cnn-dm-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keep${KEEP_EVERY_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
-MICRO_BATCH_SIZE=2 # TODO: tune
+MICRO_BATCH_SIZE=8 # TODO: tune
 NUM_WORKERS=128 # TODO: tune
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
