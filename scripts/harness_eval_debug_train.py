@@ -232,8 +232,8 @@ class LMEvalHarness(LM):
                 )
             else:
                 sample = self.model.generate(
-                    input_ids=elem["prefix"][None, ...].to(self.device),
-                    max_length=len(elem["prefix"]) + self.max_cont_length,
+                    input_ids=elem["input_ids"][None, ...].to(self.device),
+                    max_length=len(elem["input_ids"]) + self.max_cont_length,
                     num_return_sequences=1,
                     stopping_criteria=stopping_criteria,
                 )
@@ -242,7 +242,7 @@ class LMEvalHarness(LM):
             elapsed_time_s = start_event.elapsed_time(end_event) / 1000
             throughputs.append(sample.numel() / elapsed_time_s)
 
-            result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
+            result = self.tokenizer.decode(sample[0, len(elem["input_ids"]) :])
             question = elem["input_ids"][elem["context_mask"].bool()]
             ground_truth = self.tokenizer.decode(
                 elem["input_ids"][~elem["context_mask"].bool()]
