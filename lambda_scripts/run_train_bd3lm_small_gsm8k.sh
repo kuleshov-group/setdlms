@@ -24,7 +24,7 @@ TAG=bd3_small_qwen2B_v3
 RUN_NAME=gsm8k-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keepbottom${KEEP_BOTTOM_N_ENCODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
 MICRO_BATCH_SIZE=2 # TODO: tune
-NUM_WORKERS=128 # TODO: tune
+NUM_WORKERS=64 # TODO: tune
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
