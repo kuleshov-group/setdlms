@@ -37,7 +37,7 @@ class BD3LMEncoderDecoder(nn.Module):
         # do surgery on encoder
         encoder_layers_post_surgery = []
         for i, encoder_layer in enumerate(
-            self.encoder.model.layers[keep_bottom_n_encoder_layers:]
+            self.encoder.model.layers[:keep_bottom_n_encoder_layers]
         ):
             if (i + 1) % keep_every_n_encoder_layers == 0:
                 encoder_layers_post_surgery.append(encoder_layer)
