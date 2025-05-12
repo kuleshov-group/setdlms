@@ -7,9 +7,8 @@ NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
 KEEP_EVERY_N_ENCODER_LAYERS=1
-KEEP_EVERY_N_DECODER_LAYERS=1 # 2, 4
 USE_ENCODER_CAUSAL_MASK=false # true, false
-KEEP_TOP_N_DECODER_LAYERS=14 # use < 28, or -1 for all
+KEEP_BOTTOM_N_ENCODER_LAYERS=21 # use < 28, or -1 for all
 
 # Hyperparameters
 LR=1e-5 # 1e-5, 1e-4, 1e-3
@@ -21,8 +20,8 @@ MAX_DURATION="1000000ba" # 20000ba, 10000ba, 5000ba
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
 
-TAG=e2d2_qwen600M_v1
-RUN_NAME=owt-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keeptop${KEEP_TOP_N_DECODER_LAYERS}-keepevery${KEEP_EVERY_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
+TAG=bd3lm_qwen600M_v1
+RUN_NAME=owt-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keepbottom${KEEP_BOTTOM_N_ENCODER_LAYERS}-keepevery${KEEP_EVERY_N_ENCODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
 MICRO_BATCH_SIZE=2 # TODO: tune
 NUM_WORKERS=128 # TODO: tune
@@ -41,12 +40,10 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer/lr_scheduler=cosine_annealing_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=bd3lm \
-  model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
+  model/backbone@model.config.backbone_config=bd3lm_encoder_decoder \
   model.config.length=1024 \
   model.config.backbone_config.keep_every_n_encoder_layers=${KEEP_EVERY_N_ENCODER_LAYERS} \
-  model.config.backbone_config.keep_every_n_decoder_layers=${KEEP_EVERY_N_DECODER_LAYERS} \
-  model.config.backbone_config.keep_top_n_decoder_layers=${KEEP_TOP_N_DECODER_LAYERS} \
-  model.config.backbone_config.tie_encoder_decoder_weights=true \
+  model.config.backbone_config.keep_bottom_n_encoder_layers=${KEEP_BOTTOM_N_ENCODER_LAYERS} \
   model.config.backbone_config.use_encoder_causal_mask=${USE_ENCODER_CAUSAL_MASK} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
