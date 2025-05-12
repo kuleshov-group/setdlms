@@ -25,7 +25,7 @@ class BD3LMEncoderDecoder(nn.Module):
         keep_every_n_encoder_layers: int = 1,
         attn_backend: str = "sdpa",
         use_encoder_causal_mask: bool = False,
-        keep_top_n_encoder_layers: int = -1,
+        keep_bottom_n_encoder_layers: int = -1,
     ):
         super().__init__()
         self.encoder = AutoModelForCausalLM.from_pretrained(
@@ -37,7 +37,7 @@ class BD3LMEncoderDecoder(nn.Module):
         # do surgery on encoder
         encoder_layers_post_surgery = []
         for i, encoder_layer in enumerate(
-            self.encoder.model.layers[-keep_top_n_encoder_layers:]
+            self.encoder.model.layers[keep_bottom_n_encoder_layers:]
         ):
             if (i + 1) % keep_every_n_encoder_layers == 0:
                 encoder_layers_post_surgery.append(encoder_layer)
