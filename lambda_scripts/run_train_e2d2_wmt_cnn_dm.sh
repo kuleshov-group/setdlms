@@ -55,6 +55,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   block_size=${BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=/home/ubuntu/runs/dllm-dev/${RUN_NAME} \
-  composer.trainer.save_interval="1ep" \
+  composer.trainer.save_interval="2000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS}
