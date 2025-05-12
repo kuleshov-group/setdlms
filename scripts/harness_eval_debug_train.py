@@ -13,7 +13,7 @@ from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
