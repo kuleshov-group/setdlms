@@ -50,7 +50,7 @@ python scripts/harness_eval_debug_train.py \
   --model_args \
     "max_cont_len=${L},\
 model_path=${MODEL_PATH},\
-load_ema_weights=True,\
+load_ema_weights=False,\
 tokenizer_name_or_path=Qwen/Qwen3-0.6B-Base,\
 ckpt_file=latest-rank0.pt,\
 data_split=test,\

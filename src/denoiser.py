@@ -18,7 +18,7 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizer,
-    StoppingCriteria
+    StoppingCriteriaList
 )
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import ModelOutput
@@ -935,7 +935,7 @@ class D3PM(Denoiser):
         disable_cache: bool | None = None,
         device: str | None = None,
         context: torch.Tensor | None = None,
-        stopping_criteria: StoppingCriteria | None = None,
+        stopping_criteria: StoppingCriteriaList | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, int]:
@@ -1051,7 +1051,7 @@ class D3PM(Denoiser):
             ] = xt[:, 1:]
             if stopping_criteria is not None:
                 stop_criteria_met = stopping_criteria(
-                    input_ids=accumulated_samples[:, context_len:], 
+                    input_ids=accumulated_samples, 
                     scores=None)
                 if stop_criteria_met:
                     accumulated_samples = accumulated_samples[:, :((block_id + 1) * block_size) + 1]
@@ -1063,7 +1063,6 @@ class D3PM(Denoiser):
                     context=xt,
                     past_key_values=past_key_values,
                 )
-        accumulated_samples = accumulated_samples[:, context_len:]
         return accumulated_samples, total_NFEs
 
 

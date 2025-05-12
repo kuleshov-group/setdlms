@@ -33,11 +33,21 @@ class BoxedStoppingCriteria(StoppingCriteria):
     ) -> bool:
         if input_ids.numel() == 0:
             return False
-        match = re.search(self.pattern, self.tokenizer.decode(input_ids[0]))
-        if match:
+        matches = re.findall(self.pattern, self.tokenizer.decode(input_ids[0]))
+        if len(matches) > 1:
             return True
         return False
 
+class LengthStoppingCriteria(StoppingCriteria):
+    def __init__(self, max_length):
+        self.max_length = max_length
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
+    ) -> bool:
+        if input_ids.shape[-1] >= self.max_length:
+            return True
+        else:
+            return False
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -204,6 +214,8 @@ class LMEvalHarness(LM):
         for elem in tqdm(self.train_dataset, desc="Generating"):
             context_mask = elem["context_mask"]
             context_mask[(context_mask == 0).nonzero()[:1]] = 1
+            length_stopping_criteria = LengthStoppingCriteria(max_length=context_mask.sum() + self.max_cont_length)
+            stopping_criteria = StoppingCriteriaList([boxed_stopping_criteria, length_stopping_criteria])
 
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
@@ -215,22 +227,22 @@ class LMEvalHarness(LM):
                         self.device
                     ),
                     device=self.device,
-                    stopping_criteria=boxed_stopping_criteria,
-                    tokenizer=self.tokenizer,  # For debugging
+                    stopping_criteria=stopping_criteria,
+                    # tokenizer=self.tokenizer,
                 )
             else:
                 sample = self.model.generate(
                     input_ids=elem["prefix"][None, ...].to(self.device),
                     max_length=len(elem["prefix"]) + self.max_cont_length,
                     num_return_sequences=1,
-                    stopping_criteria=boxed_stopping_criteria,
+                    stopping_criteria=stopping_criteria,
                 )
             end_event.record()
             torch.cuda.synchronize()
             elapsed_time_s = start_event.elapsed_time(end_event) / 1000
             throughputs.append(sample.numel() / elapsed_time_s)
 
-            result = self.tokenizer.decode(sample[0])
+            result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             question = elem["input_ids"][elem["context_mask"].bool()]
             ground_truth = self.tokenizer.decode(
                 elem["input_ids"][~elem["context_mask"].bool()]
