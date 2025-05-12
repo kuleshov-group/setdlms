@@ -155,7 +155,9 @@ def load_model_from_ckpt_dir_path(
     )
 
     ckpt = torch.load(
-        os.path.join(path_to_ckpt_dir, "checkpoints", ckpt_file), weights_only=False
+        os.path.join(path_to_ckpt_dir, "checkpoints", ckpt_file),
+        weights_only=False,
+        map_location="cpu",
     )
     if verbose:
         if (

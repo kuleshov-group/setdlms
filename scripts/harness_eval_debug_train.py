@@ -124,14 +124,15 @@ class LMEvalHarness(LM):
                 path_to_ckpt_dir=model_path,
                 load_ema_weights=load_ema_weights,
                 ckpt_file=ckpt_file,
-            ).to(self.device)
+            )
         except FileNotFoundError:
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 trust_remote_code=True,
-            ).to(self.device)
+            )
             self.hf_model = True
         self.model.eval()
+        self.model = self.model.to(self.device)
         self.mask_token_id = None
         self.mask_token_id = getattr(
             self.model, "mask_token_id", getattr(self.tokenizer, "mask_token_id", None)
