@@ -66,7 +66,6 @@ class LMEvalHarness(LM):
         max_cont_len: int = 128,
         model_path: str = "",
         tokenizer_name_or_path: str = "",
-        ckpt_file: str = "best-rank0.ckpt",
         data_split: str = "test",
         device: str = "cuda",
         load_ema_weights: bool = True,
