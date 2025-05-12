@@ -993,7 +993,7 @@ class D3PM(Denoiser):
         for block_id in block_pbar:
             block_NFEs = 0
             xt = accumulated_samples[
-                :, (block_id * block_size) : (((block_id + 1) * block_size) + 1)
+                :, (block_id * block_size) : ((block_id + 1) * block_size) + 1
             ]
             timesteps = self._sample_generation_timesteps(
                 max_seq_len=block_size, device=device
@@ -1049,6 +1049,8 @@ class D3PM(Denoiser):
             accumulated_samples[
                 :, (block_id * block_size) + 1 : ((block_id + 1) * block_size) + 1
             ] = xt[:, 1:]
+            if tokenizer is not None:
+                print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
                 stop_criteria_met = stopping_criteria(
                     input_ids=accumulated_samples, 
