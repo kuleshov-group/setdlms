@@ -2,7 +2,7 @@ from typing import Union
 
 import torch
 from torch import Tensor, nn
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.processing_utils import Unpack
@@ -17,26 +17,16 @@ except ModuleNotFoundError:
 logger = logging.get_logger(__name__)
 
 
-class LLMasEncoderDecoder(nn.Module):
+class BD3LMEncoderDecoder(nn.Module):
     def __init__(
         self,
         pretrained_model_name_or_path: str,
         max_length: int,
         keep_every_n_encoder_layers: int = 1,
-        keep_every_n_decoder_layers: int = 1,
         attn_backend: str = "sdpa",
-        freeze_encoder: bool = False,
-        reinit_decoder: bool = False,
-        tie_encoder_decoder_weights: bool = False,
         use_encoder_causal_mask: bool = False,
-        keep_top_n_decoder_layers: int = -1,
+        keep_bottom_n_encoder_layers: int = -1,
     ):
-        assert keep_every_n_encoder_layers <= keep_every_n_decoder_layers, (
-            "Cannot remove more encoder than decoder layers."
-        )
-        assert keep_every_n_decoder_layers % keep_every_n_encoder_layers == 0, (
-            "Encoder-Decoder layers are mismatched; cross attention will not work."
-        )
         super().__init__()
         self.encoder = AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path,
@@ -44,90 +34,19 @@ class LLMasEncoderDecoder(nn.Module):
             attn_implementation=attn_backend,
         )
 
-        # freeze encoder layers
-        if freeze_encoder:
-            assert use_encoder_causal_mask
-            for name, param in self.encoder.named_parameters():
-                if "embed_tokens" not in name:
-                    param.requires_grad = False
+        # do surgery on encoder
+        encoder_layers_post_surgery = []
+        for i, encoder_layer in enumerate(
+            self.encoder.model.layers[keep_bottom_n_encoder_layers:]
+        ):
+            if (i + 1) % keep_every_n_encoder_layers == 0:
+                encoder_layers_post_surgery.append(encoder_layer)
+        self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
 
         # tie encoder and decoder weights
-        if tie_encoder_decoder_weights:
-            assert not freeze_encoder
-            self.decoder = self.encoder
-            self.keep_every_n_decoder_layers = (
-                keep_every_n_decoder_layers // keep_every_n_encoder_layers
-            )
-        else:
-            self.keep_every_n_decoder_layers = keep_every_n_decoder_layers
-            # reinitialize decoder layers
-            if reinit_decoder:
-                decoder_config = AutoConfig.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
-                self.decoder = AutoModelForCausalLM(decoder_config)
-            else:
-                self.decoder = AutoModelForCausalLM.from_pretrained(
-                    pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    attn_implementation=attn_backend,
-                )
+        self.decoder = self.encoder
 
-        # delete layers from encoder / decoder
-        keep_top_n_decoder_layers = (
-            len(self.decoder.model.layers)
-            if keep_top_n_decoder_layers == -1
-            else keep_top_n_decoder_layers
-        )
-        if keep_every_n_encoder_layers > 1:
-            encoder_layers_post_surgery = []
-            for i, encoder_layer in enumerate(self.encoder.model.layers):
-                if (i + 1) % keep_every_n_encoder_layers == 0:
-                    encoder_layers_post_surgery.append(encoder_layer)
-            self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
-        if not tie_encoder_decoder_weights:
-            decoder_layers_post_surgery = []
-            for i, decoder_layer in enumerate(
-                self.decoder.model.layers[-keep_top_n_decoder_layers:]
-            ):
-                if (i + 1) % keep_every_n_decoder_layers == 0:
-                    decoder_layers_post_surgery.append(decoder_layer)
-            self.decoder.model.layers = nn.ModuleList(decoder_layers_post_surgery)
-        self.keep_every_n_encoder_layers = keep_every_n_encoder_layers
         self.use_encoder_causal_mask = use_encoder_causal_mask
-        self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
-        if not tie_encoder_decoder_weights:
-            keep_top_n_decoder_layers = 0
-            del self.decoder.model.embed_tokens
-            # del self.decoder.model.norm
-            unused_self_attn_params = ["o_proj", "q_norm", "q_proj"]
-            unused_layernorm_params = ["input_layernorm", "post_attention_layernorm"]
-            for unused_param in unused_self_attn_params:
-                if hasattr(self.encoder.model.layers[-1].self_attn, unused_param):
-                    getattr(
-                        self.encoder.model.layers[-1].self_attn, unused_param
-                    ).requires_grad_(False)
-            self.encoder.model.layers[-1].mlp.requires_grad_(False)
-            self.encoder.model.norm.requires_grad_(False)
-            for unused_param in unused_layernorm_params:
-                if hasattr(self.encoder.model.layers[-1], unused_param):
-                    getattr(self.encoder.model.layers[-1], unused_param).requires_grad_(
-                        False
-                    )
-            # if lm head is weight-tied to embedding, point decoder lm head to encoder
-            # (instead of initializing a separate lm head)
-            if not hasattr(self.encoder, "lm_head"):
-                self.decoder.lm_head = self.encoder.lm_head
-            else:
-                del self.encoder.lm_head
-        self.layers_to_keep = [
-            i
-            for i in range(len(self.decoder.model.layers))
-            if ((i + 1) % keep_every_n_decoder_layers == 0)
-            and (i >= len(self.decoder.model.layers) - keep_top_n_decoder_layers)
-        ]
         self.max_length = max_length
 
     def forward(
@@ -207,11 +126,6 @@ class LLMasEncoderDecoder(nn.Module):
 
         for decoder_layer in self.decoder.model.layers:
             layer_idx = decoder_layer.self_attn.layer_idx
-            if (
-                self.tie_encoder_decoder_weights
-                and layer_idx not in self.layers_to_keep
-            ):
-                continue
             if past_key_values is not None and len(past_key_values) == len(
                 self.encoder.model.layers
             ):
