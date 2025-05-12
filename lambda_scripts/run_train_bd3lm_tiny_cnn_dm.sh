@@ -7,7 +7,7 @@ NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
 KEEP_EVERY_N_ENCODER_LAYERS=1
-KEEP_BOTTOM_N_ENCODER_LAYERS=18 # use < 28
+KEEP_BOTTOM_N_ENCODER_LAYERS=17 # use < 28
 USE_ENCODER_CAUSAL_MASK=false # true, false
 
 # Hyperparameters

@@ -8,7 +8,7 @@ NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 BLOCK_SIZE=4
 KEEP_EVERY_N_ENCODER_LAYERS=1
 USE_ENCODER_CAUSAL_MASK=false # true, false
-KEEP_BOTTOM_N_ENCODER_LAYERS=18 # use < 28, or -1 for all
+KEEP_BOTTOM_N_ENCODER_LAYERS=17 # use < 28, or -1 for all
 
 # Hyperparameters
 LR=1e-5 # 1e-5, 1e-4, 1e-3
