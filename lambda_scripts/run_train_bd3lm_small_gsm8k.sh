@@ -7,7 +7,7 @@ NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
 KEEP_EVERY_N_ENCODER_LAYERS=1 # keep as 1
-KEEP_TOP_N_ENCODER_LAYERS=14 # use < 28
+KEEP_BOTTOM_N_ENCODER_LAYERS=14 # use < 28
 USE_ENCODER_CAUSAL_MASK=false # true, false
 
 # Hyperparameters
@@ -20,8 +20,8 @@ MAX_DURATION="20000ba" # 20000ba, 10000ba, 5000ba
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
 
-TAG=bd3_small_qwen2B_v1
-RUN_NAME=gsm8k-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keeptop${KEEP_TOP_N_ENCODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
+TAG=bd3_small_qwen2B_v2
+RUN_NAME=gsm8k-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keepbottom${KEEP_BOTTOM_N_ENCODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
 MICRO_BATCH_SIZE=2 # TODO: tune
 NUM_WORKERS=128 # TODO: tune
@@ -42,7 +42,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model=bd3lm \
   model/backbone@model.config.backbone_config=bd3lm_encoder_decoder \
   model.config.length=768 \
-  model.config.backbone_config.keep_top_n_encoder_layers=${KEEP_TOP_N_ENCODER_LAYERS} \
+  model.config.backbone_config.keep_bottom_n_encoder_layers=${KEEP_BOTTOM_N_ENCODER_LAYERS} \
   model.config.backbone_config.keep_every_n_encoder_layers=${KEEP_EVERY_N_ENCODER_LAYERS} \
   model.config.backbone_config.use_encoder_causal_mask=${USE_ENCODER_CAUSAL_MASK} \
   training.global_batch_size=${BATCH_SIZE} \

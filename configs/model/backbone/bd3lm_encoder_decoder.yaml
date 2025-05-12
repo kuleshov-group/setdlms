@@ -4,4 +4,4 @@ keep_every_n_encoder_layers: 1
 max_length: ${model.config.length}
 attn_backend: ${model.config.attn_backend}
 use_encoder_causal_mask: false
-keep_top_n_encoder_layers: ???
+keep_bottom_n_encoder_layers: ???
