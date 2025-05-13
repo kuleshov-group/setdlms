@@ -170,6 +170,7 @@ def main(args):
                 outputs = model.generate(
                     input_ids=input_ids,
                     max_new_tokens=args.max_new_tokens,
+                    top_k=None,
                 )
         outputs = outputs[:, input_ids.shape[-1] :]
         for stop_token_id in stop_token_ids:
