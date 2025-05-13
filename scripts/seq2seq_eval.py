@@ -226,7 +226,7 @@ def main(args):
 
         samples_path = f"{args.output_path}/seq2seq_eval_{args.dataset}_output"
         if not os.path.exists(samples_path):
-            os.mkdir(samples_path)
+            os.makedirs(samples_path)
         with open(f"{samples_path}/all_ranks.json", "w") as f:
             json.dump(
                 res_for_json,
