@@ -990,8 +990,10 @@ class D3PM(Denoiser):
             )
 
         block_pbar = tqdm(
-            range(blocks_to_cache, max_blocks), desc="Sampling blocks", leave=False,
-            disable=disable_pbar
+            range(blocks_to_cache, max_blocks),
+            desc="Sampling blocks",
+            leave=False,
+            disable=disable_pbar,
         )
         for block_id in block_pbar:
             block_NFEs = 0
@@ -1001,7 +1003,13 @@ class D3PM(Denoiser):
             timesteps = self._sample_generation_timesteps(
                 max_seq_len=block_size, device=device
             )
-            step_pbar = tqdm(timesteps, desc="T", total=timesteps.shape[0], leave=False, disable=disable_pbar)
+            step_pbar = tqdm(
+                timesteps,
+                desc="T",
+                total=timesteps.shape[0],
+                leave=False,
+                disable=disable_pbar,
+            )
             dt = (1 - self.sampler_config.min_t) / len(timesteps)
             cache = None
             context_block = (
@@ -1241,83 +1249,20 @@ class BD3LM(MDLM):
         # **3. Combine Masks **
         return block_diagonal | offset_block_causal
 
-    @staticmethod
-    def _block_mask(
-        q_idx: torch.Tensor,  # (B, 2 * L)
-        kv_idx: torch.Tensor | None = None,  # needed for compat. with flex_attention
-        b: int | None = None,  # needed for compat. with flex_attention
-        h: int | None = None,  # needed for compat. with flex_attention
-        block_size: int | None = None,
-        seq_len: int | None = None,
-    ) -> torch.Tensor:
-        """
-        Constructs the specialized block diffusion attention mask for training
-        composed of three masks:
-        - **Block Diagonal Mask (M_BD)**: Self-attention within noised blocks
-        - **Offset Block Causal Mask (M_OBC)**: Cross-attention for conditional context
-        - **Block Causal Mask (M_BC)**: Attention to update x0
-
-        Args:
-            q_idx (torch.Tensor): Query indices.
-            kv_idx (Optional: torch.Tensor): Key indices
-            b (Optional: int): batch size
-            h (Optional: int): number of heads
-            block_size (Optional: int): Defines the block structure.
-            seq_len (Optional: int): Total sequence length.
-
-        Returns:
-            Attention mask.
-        """
-        # TODO
-
-        del b, h, kv_idx
-
-        # Indicate whether token belongs to xt or x0:
-        #   xt, x0 are concatenated to create 2N x 2N tensor
-        x0_flag_q = (q_idx >= seq_len).bool()
-        x0_flag_kv = x0_flag_q
-
-        # Compute block indices
-        block_q = torch.where(
-            x0_flag_q, (q_idx - seq_len) // block_size, q_idx // block_size
-        )
-        block_kv = block_q
-
-        # **1. Block Diagonal Mask (M_BD) **
-        block_diagonal = (block_q > block_kv) & (x0_flag_q == x0_flag_kv)
-
-        # **2. Offset Block-Causal Mask (M_OBC) **
-        offset_block_causal = (block_q == block_kv) & x0_flag_kv & ~x0_flag_q
-
-        # **3. Block-Causal Mask (M_BC) **
-        block_causal = (block_q >= block_kv) & x0_flag_kv & x0_flag_q
-
-        # **4. Combine Masks **
-        return block_diagonal | offset_block_causal | block_causal
-
     def _create_static_mask(self) -> None:
         assert self.config.attn_backend != "flex_attention", (
             "FlexAttention not supported yet"
         )
         if self.config.backbone_is_decoder_only:
-            if self.config.attn_backend == "flex_attention":
-                static_mask = create_block_mask(
-                    partial(
-                        self._block_mask,
-                        block_size=self.config.block_size,
-                        seq_len=self.config.length,
-                    ),
-                    B=None,
-                    H=None,
-                    Q_LEN=self.config.length * 2,
-                    KV_LEN=self.config.length * 2,
-                )
-            else:
-                static_mask = self._block_mask(
-                    q_idx=torch.arange(self.config.length * 2)[:, None],
-                    block_size=self.config.block_size,
-                    seq_len=self.config.length,
-                )
+            assert self.config.attn_backend != "flex_attention", (
+                "FlexAttention not supported yet"
+            )
+            assert self.config.block_size == self.config.length, (
+                "Only MDLM supported as decoder-only"
+            )
+            static_mask = torch.full(
+                (self.config.length, self.config.length), fill_value=True
+            )
             if self.config.attn_backend == "flex_attention":
                 self.static_attention_mask = static_mask
             else:
@@ -1407,10 +1352,9 @@ class BD3LM(MDLM):
         xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, context_mask=context_mask)
 
         if self.config.backbone_is_decoder_only:
-            # TODO: check attention mask is correct
             decoder_attention_mask = (
                 self.static_attention_mask[None, ...]
-                & attention_mask.repeat(1, 2)[:, None, :]
+                & attention_mask[:, None, :]
                 & attention_mask[..., None]
             )
 
@@ -1467,8 +1411,13 @@ class BD3LM(MDLM):
         device = input_ids.device if input_ids is not None else context.device
         batch_size = input_ids.shape[0] if input_ids is not None else context.shape[0]
         if self.config.backbone_is_decoder_only:
-            raise NotImplementedError(
-                "Inference for decoder-only BD3LM is not implemented yet."
+            attention_mask = torch.ones(
+                (batch_size, input_ids.shape[1], input_ids.shape[1]),
+                device=device,
+            )
+            return DenoiserInput(
+                xt=input_ids,
+                attention_mask=attention_mask,
             )
         position_ids, encoder_position_ids = None, None
         if past_key_values is not None:
