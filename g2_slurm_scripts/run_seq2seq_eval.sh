@@ -21,7 +21,8 @@ source setup_env.sh
 MODEL_PATH="/home/ubuntu/runs/dllm-dev/cnn-dm-block4-bs128-keep1-causalencfalse-max10000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen600m_v1"
 # MODEL_PATH="Qwen/Qwen3-0.6B-Base"
 
-OUTPUT_DIR="outputs/${MODEL_PATH}/lm_eval_harness_output"
+DATASET="cnndm"  # "cnndm" or "wmt"
+OUTPUT_DIR="outputs/${MODEL_PATH}"
 mkdir -p ${OUTPUT_DIR}
 L=256
 BLOCK_SIZE=4
@@ -38,9 +39,10 @@ NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 PORT=29501
 
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/seq2seq_eval.py \
-  --dataset cnndm \
+  --dataset ${DATASET} \
   --max_new_tokens ${L} \
   --model_path ${MODEL_PATH} \
+  --output_path ${OUTPUT_PATH} \
   --ckpt_file best-rank0.pt \
   --tokenizer_name_or_path Qwen/Qwen3-0.6B-Base \
   --block_size 4 \

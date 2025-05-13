@@ -224,7 +224,7 @@ def main(args):
             for i in range(len(generated_samples))
         ]
 
-        samples_path = f"{args.model_path}/seq2seq_eval_{args.dataset}_output"
+        samples_path = f"{args.output_path}/seq2seq_eval_{args.dataset}_output"
         if not os.path.exists(samples_path):
             os.mkdir(samples_path)
         with open(f"{samples_path}/all_ranks.json", "w") as f:
@@ -256,6 +256,11 @@ if __name__ == "__main__":
         "--model_path",
         type=str,
         help="The path to the model checkpoint.",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        help="The path to the output directory.",
     )
     parser.add_argument(
         "--ckpt_file",
