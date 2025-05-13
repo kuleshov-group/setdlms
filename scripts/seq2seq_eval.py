@@ -37,7 +37,7 @@ def gather_results(results, world_size):
 
 
 def setup_ddp():
-    dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))
+    dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=120))
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     return local_rank
