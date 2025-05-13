@@ -36,7 +36,8 @@ LOW_CONFIDENCE_REMASKING=True
 KV_CACHING=True
 TOP_P=1.0
 
-OUTPUT_PATH="${OUTPUT_DIR}/L=${L}-block_size=${BLOCK_SIZE}-greedy=${GREEDY}-use_x0_pred=${USE_X0_PRED}-first_hitting=${FIRST_HITTING}-low_confidence_remasking=${LOW_CONFIDENCE_REMASKING}"
+OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-greedy-${GREEDY}-use_x0_pred-${USE_X0_PRED}-first_hitting-${FIRST_HITTING}-low_confidence_remasking-${LOW_CONFIDENCE_REMASKING}"
+mkdir -p ${OUTPUT_PATH}
 #OUTPUT_PATH="${OUTPUT_DIR}/outputs.json"
 
 #python scripts/harness_eval.py \
