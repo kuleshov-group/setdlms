@@ -252,6 +252,7 @@ class LMEvalHarness(LM):
                     max_new_tokens=len(elem["prefix"]) + self.max_cont_length,
                     num_return_sequences=1,
                     stopping_criteria=stopping_criteria,
+                    top_k=None,
                 )
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
