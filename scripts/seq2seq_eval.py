@@ -179,6 +179,10 @@ def main(args):
         # Decode the generated samples
         outputs = tokenizer.decode(outputs[0])
         outputs = outputs.replace(" .", ".")
+
+        # For WMT, only use the first sentence (test set only contains single sentences)
+        if args.dataset == "wmt":
+            outputs = outputs.split(". ")[0]
         if local_rank == 0:
             print(outputs)
         if args.dataset == "cnndm":
