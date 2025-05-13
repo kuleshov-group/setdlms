@@ -129,10 +129,8 @@ def main(args):
     # Iterate through the dataset and sample
     generated_samples = []
     for elem_id, elem in tqdm(
-        enumerate(dataloader), desc="Generating", total=len(dataloader)
+        enumerate(dataloader), desc="Generating", total=len(dataloader), disable=(local_rank != 0)
     ):
-        if len(generated_samples) > 5:
-            break
         stopping_criteria = StoppingCriteriaList([eos_stopping_criteria])
         input_ids = elem["input_ids"].to(device)
         # TODO also have option for wmt
