@@ -1,3 +1,4 @@
+import datetime
 import inspect
 import json
 import os
@@ -36,7 +37,7 @@ def gather_results(results, world_size):
 
 
 def setup_ddp():
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     return local_rank
@@ -54,6 +55,7 @@ def set_seed(seed):
 def main(args):
     local_rank = setup_ddp()  # sets up torch.distributed and selects GPU
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+    print(device)
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path)
@@ -129,21 +131,25 @@ def main(args):
     # Iterate through the dataset and sample
     generated_samples = []
     for elem_id, elem in tqdm(
-        enumerate(dataloader), desc="Generating", total=len(dataloader), disable=(local_rank != 0)
+        enumerate(dataloader),
+        desc="Generating",
+        total=len(dataloader),
+        disable=(local_rank != 0),
     ):
         stopping_criteria = StoppingCriteriaList([eos_stopping_criteria])
         input_ids = elem["input_ids"].to(device)
+        input_ids = input_ids[:, 1:]  # remove bos
         # TODO also have option for wmt
         if args.dataset == "cnndm":
             prompt_ids = (
-                torch.tensor(tokenizer.encode("<|im_end|>Summary:"))
+                torch.tensor(tokenizer.encode("Summary:"))
                 .to(input_ids.dtype)
                 .to(input_ids.device)
                 .unsqueeze(0)
             )
         elif args.dataset == "wmt":
             prompt_ids = (
-                torch.tensor(tokenizer.encode("<|im_end|>Translation:"))
+                torch.tensor(tokenizer.encode("Translation:"))
                 .to(input_ids.dtype)
                 .to(input_ids.device)
                 .unsqueeze(0)
