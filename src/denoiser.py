@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
-import re
 
 import hydra.utils
 import torch
@@ -18,7 +17,7 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizer,
-    StoppingCriteriaList
+    StoppingCriteriaList,
 )
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import ModelOutput
@@ -971,9 +970,9 @@ class D3PM(Denoiser):
             batch_size=batch_size,
             length=max_blocks * block_size,
         )
-        
+
         if context is not None:
-            accumulated_samples[:, : context_len] = context
+            accumulated_samples[:, :context_len] = context
 
         if self.sampler_config.kv_caching and context is not None:
             past_key_values = DynamicCache()
@@ -989,7 +988,9 @@ class D3PM(Denoiser):
                 past_key_values=past_key_values,
             )
 
-        block_pbar = tqdm(range(blocks_to_cache, max_blocks), desc="Sampling blocks", leave=False)
+        block_pbar = tqdm(
+            range(blocks_to_cache, max_blocks), desc="Sampling blocks", leave=False
+        )
         for block_id in block_pbar:
             block_NFEs = 0
             xt = accumulated_samples[
@@ -1053,10 +1054,12 @@ class D3PM(Denoiser):
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
                 stop_criteria_met = stopping_criteria(
-                    input_ids=accumulated_samples, 
-                    scores=None)
+                    input_ids=accumulated_samples[:, context_len:], scores=None
+                )
                 if stop_criteria_met:
-                    accumulated_samples = accumulated_samples[:, :((block_id + 1) * block_size) + 1]
+                    accumulated_samples = accumulated_samples[
+                        :, : ((block_id + 1) * block_size) + 1
+                    ]
                     break
             if self.sampler_config.kv_caching:
                 if self.config.shift_logits:

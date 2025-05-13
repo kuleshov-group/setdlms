@@ -2,7 +2,10 @@
 This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 """
 
+import json
+import os
 import random
+import re
 from typing import List, Tuple
 
 import accelerate
@@ -12,8 +15,12 @@ from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
-import re
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteria,
+    StoppingCriteriaList,
+)
 
 from datasets import Dataset
 from scripts.utils import (
@@ -21,6 +28,7 @@ from scripts.utils import (
     maybe_add_missing_special_tokens,
 )
 from src.sampler import SamplerConfig
+
 
 class BoxedStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer, pattern):
@@ -37,9 +45,11 @@ class BoxedStoppingCriteria(StoppingCriteria):
             return True
         return False
 
+
 class LengthStoppingCriteria(StoppingCriteria):
     def __init__(self, max_length):
         self.max_length = max_length
+
     def __call__(
         self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
     ) -> bool:
@@ -47,6 +57,7 @@ class LengthStoppingCriteria(StoppingCriteria):
             return True
         else:
             return False
+
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -93,6 +104,7 @@ class LMEvalHarness(LM):
         """
         super().__init__()
         self.max_cont_length = max_cont_len
+        self.generated_samples_path = f"{model_path}/lm_eval_harness_output"
         accelerator = accelerate.Accelerator()
         if accelerator.num_processes > 1:
             self.accelerator = accelerator
@@ -214,13 +226,12 @@ class LMEvalHarness(LM):
         )
 
         res = []
-        # res_for_json = []
+        res_for_json = []
         correct, total = 0, 0
         throughputs = []
         for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds)):
             prefix = elem["prefix"][:-1]
-            length_stopping_criteria = LengthStoppingCriteria(max_length=len(prefix) + self.max_cont_length)
-            stopping_criteria = StoppingCriteriaList([boxed_stopping_criteria, length_stopping_criteria])
+            stopping_criteria = StoppingCriteriaList([boxed_stopping_criteria])
             if self.rank == 0:
                 start_event = torch.cuda.Event(enable_timing=True)
                 end_event = torch.cuda.Event(enable_timing=True)
@@ -236,7 +247,7 @@ class LMEvalHarness(LM):
             else:
                 sample = self.model.generate(
                     input_ids=elem["prefix"][None, ...].to(self.device),
-                    max_length=len(elem["prefix"]) + self.max_cont_length,
+                    max_new_tokens=len(elem["prefix"]) + self.max_cont_length,
                     num_return_sequences=1,
                     stopping_criteria=stopping_criteria,
                 )
@@ -251,6 +262,10 @@ class LMEvalHarness(LM):
                 self.tokenizer.eos_token,
             ]:
                 result = result.split(until)[0]
+            predicted_ans = None
+            if "boxed{" in result:
+                predicted_ans = result.split("boxed{")[1].split("}")[0]
+                result = result.split("boxed{")[0] + "#### " + predicted_ans
             if self.rank == 0:
                 print("=" * 20)
                 print("prefix: ", elem["prefix_text"], result)
@@ -260,28 +275,34 @@ class LMEvalHarness(LM):
 
             # log accuracy
             ground_truth_ans = requests[i].doc["answer"].split("### ")[1]
-            if "boxed{" in result:
-                predicted_ans = result.split("boxed{")[1].split("}")[0]
-                if ground_truth_ans == predicted_ans:
-                    correct += 1
+            if predicted_ans is not None and ground_truth_ans == predicted_ans:
+                correct += 1
             total += 1
 
-            # res_for_json.append(
-            #     {
-            #         "prefix": elem["prefix_text"],
-            #         "result": result,
-            #     }
-            # )
+            res_for_json.append(
+                {
+                    "prefix": elem["prefix_text"],
+                    "result": result,
+                }
+            )
             torch.cuda.empty_cache()
             if self.rank == 0:
                 print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
-                print(f"Throughput (tok/s): {np.mean(throughputs)} +/- {np.std(throughputs)}")
-        # with open(self.model.config.eval.generated_samples_path, "w") as f:
-        #     json.dump(
-        #         res_for_json,
-        #         f,  # type: ignore
-        #         indent=2,
-        #     )
+                mean_throughput = np.mean(throughputs)
+                std_throughput = np.std(throughputs)
+                print(f"Throughput (tok/s): {mean_throughput} +/- {std_throughput}")
+
+        samples_path = (
+            f"{self.model.config.eval.generated_samples_path}/rank{self.rank}"
+        )
+        if not os.path.exists(samples_path):
+            os.mkdir(samples_path)
+        with open(f"{samples_path}.json", "w") as f:
+            json.dump(
+                res_for_json,
+                f,  # type: ignore
+                indent=2,
+            )
         return res
 
 
