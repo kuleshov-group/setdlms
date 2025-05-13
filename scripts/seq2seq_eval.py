@@ -182,7 +182,7 @@ def main(args):
 
         # For WMT, only use the first sentence (test set only contains single sentences)
         if args.dataset == "wmt":
-            outputs = outputs.split(". ")[0]
+            outputs = outputs.split(". ")[0] + "."
         if local_rank == 0:
             print(outputs)
         if args.dataset == "cnndm":
@@ -245,7 +245,7 @@ def main(args):
 if __name__ == "__main__":
     # Download NLTK data required for METEOR
     nltk.download("wordnet")
-    nltk.download("punkt")
+    # nltk.download("punkt")
 
     parser = ArgumentParser(description="Seq2seq evaluation script")
     parser.add_argument(
