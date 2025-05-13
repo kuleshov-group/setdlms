@@ -73,7 +73,7 @@ class LMEvalHarness(LM):
     def __init__(
         self,
         # LM eval harness args
-        generated_samples_path = "",
+        generated_samples_path="",
         # Model args
         max_cont_len: int = 128,
         model_path: str = "",
@@ -232,8 +232,9 @@ class LMEvalHarness(LM):
         res = []
         res_for_json = []
         correct, total = 0, 0
-        throughputs = []
-        for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)):
+        for i, elem in tqdm(
+            enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
+        ):
             prefix = elem["prefix"][:-1]
             stopping_criteria = StoppingCriteriaList([boxed_stopping_criteria])
             if not self.hf_model:
@@ -288,15 +289,14 @@ class LMEvalHarness(LM):
 
         if not os.path.exists(self.generated_samples_path):
             os.mkdir(self.generated_samples_path)
-        samples_path = (
-            f"{self.generated_samples_path}/rank{self.rank}"
-        )
+        samples_path = f"{self.generated_samples_path}/rank{self.rank}"
         with open(f"{samples_path}.json", "w") as f:
             json.dump(
                 res_for_json,
                 f,  # type: ignore
                 indent=2,
             )
+        print(f"RANK {self.rank} completed!")
         return res
 
 
