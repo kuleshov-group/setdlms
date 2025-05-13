@@ -72,6 +72,8 @@ def set_seed(seed):
 class LMEvalHarness(LM):
     def __init__(
         self,
+        # LM eval harness args
+        generated_samples_path = "",
         # Model args
         max_cont_len: int = 128,
         model_path: str = "",
@@ -103,6 +105,8 @@ class LMEvalHarness(LM):
             tokenizer_name_or_path (str): Tokenizer name or path.
         """
         super().__init__()
+        self.generated_samples_path = generated_samples_path
+
         self.max_cont_length = max_cont_len
         self.generated_samples_path = f"{model_path}/lm_eval_harness_output"
         accelerator = accelerate.Accelerator()
@@ -229,19 +233,16 @@ class LMEvalHarness(LM):
         res_for_json = []
         correct, total = 0, 0
         throughputs = []
-        for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds)):
+        for i, elem in tqdm(enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)):
             prefix = elem["prefix"][:-1]
             stopping_criteria = StoppingCriteriaList([boxed_stopping_criteria])
-            if self.rank == 0:
-                start_event = torch.cuda.Event(enable_timing=True)
-                end_event = torch.cuda.Event(enable_timing=True)
-                start_event.record()
             if not self.hf_model:
                 sample, _ = self.model.generate(
                     max_length=len(prefix) + self.max_cont_length,
                     context=prefix[None, ...].to(self.device),
                     device=self.device,
                     stopping_criteria=stopping_criteria,
+                    disable_pbar=(self.rank != 0),
                     # tokenizer=self.tokenizer,
                 )
             else:
@@ -251,11 +252,6 @@ class LMEvalHarness(LM):
                     num_return_sequences=1,
                     stopping_criteria=stopping_criteria,
                 )
-            if self.rank == 0:
-                end_event.record()
-                torch.cuda.synchronize()
-                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
-                throughputs.append(sample.numel() / elapsed_time_s)
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
                 "<|eot_id|>",
@@ -266,6 +262,7 @@ class LMEvalHarness(LM):
             if "boxed{" in result:
                 predicted_ans = result.split("boxed{")[1].split("}")[0]
                 result = result.split("boxed{")[0] + "#### " + predicted_ans
+                result = result.replace("$\\", "")
             if self.rank == 0:
                 print("=" * 20)
                 print("prefix: ", elem["prefix_text"], result)
@@ -288,15 +285,12 @@ class LMEvalHarness(LM):
             torch.cuda.empty_cache()
             if self.rank == 0:
                 print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
-                mean_throughput = np.mean(throughputs)
-                std_throughput = np.std(throughputs)
-                print(f"Throughput (tok/s): {mean_throughput} +/- {std_throughput}")
 
+        if not os.path.exists(self.generated_samples_path):
+            os.mkdir(self.generated_samples_path)
         samples_path = (
-            f"{self.model.config.eval.generated_samples_path}/rank{self.rank}"
+            f"{self.generated_samples_path}/rank{self.rank}"
         )
-        if not os.path.exists(samples_path):
-            os.mkdir(samples_path)
         with open(f"{samples_path}.json", "w") as f:
             json.dump(
                 res_for_json,

@@ -936,6 +936,7 @@ class D3PM(Denoiser):
         context: torch.Tensor | None = None,
         stopping_criteria: StoppingCriteriaList | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
+        disable_pbar: bool = False,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, int]:
         assert self.config.shift_logits, "Aligned logits not support yet for sampling"
@@ -989,7 +990,8 @@ class D3PM(Denoiser):
             )
 
         block_pbar = tqdm(
-            range(blocks_to_cache, max_blocks), desc="Sampling blocks", leave=False
+            range(blocks_to_cache, max_blocks), desc="Sampling blocks", leave=False,
+            disable=disable_pbar
         )
         for block_id in block_pbar:
             block_NFEs = 0
@@ -999,7 +1001,7 @@ class D3PM(Denoiser):
             timesteps = self._sample_generation_timesteps(
                 max_seq_len=block_size, device=device
             )
-            step_bar = tqdm(timesteps, desc="T", total=timesteps.shape[0], leave=False)
+            step_pbar = tqdm(timesteps, desc="T", total=timesteps.shape[0], leave=False, disable=disable_pbar)
             dt = (1 - self.sampler_config.min_t) / len(timesteps)
             cache = None
             context_block = (
@@ -1008,7 +1010,7 @@ class D3PM(Denoiser):
                 else None
             )
 
-            for t in step_bar:
+            for t in step_pbar:
                 if cache is None:
                     block_NFEs += 1
                     total_NFEs += 1
