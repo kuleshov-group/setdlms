@@ -12,7 +12,7 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteriaList
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteriaList, RepetitionPenaltyLogitsProcessor
 
 from scripts.utils import (
     EOSStoppingCriteria,
@@ -127,6 +127,10 @@ def main(args):
         tokenizer.encode("<|endoftext|>")[0],
     ]
     eos_stopping_criteria = EOSStoppingCriteria(stop_token_ids)
+    
+    repetition_penalty_logits_processor = None
+    if args.dataset == "cnndm":
+        repetition_penalty_logits_processor = RepetitionPenaltyLogitsProcessor(args.repetition_penalty)
 
     # Iterate through the dataset and sample
     generated_samples = []
@@ -164,6 +168,7 @@ def main(args):
                     device=device,
                     stopping_criteria=stopping_criteria,
                     disable_pbar=(local_rank != 0),
+                    repetition_penalty_logits_processor=repetition_penalty_logits_processor,
                     # tokenizer=tokenizer,
                 )
             else:
@@ -183,8 +188,10 @@ def main(args):
         # For WMT, only use the first sentence (test set only contains single sentences)
         if args.dataset == "wmt":
             outputs = outputs.split(". ")[0] + "."
+        if args.dataset == "cnndm":
+            outputs = outputs.split("Summary:")[0]
         if local_rank == 0:
-            print(outputs)
+            print("Output:", outputs)
         if args.dataset == "cnndm":
             decoded_samples = "Summary:" + outputs
         elif args.dataset == "wmt":

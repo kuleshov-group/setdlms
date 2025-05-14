@@ -33,6 +33,7 @@ LOW_CONFIDENCE_REMASKING=True
 KV_CACHING=True
 TOP_P=1.0 # not used if greedy=True
 MAX_LENGTH=1024
+REPETITION_PENALTY=16 # set to >1 for CNN/DM!
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-greedy-${GREEDY}-use_x0_pred-${USE_X0_PRED}-first_hitting-${FIRST_HITTING}-low_confidence_remasking-${LOW_CONFIDENCE_REMASKING}"
 NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
@@ -53,4 +54,5 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/s
   --kv_caching ${KV_CACHING} \
   --top_p ${TOP_P} \
   --max_length ${MAX_LENGTH} \
-  --shift_logits True
+  --shift_logits True \
+  --repetition_penalty ${REPETITION_PENALTY}

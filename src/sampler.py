@@ -19,3 +19,4 @@ class SamplerConfig(OrderedDict):
     disable_cache: bool = False
     kv_caching: bool = False
     shift_logits: bool = False
+    repetition_penalty: float = 1.0

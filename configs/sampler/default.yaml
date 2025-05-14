@@ -14,3 +14,4 @@ first_hitting: false
 low_confidence_remasking: false
 kv_caching: false
 shift_logits: ${model.config.shift_logits}
+repetition_penalty: 1.0
