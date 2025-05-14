@@ -26,6 +26,7 @@ class LLMasEncoderDecoder(nn.Module):
         keep_every_n_decoder_layers: int = 1,
         attn_backend: str = "sdpa",
         freeze_encoder: bool = False,
+        reinit_encoder: bool = False,
         reinit_decoder: bool = False,
         tie_encoder_decoder_weights: bool = False,
         use_encoder_causal_mask: bool = False,
@@ -38,11 +39,19 @@ class LLMasEncoderDecoder(nn.Module):
             "Encoder-Decoder layers are mismatched; cross attention will not work."
         )
         super().__init__()
-        self.encoder = AutoModelForCausalLM.from_pretrained(
-            pretrained_model_name_or_path,
-            trust_remote_code=True,
-            attn_implementation=attn_backend,
-        )
+        if reinit_encoder:
+            encoder_config = AutoConfig.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=True,
+                attn_implementation=attn_backend,
+            )
+            self.encoder = AutoModelForCausalLM(encoder_config)
+        else:
+            self.encoder = AutoModelForCausalLM.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=True,
+                attn_implementation=attn_backend,
+            )
 
         # freeze encoder layers
         if freeze_encoder:
