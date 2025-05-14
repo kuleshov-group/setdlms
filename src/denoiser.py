@@ -788,13 +788,6 @@ class D3PM(Denoiser):
             sorted_probs = sorted_probs * nucleus_mask
             logits.scatter_(-1, sorted_indices, sorted_probs * nucleus_mask)
             logits /= logits.sum(-1, keepdim=True)
-        if repetition_penalty != 1.0 and context is not None and context.numel() > 0:
-            for token_idx in range(logits.shape[1]):
-                score = torch.gather(logits[:, token_idx], 1, context)
-                score = torch.where(
-                    score < 0, score * repetition_penalty, score / repetition_penalty
-                )
-                logits[:, token_idx] = logits[:, token_idx].scatter(1, context, score)
         return logits
 
     def _maybe_remask(
@@ -892,6 +885,7 @@ class D3PM(Denoiser):
         cache: Dict[str, torch.Tensor] | None = None,
         past_key_values: DynamicCache | None = None,
         context: torch.Tensor | None = None,
+        repetition_penalty: float = 1.0,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if cache is None:
@@ -928,6 +922,14 @@ class D3PM(Denoiser):
                 backbone_output, "logits"
             ):
                 backbone_output = backbone_output.logits
+            if repetition_penalty != 1.0 and context is not None and context.numel() > 0:
+                for token_idx in range(backbone_output.shape[1]):
+                    score = torch.gather(backbone_output[:, token_idx], 1, context)
+                    score = torch.where(
+                        score < 0, score * repetition_penalty, score / repetition_penalty
+                    )
+                    backbone_output[:, token_idx] = backbone_output[:, token_idx].scatter(1, context, score)
+
             log_x_theta = self._forward(
                 backbone_output,
                 denoiser_inputs,

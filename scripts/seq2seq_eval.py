@@ -26,6 +26,16 @@ from scripts.utils import (
 from src.datasets.tokenize_on_demand import CNNDailyMailDataset, WMTDataset
 from src.sampler import SamplerConfig
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 
 def gather_results(results, world_size):
     # Each GPU has local 'results' (any picklable object)
@@ -124,6 +134,9 @@ def main(args):
         shift_logits=args.shift_logits
         if args.shift_logits is not None
         else model.config.shift_logits,
+        repetition_penalty=args.repetition_penalty
+        if args.repetition_penalty is not None
+        else model.config.repetition_penalty
     )
     model.sampler_config = sampler_config
     stop_token_ids = [
@@ -133,19 +146,19 @@ def main(args):
     if args.dataset == "cnndm":
         cnndm_stop_tokens = [
             "Summary:",
-            "CLICK",
-            "Click ",
-            "READ:",
-            "READ HERE",
-            "NEW:",
-            "Sources:",
-            "Follow ",
-            "Follow: ",
-            "Related:",
-            "Source:",
-            "Author:",
-            "CNN.com",
-            "Read:",
+            # "CLICK",
+            # "Click ",
+            # "READ:",
+            # "READ HERE",
+            # "NEW:",
+            # "Sources:",
+            # "Follow ",
+            # "Follow: ",
+            # "Related:",
+            # "Source:",
+            # "Author:",
+            # "CNN.com",
+            # "Read:",
         ]
         for cnndm_stop_token in cnndm_stop_tokens:
             stop_token_ids.append(tokenizer.encode(cnndm_stop_token)[0])
@@ -251,6 +264,8 @@ def main(args):
         print(f"BLEU:    {bleu_score['score']:.4f}")
         print(f"METEOR:  {meteor_score['meteor']:.4f}")
 
+        print("Settings:", sampler_config)
+
         res_for_json = [
             {"ground_truth": references[i], "result": generated_samples[i]}
             for i in range(len(generated_samples))
@@ -323,7 +338,7 @@ if __name__ == "__main__":
         if hasattr(v, "default"):
             sampler_parser.add_argument(
                 f"--{k}",
-                type=type(v.default),
+                type=type(v.default) if not isinstance(v.default, bool) else str2bool,
                 default=v.default,
                 help=f"SamplerConfig {k} parameter.",
             )
