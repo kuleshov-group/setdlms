@@ -245,7 +245,7 @@ def main(args):
 if __name__ == "__main__":
     # Download NLTK data required for METEOR
     nltk.download("wordnet")
-    # nltk.download("punkt")
+    nltk.download("punkt")
 
     parser = ArgumentParser(description="Seq2seq evaluation script")
     parser.add_argument(
