@@ -130,12 +130,25 @@ def main(args):
         tokenizer.encode("<|im_end|>")[0],
         tokenizer.encode("<|endoftext|>")[0],
     ]
-    if args.dataset == 'cnndm':
-        cnndm_stop_tokens = ["Summary:", "CLICK", "Click ", "READ:", "READ HERE", "NEW:", "Sources:", "Follow ", "Follow: ", "Related:", "Source:", "Author:", "CNN.com", "Read:"]
+    if args.dataset == "cnndm":
+        cnndm_stop_tokens = [
+            "Summary:",
+            "CLICK",
+            "Click ",
+            "READ:",
+            "READ HERE",
+            "NEW:",
+            "Sources:",
+            "Follow ",
+            "Follow: ",
+            "Related:",
+            "Source:",
+            "Author:",
+            "CNN.com",
+            "Read:",
+        ]
         for cnndm_stop_token in cnndm_stop_tokens:
-            stop_token_ids.append(
-                tokenizer.encode(cnndm_stop_token)[0]
-            )
+            stop_token_ids.append(tokenizer.encode(cnndm_stop_token)[0])
     eos_stopping_criteria = EOSStoppingCriteria(stop_token_ids)
 
     # Iterate through the dataset and sample
@@ -194,7 +207,7 @@ def main(args):
         # For WMT, only use the first sentence (test set only contains single sentences)
         if args.dataset == "wmt":
             outputs = outputs.split(". ")[0] + "."
-        
+
         if local_rank == 0:
             print("Output:", outputs)
         if args.dataset == "cnndm":
