@@ -922,13 +922,21 @@ class D3PM(Denoiser):
                 backbone_output, "logits"
             ):
                 backbone_output = backbone_output.logits
-            if repetition_penalty != 1.0 and context is not None and context.numel() > 0:
+            if (
+                repetition_penalty != 1.0
+                and context is not None
+                and context.numel() > 0
+            ):
                 for token_idx in range(backbone_output.shape[1]):
                     score = torch.gather(backbone_output[:, token_idx], 1, context)
                     score = torch.where(
-                        score < 0, score * repetition_penalty, score / repetition_penalty
+                        score < 0,
+                        score * repetition_penalty,
+                        score / repetition_penalty,
                     )
-                    backbone_output[:, token_idx] = backbone_output[:, token_idx].scatter(1, context, score)
+                    backbone_output[:, token_idx] = backbone_output[
+                        :, token_idx
+                    ].scatter(1, context, score)
 
             log_x_theta = self._forward(
                 backbone_output,

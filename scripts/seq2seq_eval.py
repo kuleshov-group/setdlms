@@ -26,15 +26,16 @@ from scripts.utils import (
 from src.datasets.tokenize_on_demand import CNNDailyMailDataset, WMTDataset
 from src.sampler import SamplerConfig
 
+
 def str2bool(v):
     if isinstance(v, bool):
         return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+    if v.lower() in ("yes", "true", "t", "y", "1"):
         return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+    elif v.lower() in ("no", "false", "f", "n", "0"):
         return False
     else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
+        raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
 def gather_results(results, world_size):
@@ -136,7 +137,7 @@ def main(args):
         else model.config.shift_logits,
         repetition_penalty=args.repetition_penalty
         if args.repetition_penalty is not None
-        else model.config.repetition_penalty
+        else model.config.repetition_penalty,
     )
     model.sampler_config = sampler_config
     stop_token_ids = [
