@@ -884,8 +884,8 @@ class D3PM(Denoiser):
         past_key_values: DynamicCache | None = None,
         context: torch.Tensor | None = None,
         repetition_penalty: float = 1.0,
-        len_penalty: float | None = None,
-        regulation_start: int | None = None,
+        len_penalty: float = 1.0,
+        regulation_start: int = -1,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if cache is None:
