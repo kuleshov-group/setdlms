@@ -15,7 +15,6 @@ from tqdm.auto import tqdm
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    RepetitionPenaltyLogitsProcessor,
     StoppingCriteriaList,
 )
 
@@ -133,12 +132,6 @@ def main(args):
     ]
     eos_stopping_criteria = EOSStoppingCriteria(stop_token_ids)
 
-    repetition_penalty_logits_processor = None
-    if args.dataset == "cnndm":
-        repetition_penalty_logits_processor = RepetitionPenaltyLogitsProcessor(
-            args.repetition_penalty
-        )
-
     # Iterate through the dataset and sample
     generated_samples = []
     for elem_id, elem in tqdm(
@@ -175,7 +168,7 @@ def main(args):
                     device=device,
                     stopping_criteria=stopping_criteria,
                     disable_pbar=(local_rank != 0),
-                    repetition_penalty_logits_processor=repetition_penalty_logits_processor,
+                    repetition_penalty=args.repetition_penalty,
                     # tokenizer=tokenizer,
                 )
             else:
@@ -259,7 +252,7 @@ def main(args):
 if __name__ == "__main__":
     # Download NLTK data required for METEOR
     nltk.download("wordnet")
-    nltk.download("punkt")
+    # nltk.download("punkt")
 
     parser = ArgumentParser(description="Seq2seq evaluation script")
     parser.add_argument(

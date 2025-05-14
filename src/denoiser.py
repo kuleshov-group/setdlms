@@ -769,8 +769,7 @@ class D3PM(Denoiser):
         self,
         logits: torch.Tensor,
         context: torch.Tensor,
-        repetition_penalty_logits_processor: RepetitionPenaltyLogitsProcessor
-        | None = None,
+        repetition_penalty: float = 1.0,
         **kwargs: Any,
     ) -> torch.Tensor:
         """
@@ -791,14 +790,14 @@ class D3PM(Denoiser):
             logits.scatter_(-1, sorted_indices, sorted_probs * nucleus_mask)
             logits /= logits.sum(-1, keepdim=True)
         if (
-            repetition_penalty_logits_processor is not None
+            repetition_penalty != 1.0
             and context is not None
             and context.numel() > 0
         ):
             for token_idx in range(logits.shape[1]):
-                logits[:, token_idx] = repetition_penalty_logits_processor(
-                    context, logits[:, token_idx]
-                )
+                score = torch.gather(logits[:, token_idx], 1, context)
+                score = torch.where(score < 0, score * repetition_penalty, score / repetition_penalty)
+                logits[:, token_idx] = logits[:, token_idx].scatter(1, context, score)
         return logits
 
     def _maybe_remask(
@@ -895,8 +894,6 @@ class D3PM(Denoiser):
         denoiser_inputs: DenoiserInput | None = None,
         cache: Dict[str, torch.Tensor] | None = None,
         past_key_values: DynamicCache | None = None,
-        repetition_penalty_logits_processor: RepetitionPenaltyLogitsProcessor
-        | None = None,
         context: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -942,7 +939,6 @@ class D3PM(Denoiser):
             x_theta = self._logit_transform(
                 logits=x_theta,
                 context=context,
-                repetition_penalty_logits_processor=repetition_penalty_logits_processor,
                 **kwargs,
             )
         else:
@@ -963,8 +959,6 @@ class D3PM(Denoiser):
         stopping_criteria: StoppingCriteriaList | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         disable_pbar: bool = False,
-        repetition_penalty_logits_processor: RepetitionPenaltyLogitsProcessor
-        | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, int]:
         assert self.config.shift_logits, "Aligned logits not support yet for sampling"
@@ -1068,10 +1062,10 @@ class D3PM(Denoiser):
                     cache=cache,
                     xt=xt,
                     past_key_values=past_key_values,
-                    repetition_penalty_logits_processor=repetition_penalty_logits_processor,
                     context=accumulated_samples[
                         :, context_len : (block_id * block_size) + 1
                     ],
+                    **kwargs,
                 )
 
                 xs = self._sample_categorical(q_xs)
