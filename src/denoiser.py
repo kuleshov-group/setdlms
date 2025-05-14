@@ -17,7 +17,6 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizer,
-    RepetitionPenaltyLogitsProcessor,
     StoppingCriteriaList,
 )
 from transformers.cache_utils import DynamicCache
@@ -789,14 +788,12 @@ class D3PM(Denoiser):
             sorted_probs = sorted_probs * nucleus_mask
             logits.scatter_(-1, sorted_indices, sorted_probs * nucleus_mask)
             logits /= logits.sum(-1, keepdim=True)
-        if (
-            repetition_penalty != 1.0
-            and context is not None
-            and context.numel() > 0
-        ):
+        if repetition_penalty != 1.0 and context is not None and context.numel() > 0:
             for token_idx in range(logits.shape[1]):
                 score = torch.gather(logits[:, token_idx], 1, context)
-                score = torch.where(score < 0, score * repetition_penalty, score / repetition_penalty)
+                score = torch.where(
+                    score < 0, score * repetition_penalty, score / repetition_penalty
+                )
                 logits[:, token_idx] = logits[:, token_idx].scatter(1, context, score)
         return logits
 
