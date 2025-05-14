@@ -173,6 +173,8 @@ def main(args):
         total=len(dataloader),
         disable=(local_rank != 0),
     ):
+        if len(generated_samples) > 20:
+            break
         stopping_criteria = StoppingCriteriaList([eos_stopping_criteria])
         input_ids = elem["input_ids"].to(device)
         input_ids = input_ids[:, 1:]  # remove bos
@@ -202,6 +204,8 @@ def main(args):
                     stopping_criteria=stopping_criteria,
                     disable_pbar=(local_rank != 0),
                     repetition_penalty=args.repetition_penalty,
+                    len_penalty=args.len_penalty,
+                    regulation_start=args.regulation_start,
                     # tokenizer=tokenizer,
                 )
             else:
@@ -210,6 +214,12 @@ def main(args):
                     max_new_tokens=args.max_new_tokens,
                     top_k=None,
                     repetition_penalty=args.repetition_penalty,
+                    exponential_decay_length_penalty=(
+                        args.regulation_start,
+                        args.len_penalty,
+                    )
+                    if args.len_penalty != 1
+                    else None,
                 )
         outputs = outputs[:, input_ids.shape[-1] :]
         # Decode the generated samples

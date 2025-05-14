@@ -767,8 +767,6 @@ class D3PM(Denoiser):
     def _logit_transform(
         self,
         logits: torch.Tensor,
-        context: torch.Tensor,
-        repetition_penalty: float = 1.0,
         **kwargs: Any,
     ) -> torch.Tensor:
         """
@@ -886,6 +884,8 @@ class D3PM(Denoiser):
         past_key_values: DynamicCache | None = None,
         context: torch.Tensor | None = None,
         repetition_penalty: float = 1.0,
+        len_penalty: float | None = None,
+        regulation_start: int | None = None,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if cache is None:
@@ -937,6 +937,16 @@ class D3PM(Denoiser):
                     backbone_output[:, token_idx] = backbone_output[
                         :, token_idx
                     ].scatter(1, context, score)
+            if len_penalty != 1.0 and regulation_start >= 0:
+                cur_len = context.shape[-1]
+                if cur_len > regulation_start:
+                    penalties = torch.zeros_like(backbone_output)
+                    penalty_idx = cur_len - regulation_start
+                    penalty = torch.abs(backbone_output[..., self.eos_token_id]) * (
+                        pow(len_penalty, penalty_idx) - 1
+                    )
+                    penalties[..., self.eos_token_id] = penalty
+                    backbone_output = backbone_output + penalties
 
             log_x_theta = self._forward(
                 backbone_output,
@@ -945,7 +955,6 @@ class D3PM(Denoiser):
             x_theta = log_x_theta.exp()
             x_theta = self._logit_transform(
                 logits=x_theta,
-                context=context,
                 **kwargs,
             )
         else:

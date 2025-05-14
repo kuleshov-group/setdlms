@@ -20,3 +20,5 @@ class SamplerConfig(OrderedDict):
     kv_caching: bool = False
     shift_logits: bool = False
     repetition_penalty: float = 1.0
+    len_penalty: float = 1.0
+    regulation_start: int = -1
