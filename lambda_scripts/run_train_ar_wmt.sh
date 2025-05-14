@@ -44,7 +44,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
   ~composer.trainer.compile_config \
   ~composer.trainer.parallelism_config \
-  block_size=${BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=/home/ubuntu/runs/dllm-dev/${RUN_NAME} \
   composer.trainer.save_interval="2000ba" \
