@@ -18,7 +18,8 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="/home/ubuntu/runs/dllm-dev/gsm8k-block4-bs96-keepbottom21-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-bd3_small_qwen2B_v4"
+MODEL_PATH="/home/ubuntu/runs/dllm-dev/gsm8k-bs96-keep1-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-ar_qweb2B_v1"
+#MODEL_PATH="/home/ubuntu/runs/dllm-dev/gsm8k-block4-bs96-keepbottom21-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-bd3_small_qwen2B_v4"
 #MODEL_PATH="/home/ubuntu/runs/dllm-dev/gsm8k-block4-bs96-keep4-causalencfalse-max20000ba-lr1e-4-warmup1000ba-gc1.0-wd1e-5-bd3_phi_untie_v5"
 #MODEL_PATH="/home/ubuntu/test_ckpts"
 #MODEL_PATH="/home/ubuntu/qwen3_600M_gsm8k_ckpts"
@@ -35,6 +36,7 @@ FIRST_HITTING=True
 LOW_CONFIDENCE_REMASKING=True
 KV_CACHING=True
 TOP_P=1.0
+CKPT_FILE="best-rank0.pt"
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-greedy-${GREEDY}-use_x0_pred-${USE_X0_PRED}-first_hitting-${FIRST_HITTING}-low_confidence_remasking-${LOW_CONFIDENCE_REMASKING}"
 mkdir -p ${OUTPUT_PATH}
@@ -52,6 +54,7 @@ accelerate launch scripts/harness_eval.py \
     "generated_samples_path=${OUTPUT_PATH},\
 max_cont_len=${L},\
 model_path=${MODEL_PATH},\
+ckpt_file=${CKPT_FILE},\
 load_ema_weights=False,\
 tokenizer_name_or_path=Qwen/Qwen3-1.7B-Base,\
 num_samples=1,\
