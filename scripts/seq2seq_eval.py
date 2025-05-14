@@ -197,12 +197,13 @@ def main(args):
                     top_k=None,
                 )
         outputs = outputs[:, input_ids.shape[-1] :]
-        for stop_token_id in stop_token_ids:
-            keep_flag = ((outputs == stop_token_id).cumsum(-1) < 1)[0]
-            outputs = outputs[:, keep_flag]
         # Decode the generated samples
         outputs = tokenizer.decode(outputs[0])
         outputs = outputs.replace(" .", ".")
+
+        for stop_token_id in stop_token_ids:
+            stop_token = tokenizer.decode(stop_token_id)
+            outputs = outputs.split(stop_token)[0]
 
         # For WMT, only use the first sentence (test set only contains single sentences)
         if args.dataset == "wmt":
