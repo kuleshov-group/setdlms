@@ -195,6 +195,7 @@ def main(args):
                     input_ids=input_ids,
                     max_new_tokens=args.max_new_tokens,
                     top_k=None,
+                    repetition_penalty=args.repetition_penalty,
                 )
         outputs = outputs[:, input_ids.shape[-1] :]
         # Decode the generated samples
@@ -211,11 +212,7 @@ def main(args):
 
         if local_rank == 0:
             print("Output:", outputs)
-        if args.dataset == "cnndm":
-            decoded_samples = "Summary:" + outputs
-        elif args.dataset == "wmt":
-            decoded_samples = "Translation:" + outputs
-        generated_samples.append(decoded_samples)
+        generated_samples.append(outputs)
 
     # Compute metrics
     references = (
