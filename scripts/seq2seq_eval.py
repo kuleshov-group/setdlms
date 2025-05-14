@@ -176,6 +176,7 @@ def main(args):
                     input_ids=input_ids,
                     max_new_tokens=args.max_new_tokens,
                     top_k=None,
+                    repetition_penalty=args.repetition_penalty,
                 )
         outputs = outputs[:, input_ids.shape[-1] :]
         for stop_token_id in stop_token_ids:
