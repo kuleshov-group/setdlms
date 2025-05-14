@@ -212,7 +212,11 @@ def main(args):
 
         if local_rank == 0:
             print("Output:", outputs)
-        generated_samples.append(outputs)
+        if args.dataset == "cnndm":
+            decoded_samples = "Summary:" + outputs
+        elif args.dataset == "wmt":
+            decoded_samples = "Translation:" + outputs
+        generated_samples.append(decoded_samples)
 
     # Compute metrics
     references = (
