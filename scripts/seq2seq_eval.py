@@ -12,7 +12,12 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteriaList, RepetitionPenaltyLogitsProcessor
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    RepetitionPenaltyLogitsProcessor,
+    StoppingCriteriaList,
+)
 
 from scripts.utils import (
     EOSStoppingCriteria,
@@ -127,10 +132,12 @@ def main(args):
         tokenizer.encode("<|endoftext|>")[0],
     ]
     eos_stopping_criteria = EOSStoppingCriteria(stop_token_ids)
-    
+
     repetition_penalty_logits_processor = None
     if args.dataset == "cnndm":
-        repetition_penalty_logits_processor = RepetitionPenaltyLogitsProcessor(args.repetition_penalty)
+        repetition_penalty_logits_processor = RepetitionPenaltyLogitsProcessor(
+            args.repetition_penalty
+        )
 
     # Iterate through the dataset and sample
     generated_samples = []
