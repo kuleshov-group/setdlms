@@ -34,10 +34,10 @@ KV_CACHING=True
 TOP_P=1.0 # not used if greedy=True
 MAX_LENGTH=1024
 REPETITION_PENALTY=1.2 # set to >1 for CNN/DM!
-LEN_PENALTY=2.2
-REGULATION_START=70
+LEN_PENALTY=1.1
+REGULATION_START=30
 
-OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-greedy-${GREEDY}-use_x0_pred-${USE_X0_PRED}-first_hitting-${FIRST_HITTING}-low_confidence_remasking-${LOW_CONFIDENCE_REMASKING}"
+OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-greedy-${GREEDY}-use_x0_pred-${USE_X0_PRED}-first_hitting-${FIRST_HITTING}-low_confidence_remasking-${LOW_CONFIDENCE_REMASKING}_rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}"
 NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 PORT=29501
 
