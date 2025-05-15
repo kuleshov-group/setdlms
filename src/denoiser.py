@@ -492,16 +492,16 @@ class AR(Denoiser):
         len_penalty = kwargs.pop("len_penalty", 1.0)
         regulation_start = kwargs.pop("regulation_start", None)
         repetition_penalty = kwargs.pop("repetition_penalty", None)
-        exponential_decay_length = (
+        exponential_decay_length_penalty = (
             (regulation_start, len_penalty) if len_penalty != 1.0 else None
         )
         outputs = self.backbone.model.generate(
             input_ids=context,
             attention_mask=torch.ones_like(context),
             max_new_tokens=max_length - context.shape[-1],
-            stopping_criteria=stopping_criteria,
-            repitition_penalty=repetition_penalty,
-            exponential_decay_length=exponential_decay_length,
+            # stopping_criteria=stopping_criteria,
+            repetition_penalty=repetition_penalty,
+            exponential_decay_length_penalty=exponential_decay_length_penalty,
             top_k=kwargs.pop("top_k", None),  # None implies greedy decoding
             **kwargs,
         )
