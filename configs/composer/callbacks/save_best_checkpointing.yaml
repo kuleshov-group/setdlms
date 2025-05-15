@@ -5,4 +5,4 @@ save_best_checkpointing:
   num_checkpoints_to_keep: -1
   metric_to_monitor: eval/loss  # <train|val>/<metric_name>
   mode: 'min'
-  disable_hf: false
+  disable_hf: true
