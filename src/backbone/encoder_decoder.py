@@ -170,7 +170,7 @@ class LLMasEncoderDecoder(nn.Module):
                 min_dtype = torch.finfo(self.encoder.dtype).min
                 encoder_attention_mask = torch.where(
                     encoder_attention_mask == 0.0, min_dtype, 0.0
-                )
+                ).to(self.encoder.dtype)
             past_key_values = self.encoder.model(
                 input_ids=encoder_input_ids,
                 attention_mask=encoder_attention_mask,
@@ -205,7 +205,9 @@ class LLMasEncoderDecoder(nn.Module):
 
         attention_mask = attention_mask[:, None, ...].to(self.decoder.dtype)
         min_dtype = torch.finfo(self.encoder.dtype).min
-        attention_mask = torch.where(attention_mask == 0.0, min_dtype, 0.0)
+        attention_mask = torch.where(attention_mask == 0.0, min_dtype, 0.0).to(
+            self.decoder.dtype
+        )
         attention_mask = self.decoder.model._update_causal_mask(
             attention_mask=attention_mask,
             input_tensor=decoder_hidden_states,
