@@ -45,7 +45,7 @@ class LLMasEncoderDecoder(nn.Module):
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
             )
-            self.encoder = AutoModelForCausalLM(encoder_config)
+            self.encoder = AutoModelForCausalLM.from_config(encoder_config)
         else:
             self.encoder = AutoModelForCausalLM.from_pretrained(
                 pretrained_model_name_or_path,
