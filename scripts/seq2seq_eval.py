@@ -289,6 +289,18 @@ def main(args):
                 f,  # type: ignore
                 indent=2,
             )
+        with open(f"{samples_path}/metrics.json", "w") as f:
+            json.dump(
+                {
+                    "ROUGE-1": rouge_scores["rouge1"],
+                    "ROUGE-2": rouge_scores["rouge2"],
+                    "ROUGE-L": rouge_scores["rougeL"],
+                    "BLEU": bleu_score["score"],
+                    "METEOR": meteor_score["meteor"],
+                },
+                f,  # type: ignore
+                indent=2,
+            )
     if dist.is_initialized():
         dist.destroy_process_group()
 
