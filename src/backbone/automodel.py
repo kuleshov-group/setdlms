@@ -55,12 +55,23 @@ class AutoModelFromPreTrained(nn.Module):
         pretrained_model_name_or_path: str,
         trust_remote_code: bool = True,
         keep_every_n_layers: int = 1,
+        reinit_model: bool = False,
         **kwargs,
     ):
         super().__init__()
-        self.model = AUTO_MODEL_CLS[automodel_cls].from_pretrained(
-            pretrained_model_name_or_path, trust_remote_code=trust_remote_code, **kwargs
-        )
+        if reinit_model:
+            auto_config = AutoConfig.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=trust_remote_code,
+                **kwargs,
+            )
+            self.model = AUTO_MODEL_CLS[automodel_cls].from_config(auto_config)
+        else:
+            self.model = AUTO_MODEL_CLS[automodel_cls].from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=trust_remote_code,
+                **kwargs,
+            )
         if keep_every_n_layers > 1:
             layers_post_surgery = []
             for i, layer in enumerate(self.model.model.layers):

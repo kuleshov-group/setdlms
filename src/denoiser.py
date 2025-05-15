@@ -492,16 +492,16 @@ class AR(Denoiser):
         len_penalty = kwargs.pop("len_penalty", 1.0)
         regulation_start = kwargs.pop("regulation_start", None)
         repetition_penalty = kwargs.pop("repetition_penalty", None)
-        exponential_decay_length = (
+        exponential_decay_length_penalty = (
             (regulation_start, len_penalty) if len_penalty != 1.0 else None
         )
         outputs = self.backbone.model.generate(
             input_ids=context,
             attention_mask=torch.ones_like(context),
             max_new_tokens=max_length - context.shape[-1],
-            stopping_criteria=stopping_criteria,
-            repitition_penalty=repetition_penalty,
-            exponential_decay_length=exponential_decay_length,
+            # stopping_criteria=stopping_criteria,
+            repetition_penalty=repetition_penalty,
+            exponential_decay_length_penalty=exponential_decay_length_penalty,
             top_k=kwargs.pop("top_k", None),  # None implies greedy decoding
             **kwargs,
         )
@@ -994,7 +994,7 @@ class D3PM(Denoiser):
         disable_pbar: bool = False,
         **kwargs: Any,
     ) -> Tuple[torch.Tensor, int]:
-        assert self.config.shift_logits, "Aligned logits not support yet for sampling"
+        # assert self.config.shift_logits, "Aligned logits not support yet for sampling"
         max_length = (
             max_length if max_length is not None else self.sampler_config.max_length
         )
@@ -1031,7 +1031,6 @@ class D3PM(Denoiser):
             accumulated_samples[:, :context_len] = context
 
         if self.sampler_config.kv_caching and context is not None:
-            past_key_values = DynamicCache()
             blocks_to_cache = context_len // block_size
             # start sampling with the last block with clean tokens
             cache_len = block_size * blocks_to_cache
@@ -1052,9 +1051,14 @@ class D3PM(Denoiser):
         )
         for block_id in block_pbar:
             block_NFEs = 0
-            xt = accumulated_samples[
-                :, (block_id * block_size) : ((block_id + 1) * block_size) + 1
-            ]
+            if self.config.shift_logits:
+                xt = accumulated_samples[
+                    :, (block_id * block_size) : ((block_id + 1) * block_size) + 1
+                ]
+            else:
+                xt = accumulated_samples[
+                    :, (block_id * block_size) : ((block_id + 1) * block_size)
+                ]
             timesteps = self._sample_generation_timesteps(
                 max_seq_len=block_size, device=device
             )
@@ -1088,6 +1092,14 @@ class D3PM(Denoiser):
                     past_key_values=past_key_values,
                 )
 
+                if self.config.shift_logits:
+                    context_for_next_step = accumulated_samples[
+                        :, context_len : (block_id * block_size) + 1
+                    ]
+                else:
+                    context_for_next_step = accumulated_samples[
+                        :, context_len : (block_id * block_size)
+                    ]
                 q_xs, cache = self._generate_unconditional(
                     alpha_t=alpha_t,
                     alpha_s=alpha_s,
@@ -1095,9 +1107,7 @@ class D3PM(Denoiser):
                     cache=cache,
                     xt=xt,
                     past_key_values=past_key_values,
-                    context=accumulated_samples[
-                        :, context_len : (block_id * block_size) + 1
-                    ],
+                    context=context_for_next_step,
                     **kwargs,
                 )
 
@@ -1116,9 +1126,14 @@ class D3PM(Denoiser):
                 if not torch.allclose(xs, xt) or not disable_cache:
                     cache = None
                 xt = xs
-            accumulated_samples[
-                :, (block_id * block_size) + 1 : ((block_id + 1) * block_size) + 1
-            ] = xt[:, 1:]
+            if self.config.shift_logits:
+                accumulated_samples[
+                    :, (block_id * block_size) + 1 : ((block_id + 1) * block_size) + 1
+                ] = xt[:, 1:]
+            else:
+                accumulated_samples[
+                    :, (block_id * block_size) : ((block_id + 1) * block_size)
+                ] = xt
             if tokenizer is not None:
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
@@ -1126,9 +1141,14 @@ class D3PM(Denoiser):
                     input_ids=accumulated_samples[:, context_len:], scores=None
                 )
                 if stop_criteria_met:
-                    accumulated_samples = accumulated_samples[
-                        :, : ((block_id + 1) * block_size) + 1
-                    ]
+                    if self.config.shift_logits:
+                        accumulated_samples = accumulated_samples[
+                            :, : ((block_id + 1) * block_size) + 1
+                        ]
+                    else:
+                        accumulated_samples = accumulated_samples[
+                            :, : ((block_id + 1) * block_size)
+                        ]
                     break
             if self.sampler_config.kv_caching:
                 if self.config.shift_logits:
