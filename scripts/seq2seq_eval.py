@@ -3,7 +3,7 @@ import inspect
 import json
 import os
 import random
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentTypeError
 
 import evaluate
 import nltk
@@ -35,7 +35,7 @@ def str2bool(v):
     elif v.lower() in ("no", "false", "f", "n", "0"):
         return False
     else:
-        raise argparse.ArgumentTypeError("Boolean value expected.")
+        raise ArgumentTypeError("Boolean value expected.")
 
 
 def gather_results(results, world_size):
@@ -173,8 +173,6 @@ def main(args):
         total=len(dataloader),
         disable=(local_rank != 0),
     ):
-        if len(generated_samples) > 20:
-            break
         stopping_criteria = StoppingCriteriaList([eos_stopping_criteria])
         input_ids = elem["input_ids"].to(device)
         input_ids = input_ids[:, 1:]  # remove bos
@@ -299,11 +297,11 @@ if __name__ == "__main__":
     # Download NLTK data required for METEOR
     try:
         nltk.download("wordnet")
-    except:
+    except:  # noqa: E722
         pass
     try:
         nltk.download("punkt")
-    except:
+    except:  # noqa: E722
         pass
 
     parser = ArgumentParser(description="Seq2seq evaluation script")
