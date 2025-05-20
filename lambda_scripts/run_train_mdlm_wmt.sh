@@ -40,7 +40,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
   model.config.backbone_config.keep_every_n_decoder_layers=1 \
   model.config.backbone_config.tie_encoder_decoder_weights=true \
-  model.config.length=1024 \
+  model.config.max_length=1024 \
   model.config.backbone_is_decoder_only=true \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \

@@ -99,7 +99,7 @@ class DenoiserConfig(PretrainedConfig):
 
     def __init__(
         self,
-        length: int | None = None,
+        max_length: int | None = None,
         backbone_config: dict[str, Any] | None = None,
         noise_config: dict[str, Any] | None = None,
         sampler_config: dict[str, Any] | None = None,
@@ -128,7 +128,7 @@ class DenoiserConfig(PretrainedConfig):
         self.backbone_config = backbone_config
         self.noise_config = noise_config
         self.sampler_config = sampler_config
-        self.length = length
+        self.max_length = max_length
         self.time_conditioned_backbone = time_conditioned_backbone
         self.keep_clean_bos = keep_clean_bos
         self.shift_logits = shift_logits

@@ -25,6 +25,6 @@ composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denois
   dataset@train_dataset=c4_streaming_train \
   dataset@eval_dataset=c4_streaming_eval \
   model/backbone@model.config.backbone_config=dit \
-  model.config.length=1024 \
+  model.config.max_length=1024 \
   training.global_batch_size=512 \
   ~composer.trainer.parallelism_config

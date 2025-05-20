@@ -332,10 +332,10 @@ class D3PM(Denoiser):
             pad_len = 0
             if (
                 self.sampler_config.pad_context
-                and denoiser_inputs.xt.shape[-1] < self.config.length
+                and denoiser_inputs.xt.shape[-1] < self.config.max_length
             ):
                 # pad with masks
-                pad_len = self.config.length - denoiser_inputs.xt.shape[-1]
+                pad_len = self.config.max_length - denoiser_inputs.xt.shape[-1]
                 denoiser_inputs.xt = F.pad(
                     denoiser_inputs.xt,
                     pad=(0, pad_len),
@@ -757,11 +757,11 @@ class BD3LM(MDLM):
             assert self.config.attn_backend != "flex_attention", (
                 "FlexAttention not supported yet"
             )
-            assert self.config.block_size == self.config.length, (
+            assert self.config.block_size == self.config.max_length, (
                 "Only MDLM supported as decoder-only"
             )
             static_mask = torch.full(
-                (self.config.length, self.config.length), fill_value=True
+                (self.config.max_length, self.config.max_length), fill_value=True
             )
             if self.config.attn_backend == "flex_attention":
                 self.static_attention_mask = static_mask
@@ -779,35 +779,35 @@ class BD3LM(MDLM):
                     ),
                     B=None,
                     H=None,
-                    Q_LEN=self.config.length,
-                    KV_LEN=self.config.length,
+                    Q_LEN=self.config.max_length,
+                    KV_LEN=self.config.max_length,
                 )
                 decoder_static_mask = create_block_mask(
                     partial(
                         self._decoder_block_mask,
                         block_size=self.config.block_size,
-                        seq_length=self.config.length,
+                        seq_length=self.config.max_length,
                     ),
                     B=None,
                     H=None,
-                    Q_LEN=self.config.length,
-                    KV_LEN=self.config.length * 2,
+                    Q_LEN=self.config.max_length,
+                    KV_LEN=self.config.max_length * 2,
                 )
             else:
                 encoder_static_mask = self._encoder_block_mask(
                     b=None,
                     h=None,
-                    q_idx=torch.arange(self.config.length)[:, None],
-                    kv_idx=torch.arange(self.config.length)[None, :],
+                    q_idx=torch.arange(self.config.max_length)[:, None],
+                    kv_idx=torch.arange(self.config.max_length)[None, :],
                     block_size=self.config.block_size,
                 )
                 decoder_static_mask = self._decoder_block_mask(
                     b=None,
                     h=None,
-                    q_idx=torch.arange(self.config.length)[:, None],
-                    kv_idx=torch.arange(self.config.length * 2)[None, :],
+                    q_idx=torch.arange(self.config.max_length)[:, None],
+                    kv_idx=torch.arange(self.config.max_length * 2)[None, :],
                     block_size=self.config.block_size,
-                    seq_length=self.config.length,
+                    seq_length=self.config.max_length,
                 )
             if self.config.attn_backend == "flex_attention":
                 self.encoder_static_attention_mask = encoder_static_mask

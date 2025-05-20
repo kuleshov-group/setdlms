@@ -43,7 +43,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model=bd3lm \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
   model.config.shift_logits=False \
-  model.config.length=768 \
+  model.config.max_length=768 \
   model.config.backbone_config.keep_every_n_encoder_layers=${KEEP_EVERY_N_ENCODER_LAYERS} \
   model.config.backbone_config.keep_every_n_decoder_layers=${KEEP_EVERY_N_DECODER_LAYERS} \
   model.config.backbone_config.keep_top_n_decoder_layers=${KEEP_TOP_N_DECODER_LAYERS} \

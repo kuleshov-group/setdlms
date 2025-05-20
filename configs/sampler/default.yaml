@@ -5,7 +5,7 @@ max_length: 512
 num_steps: 1000
 min_t: 1e-5
 disable_cache: false
-block_size: ${model.config.length}
+block_size: ${model.config.max_length}
 top_p: 0.85
 pad_context: false
 greedy: false

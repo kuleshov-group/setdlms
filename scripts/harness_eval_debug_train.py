@@ -127,7 +127,7 @@ class LMEvalHarness(LM):
             kv_caching=kv_caching,
             max_length=max_length
             if max_length is not None
-            else self.model.config.length,
+            else self.model.config.max_length,
             block_size=block_size
             if block_size is not None
             else self.model.config.block_size,
@@ -140,7 +140,7 @@ class LMEvalHarness(LM):
         self.train_dataset = GSM8KDataset(
             tokenizer=self.tokenizer,
             split=data_split,
-            max_seq_length=self.model.config.length,
+            max_seq_length=self.model.config.max_length,
         )
         self.profiling_flag = profiling_flag
 

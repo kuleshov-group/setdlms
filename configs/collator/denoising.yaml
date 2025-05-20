@@ -1,6 +1,6 @@
 _target_: src.datasets.collator.DenoisingCollator
 padding: "max_length"
-max_length: ${model.config.length}
+max_length: ${model.config.max_length}
 pad_to_multiple_of: null
 return_tensors: "pt"
 predict_padding: false

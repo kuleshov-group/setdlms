@@ -170,7 +170,7 @@ class LMEvalHarness(LM):
             kv_caching=kv_caching,
             max_length=max_length
             if max_length is not None
-            else self.model.config.length,
+            else self.model.config.max_length,
             block_size=block_size
             if block_size is not None
             else self.model.config.block_size,

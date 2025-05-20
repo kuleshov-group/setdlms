@@ -38,7 +38,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=ar \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
-  model.config.length=768 \
+  model.config.max_length=768 \
   model.config.backbone_config.keep_every_n_layers=${KEEP_EVERY_N_LAYERS} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \

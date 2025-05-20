@@ -128,7 +128,7 @@ def main(args):
         kv_caching=args.kv_caching,
         max_length=args.max_length
         if args.max_length is not None
-        else model.config.length,
+        else model.config.max_length,
         block_size=args.block_size
         if args.block_size is not None
         else model.config.block_size,

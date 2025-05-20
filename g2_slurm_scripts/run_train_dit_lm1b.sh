@@ -24,7 +24,7 @@ composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denois
   tokenizer.pretrained_model_name_or_path=bert-base-uncased \
   dataset@train_dataset=lm1b_preprocessed_train \
   dataset@eval_dataset=lm1b_preprocessed_eval \
-  model.config.length=128 \
+  model.config.max_length=128 \
   model/backbone@model.config.backbone_config=dit \
   model.config.backbone_config.use_adaln=false \
   training.global_batch_size=512 \
