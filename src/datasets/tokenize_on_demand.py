@@ -18,7 +18,7 @@ class GSM8KDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "test"],
-        max_seq_len: int,
+        max_seq_length: int,
         dataset_path: str = "openai/gsm8k",
         config_name: Literal["main", "socratic"] = "main",
         padding: bool = False,
@@ -32,7 +32,7 @@ class GSM8KDataset(Dataset):
         self.dataset = load_dataset(
             dataset_path, config_name, split=split, trust_remote_code=True
         )
-        self.max_seq_len = max_seq_len
+        self.max_seq_length = max_seq_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
         self.question_prompt_text = question_prompt_text
@@ -72,7 +72,7 @@ class GSM8KDataset(Dataset):
 
         qa_tokenized = self.tokenizer.batch_encode_plus(
             [example["question"], example["answer"]],
-            max_length=self.max_seq_len // 2,
+            max_length=self.max_seq_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
@@ -103,7 +103,7 @@ class HendrycksMathDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "test"],
-        max_seq_len: int,
+        max_seq_length: int,
         dataset_path: str = "EleutherAI/hendrycks_math",
         padding: bool = False,
         add_special_tokens: bool = True,
@@ -114,7 +114,7 @@ class HendrycksMathDataset(Dataset):
     ):
         self.tokenizer = tokenizer
         self.dataset = load_dataset(dataset_path, split=split, trust_remote_code=True)
-        self.max_seq_len = max_seq_len
+        self.max_seq_length = max_seq_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
         self.question_prompt_text = question_prompt_text
@@ -137,7 +137,7 @@ class HendrycksMathDataset(Dataset):
 
         qa_tokenized = self.tokenizer.batch_encode_plus(
             [example["problem"], example["solution"]],
-            max_length=self.max_seq_len // 2,
+            max_length=self.max_seq_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
@@ -168,7 +168,7 @@ class CNNDailyMailDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "validation", "test"],
-        max_seq_len: int,
+        max_seq_length: int,
         dataset_path: str = "abisee/cnn_dailymail",
         config_name: Literal["1.0.0", "2.0.0", "3.0.0"] = "3.0.0",
         padding: bool = False,
@@ -183,7 +183,7 @@ class CNNDailyMailDataset(Dataset):
         self.dataset = load_dataset(
             dataset_path, config_name, split=split, trust_remote_code=True
         )
-        self.max_seq_len = max_seq_len
+        self.max_seq_length = max_seq_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
         self.article_prompt_text = article_prompt_text
@@ -207,7 +207,7 @@ class CNNDailyMailDataset(Dataset):
 
         seq2seq_tokenized = self.tokenizer.batch_encode_plus(
             [example["article"], example["highlights"]],
-            max_length=self.max_seq_len // 2,
+            max_length=self.max_seq_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
@@ -261,7 +261,7 @@ class WMTDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "validation", "test"],
-        max_seq_len: int,
+        max_seq_length: int,
         dataset_path: str = "wmt/wmt14",
         subset: str = "de-en",
         padding: bool = False,
@@ -278,7 +278,7 @@ class WMTDataset(Dataset):
         )
         self.source = subset.split("-")[0]
         self.target = subset.split("-")[1]
-        self.max_seq_len = max_seq_len
+        self.max_seq_length = max_seq_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
         self.source_prompt_text = source_prompt_text.format(
@@ -305,7 +305,7 @@ class WMTDataset(Dataset):
 
         seq2seq_tokenized = self.tokenizer.batch_encode_plus(
             [source, target],
-            max_length=self.max_seq_len // 2,
+            max_length=self.max_seq_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,

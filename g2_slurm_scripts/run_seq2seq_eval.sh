@@ -58,5 +58,5 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/s
   --max_length ${MAX_LENGTH} \
   --shift_logits True \
   --repetition_penalty ${REPETITION_PENALTY} \
-  --len_penalty ${LEN_PENALTY} \
+  --length_penalty ${LEN_PENALTY} \
   --regulation_start ${REGULATION_START}

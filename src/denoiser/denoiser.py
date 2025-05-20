@@ -366,7 +366,7 @@ class Denoiser(ABC, PreTrainedModel):
     @abstractmethod
     def generate(  # TODO: clean up signature and docstring
         self,
-        max_seq_len: int,
+        max_seq_length: int,
         batch_size: int | None = None,
         device: str | None = None,
         context: Tensor | None = None,
@@ -377,7 +377,7 @@ class Denoiser(ABC, PreTrainedModel):
 
         Args:
             batch_size (int): Batch size.
-            max_seq_len (int): Maximum sequence length.
+            max_seq_length (int): Maximum sequence length.
             device (str, optional): Device to use for computation.
                 Defaults to None, which will select cuda (if available).
             disable_cache (bool, optional): Whether to disable caching.

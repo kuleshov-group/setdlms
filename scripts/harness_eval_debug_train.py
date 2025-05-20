@@ -140,7 +140,7 @@ class LMEvalHarness(LM):
         self.train_dataset = GSM8KDataset(
             tokenizer=self.tokenizer,
             split=data_split,
-            max_seq_len=self.model.config.length,
+            max_seq_length=self.model.config.length,
         )
         self.profiling_flag = profiling_flag
 

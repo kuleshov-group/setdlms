@@ -110,11 +110,11 @@ class AR(Denoiser):
         disable_pbar: bool = False,
         **kwargs: Any,
     ) -> Tuple[Tensor, int]:
-        len_penalty = kwargs.pop("len_penalty", 1.0)
+        length_penalty = kwargs.pop("length_penalty", 1.0)
         regulation_start = kwargs.pop("regulation_start", None)
         repetition_penalty = kwargs.pop("repetition_penalty", None)
         exponential_decay_length_penalty = (
-            (regulation_start, len_penalty) if len_penalty != 1.0 else None
+            (regulation_start, length_penalty) if length_penalty != 1.0 else None
         )
         outputs = self.backbone.model.generate(
             input_ids=context,

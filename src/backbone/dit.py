@@ -14,7 +14,7 @@ from torch import Tensor, nn
 def multi_head_attention(
     q: Tensor, k: Tensor, v: Tensor, is_causal: bool = False
 ) -> Tensor:
-    # Assuming qkv is a tensor with shape [batch, seq_len, 3, num_heads, head_dim]
+    # Assuming qkv is a tensor with shape [batch, seq_length, 3, num_heads, head_dim]
     # where the 3 represents Q, K, V packed in that order
     attention_output = F.scaled_dot_product_attention(
         query=q.transpose(1, 2),
@@ -24,7 +24,7 @@ def multi_head_attention(
         dropout_p=0.0,
         is_causal=is_causal,
     )
-    # [batch_size, seq_len, num_heads, head_dim]
+    # [batch_size, seq_length, num_heads, head_dim]
     attention_output = attention_output.transpose(1, 2)
     return einops.rearrange(attention_output, "b s h d -> b s (h d)")
 
@@ -84,7 +84,7 @@ class TimestepEmbedding(nn.Module):
 
 
 def rotary_embedding(
-    seq_len: int,
+    seq_length: int,
     base: int,
     dim: int,
     device: torch.device,
@@ -93,10 +93,10 @@ def rotary_embedding(
     inv_freq = 1.0 / (
         base ** (torch.arange(0, dim, 2, device=device, dtype=dtype) / dim)
     )
-    t = torch.arange(seq_len, device=device, dtype=dtype)
+    t = torch.arange(seq_length, device=device, dtype=dtype)
     freqs = torch.einsum("i,j->ij", t, inv_freq)
     emb = torch.cat((freqs, freqs), dim=-1)
-    # dims are: batch, seq_len, qkv, head, dim
+    # dims are: batch, seq_length, qkv, head, dim
     cos = emb.cos()[None, :, None, None, :].repeat(1, 1, 3, 1, 1)
     sin = emb.sin()[None, :, None, None, :].repeat(1, 1, 3, 1, 1)
     # This makes the transformation on v an identity.
@@ -138,8 +138,8 @@ def rotate_half(x, interleaved=False):
 # noinspection LongLine
 def apply_rotary_emb_torch(x, cos, sin, interleaved=False):
     """
-    x: (batch_size, seqlen, nheads, headdim)
-    cos, sin: (seqlen, rotary_dim / 2) or (batch_size, seqlen, rotary_dim / 2)
+    x: (batch_size, seq_length, nheads, headdim)
+    cos, sin: (seq_length, rotary_dim / 2) or (batch_size, seq_length, rotary_dim / 2)
     """
     # Copied from: https://github.com/Dao-AILab/flash-attention/blob/a09abcd32d3cae4d83b313446e887f38d02b799f/flash_attn/layers/rotary.py#L20  # noqa: E501
     ro_dim = cos.shape[-1] * 2

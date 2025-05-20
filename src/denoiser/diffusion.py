@@ -211,7 +211,10 @@ class D3PM(Denoiser):
         )
 
     def _sample_generation_timesteps(
-        self, max_seq_len: int | None = None, device: str | None = None, **kwargs: Any
+        self,
+        max_seq_length: int | None = None,
+        device: str | None = None,
+        **kwargs: Any,
     ) -> Tensor:
         """
         Sample timesteps for the diffusion process.
@@ -226,10 +229,10 @@ class D3PM(Denoiser):
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
         if self.sampler_config.first_hitting:
-            if max_seq_len is None:
-                raise ValueError("max_seq_len must be provided for first hitting.")
+            if max_seq_length is None:
+                raise ValueError("max_seq_length must be provided for first hitting.")
             timesteps = Tensor([1.0])
-            for i in range(max_seq_len, 0, -1):
+            for i in range(max_seq_length, 0, -1):
                 u = torch.rand(1)
                 next_t = timesteps[-1] * u ** (1 / i)
                 timesteps = torch.cat((timesteps, next_t), dim=0)
@@ -319,7 +322,7 @@ class D3PM(Denoiser):
         past_key_values: DynamicCache | None = None,
         context: Tensor | None = None,
         repetition_penalty: float = 1.0,
-        len_penalty: float = 1.0,
+        length_penalty: float = 1.0,
         regulation_start: int = -1,
         **kwargs: Any,
     ) -> Tuple[Tensor, Dict[str, Tensor]]:
@@ -372,13 +375,13 @@ class D3PM(Denoiser):
                     backbone_output[:, token_idx] = backbone_output[
                         :, token_idx
                     ].scatter(1, context, score)
-            if len_penalty != 1.0 and regulation_start >= 0:
+            if length_penalty != 1.0 and regulation_start >= 0:
                 cur_len = context.shape[-1]
                 if cur_len > regulation_start:
                     penalties = torch.zeros_like(backbone_output)
                     penalty_idx = cur_len - regulation_start
                     penalty = torch.abs(backbone_output[..., self.eos_token_id]) * (
-                        pow(len_penalty, penalty_idx) - 1
+                        pow(length_penalty, penalty_idx) - 1
                     )
                     penalties[..., self.eos_token_id] = penalty
                     backbone_output = backbone_output + penalties
@@ -477,7 +480,7 @@ class D3PM(Denoiser):
                     :, (block_id * block_size) : ((block_id + 1) * block_size)
                 ]
             timesteps = self._sample_generation_timesteps(
-                max_seq_len=block_size, device=device
+                max_seq_length=block_size, device=device
             )
             step_pbar = tqdm(
                 timesteps,
@@ -607,7 +610,7 @@ class MDLM(D3PM):
         mask = (
             torch.arange(backbone_output.shape[-1], device=backbone_output.device)
             == self.mask_token_id
-        ).view(1, 1, -1)  # unsqueeze for broadcast to (batch, seq_len, vocab_size)
+        ).view(1, 1, -1)  # unsqueeze for broadcast to (batch, seq_length, vocab_size)
         log_probs = torch.where(
             mask, backbone_output + self.neg_infinity, backbone_output
         )
@@ -722,20 +725,20 @@ class BD3LM(MDLM):
         q_idx,
         kv_idx,
         block_size: int | None = None,
-        seq_len: int | None = None,
+        seq_length: int | None = None,
     ) -> Tensor:
         del b, h
 
         # Indicate whether token belongs to xt or x0:
-        x0_flag_q = (q_idx >= seq_len).bool()
-        x0_flag_kv = (kv_idx >= seq_len).bool()
+        x0_flag_q = (q_idx >= seq_length).bool()
+        x0_flag_kv = (kv_idx >= seq_length).bool()
 
         # Compute block indices
         block_q = torch.where(
-            x0_flag_q, (q_idx - seq_len) // block_size, q_idx // block_size
+            x0_flag_q, (q_idx - seq_length) // block_size, q_idx // block_size
         )
         block_kv = torch.where(
-            x0_flag_kv, (kv_idx - seq_len) // block_size, kv_idx // block_size
+            x0_flag_kv, (kv_idx - seq_length) // block_size, kv_idx // block_size
         )
         # **1. Offset Block-Causal Mask (M_OBC) **
         offset_block_causal = (block_q == block_kv) & x0_flag_kv & ~x0_flag_q
@@ -783,7 +786,7 @@ class BD3LM(MDLM):
                     partial(
                         self._decoder_block_mask,
                         block_size=self.config.block_size,
-                        seq_len=self.config.length,
+                        seq_length=self.config.length,
                     ),
                     B=None,
                     H=None,
@@ -804,7 +807,7 @@ class BD3LM(MDLM):
                     q_idx=torch.arange(self.config.length)[:, None],
                     kv_idx=torch.arange(self.config.length * 2)[None, :],
                     block_size=self.config.block_size,
-                    seq_len=self.config.length,
+                    seq_length=self.config.length,
                 )
             if self.config.attn_backend == "flex_attention":
                 self.encoder_static_attention_mask = encoder_static_mask
@@ -889,12 +892,12 @@ class BD3LM(MDLM):
                 },
             )
 
-    def _get_past_key_values_seqlen(self, past_key_values):
-        seqlen = 0
+    def _get_past_key_values_seq_length(self, past_key_values):
+        seq_length = 0
         for i in range(len(past_key_values)):
             if past_key_values[i][0].shape[0] > 0:
-                seqlen = max(past_key_values[i][0].shape[-2], seqlen)
-        return seqlen
+                seq_length = max(past_key_values[i][0].shape[-2], seq_length)
+        return seq_length
 
     def _prepare_inputs_inference(
         self,
@@ -918,36 +921,40 @@ class BD3LM(MDLM):
             )
         position_ids, encoder_position_ids = None, None
         if past_key_values is not None:
-            cache_len = self._get_past_key_values_seqlen(past_key_values)
+            cache_len = self._get_past_key_values_seq_length(past_key_values)
             if input_ids is not None:
-                full_seq_len = cache_len + input_ids.shape[1]
+                full_seq_length = cache_len + input_ids.shape[1]
                 encoder_attention_mask = None
-                position_ids = torch.arange(cache_len, full_seq_len).to(device)[None, :]
-            else:
-                full_seq_len = cache_len + context.shape[-1]
-                encoder_attention_mask = self.encoder_static_attention_mask[
-                    None, cache_len:full_seq_len, :full_seq_len
-                ]
-                encoder_position_ids = torch.arange(cache_len, full_seq_len).to(device)[
+                position_ids = torch.arange(cache_len, full_seq_length).to(device)[
                     None, :
                 ]
+            else:
+                full_seq_length = cache_len + context.shape[-1]
+                encoder_attention_mask = self.encoder_static_attention_mask[
+                    None, cache_len:full_seq_length, :full_seq_length
+                ]
+                encoder_position_ids = torch.arange(cache_len, full_seq_length).to(
+                    device
+                )[None, :]
         else:
             if context is not None:
                 context_len = context.shape[1]
             else:
                 context_len = 0
             if input_ids is not None:
-                full_seq_len = context_len + input_ids.shape[1]
+                full_seq_length = context_len + input_ids.shape[1]
             else:
-                full_seq_len = context_len
+                full_seq_length = context_len
             encoder_attention_mask = self.encoder_static_attention_mask[
                 None, :context_len, :context_len
             ]
-            position_ids = torch.arange(context_len, full_seq_len).to(device)[None, :]
+            position_ids = torch.arange(context_len, full_seq_length).to(device)[
+                None, :
+            ]
         if input_ids is not None:
             # TODO for profiling index the attn mask
             decoder_attention_mask = torch.ones(
-                (batch_size, input_ids.shape[1], full_seq_len),
+                (batch_size, input_ids.shape[1], full_seq_length),
                 device=device,
             )
         else:

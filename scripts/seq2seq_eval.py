@@ -86,7 +86,7 @@ def main(args):
     dataset = dataset_cls(
         tokenizer=tokenizer,
         split="test",
-        max_seq_len=args.max_length,
+        max_seq_length=args.max_length,
         separate_input_output=True,
     )
     sampler = DistributedSampler(
@@ -202,7 +202,7 @@ def main(args):
                     stopping_criteria=stopping_criteria,
                     disable_pbar=(local_rank != 0),
                     repetition_penalty=args.repetition_penalty,
-                    len_penalty=args.len_penalty,
+                    length_penalty=args.length_penalty,
                     regulation_start=args.regulation_start,
                     # tokenizer=tokenizer,
                 )
@@ -214,9 +214,9 @@ def main(args):
                     repetition_penalty=args.repetition_penalty,
                     exponential_decay_length_penalty=(
                         args.regulation_start,
-                        args.len_penalty,
+                        args.length_penalty,
                     )
-                    if args.len_penalty != 1
+                    if args.length_penalty != 1
                     else None,
                 )
         outputs = outputs[:, input_ids.shape[-1] :]
