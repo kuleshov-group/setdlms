@@ -13,7 +13,6 @@ try:
 except ModuleNotFoundError:
     BlockMask = None
 
-
 logger = logging.get_logger(__name__)
 
 
