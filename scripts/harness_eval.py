@@ -75,7 +75,7 @@ class LMEvalHarness(LM):
         # LM eval harness args
         generated_samples_path="",
         # Model args
-        max_cont_len: int = 128,
+        max_cont_length: int = 128,
         model_path: str = "",
         tokenizer_name_or_path: str = "",
         device: str = "cuda",
@@ -107,7 +107,7 @@ class LMEvalHarness(LM):
         super().__init__()
         self.generated_samples_path = generated_samples_path
 
-        self.max_cont_length = max_cont_len
+        self.max_cont_length = max_cont_length
         self.generated_samples_path = f"{model_path}/lm_eval_harness_output"
         accelerator = accelerate.Accelerator()
         if accelerator.num_processes > 1:
