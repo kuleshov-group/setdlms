@@ -4,44 +4,26 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Union
 
 import hydra.utils
 import torch
 from torch import Tensor
 from transformers import (
     AutoTokenizer,
+    GenerationConfig,
+    LogitsProcessorList,
     PretrainedConfig,
     PreTrainedModel,
+    StoppingCriteriaList,
 )
 from transformers.cache_utils import DynamicCache
+from transformers.generation.utils import GenerateOutput
 from transformers.modeling_outputs import ModelOutput
-
-try:
-    from torch.nn.attention.flex_attention import (
-        BlockMask,
-        create_block_mask,
-        flex_attention,
-    )
-except ImportError:
-    BlockMask, create_block_mask, flex_attention = None, None, None
 
 # Add the local directory (enables hydra.utils.instantiate for local imports)
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.append(str(Path(__file__).resolve().parent))
-
-# Local imports not used, but added here so that HF push_to_hub adds them to model repo
-# noinspection PyUnresolvedReferences
-from src.backbone.dit import DIT  # noqa: F401
-from src.backbone.encoder_decoder import LLMasEncoderDecoder  # noqa: F401
-from src.noise_schedule.noise_schedules import (  # noqa: F401
-    CosineNoise,
-    ExponentialNoise,
-    LinearNoise,
-    LogarithmicNoise,
-)
-
-# TODO: Consider remove loss weighting for MDLM / BD3LM
 
 
 @dataclass
@@ -105,9 +87,6 @@ class DenoiserConfig(PretrainedConfig):
         sampler_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         time_conditioned_backbone: bool | None = None,
-        keep_clean_bos: bool | None = None,  # Whether to enforce un-noised BOS token
-        # Logits @ position i predicts token @ position i+1 (as in AR models)
-        shift_logits: bool | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -130,8 +109,6 @@ class DenoiserConfig(PretrainedConfig):
         self.sampler_config = sampler_config
         self.max_length = max_length
         self.time_conditioned_backbone = time_conditioned_backbone
-        self.keep_clean_bos = keep_clean_bos
-        self.shift_logits = shift_logits
 
 
 class Denoiser(ABC, PreTrainedModel):
@@ -173,11 +150,6 @@ class Denoiser(ABC, PreTrainedModel):
             config.time_conditioned_backbone
             if config.time_conditioned_backbone is not None
             else "noise" in inspect.getfullargspec(self.backbone.forward).args
-        )
-        self.sampler_config = (
-            hydra.utils.instantiate(config.sampler_config)
-            if config.sampler_config is not None
-            else None
         )
 
     @abstractmethod
@@ -239,30 +211,39 @@ class Denoiser(ABC, PreTrainedModel):
         """
         return torch.log_softmax(backbone_output, dim=-1)
 
-    def _backbone_forward(self, denoiser_inputs: DenoiserInput, **kwargs: Any):
+    def _backbone_forward(
+        self,
+        denoiser_inputs: DenoiserInput,
+        return_past_key_values: bool = False,
+        **backbone_kwargs: Any,
+    ) -> Tensor | DynamicCache:
         """Forward pass for the backbone model (should return logits).
 
         Some classes may need to override this method.
 
         Parameters:
             denoiser_inputs (DenoiserInput): Inputs passed to the denoiser model.
+            return_past_key_values (bool): If True, return past_key_values instead of
+                logits.
 
         Returns:
-            Backbone output (Tensor).
+            Backbone output (Tensor) or Cache (DynamicCache).
         """
         if self.time_conditioned_backbone:
             return self.backbone(
                 denoiser_inputs.xt,
                 attention_mask=denoiser_inputs.attention_mask,
                 noise=denoiser_inputs.alpha_t,
+                return_past_key_values=return_past_key_values,
                 **denoiser_inputs.backbone_kwargs,
-                **kwargs,
+                **backbone_kwargs,
             )
         return self.backbone(
             denoiser_inputs.xt,
             attention_mask=denoiser_inputs.attention_mask,
+            return_past_key_values=return_past_key_values,
             **denoiser_inputs.backbone_kwargs,
-            **kwargs,
+            **backbone_kwargs,
         )
 
     def forward(
@@ -326,65 +307,101 @@ class Denoiser(ABC, PreTrainedModel):
             nlls=nlls,
         )
 
-    def _sample_categorical(self, categorical_probs):
+    @staticmethod
+    def _sample_categorical(categorical_probs, do_sample=True):
         """Helper function to sample from a categorical distribution."""
+        # TODO: for greedy, can we skip fp64 casting?
         categorical_probs = categorical_probs.to(torch.float64)
-        if self.sampler_config.greedy:
+        if not do_sample:
             return categorical_probs.argmax(dim=-1)
         gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()).to(
             categorical_probs.dtype
         )
         return (categorical_probs / gumbel_norm).argmax(dim=-1)
 
-    def update_kv_cache(
+    def _prepare_inputs_inference(
         self,
-        context: Tensor,
-        past_key_values: DynamicCache | None = None,
+        input_ids: Tensor | None = None,
+        attention_mask: Tensor | None = None,
+        context: Tensor | None = None,
+        context_mask: Tensor | None = None,
+        past_key_values: Tensor | None = None,
         **kwargs: Any,
+    ) -> DenoiserInput:
+        assert input_ids is not None or context is not None, (
+            "Must provide either input_ids or context."
+        )
+        if context is not None:
+            if input_ids is not None:
+                if context_mask is None:
+                    context_mask = torch.cat(
+                        [torch.ones_like(context), torch.zeros_like(input_ids)], dim=-1
+                    )
+                input_ids = torch.cat([context, input_ids], dim=-1)
+            else:
+                input_ids = context
+                context_mask = torch.ones_like(input_ids)
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.float)
+        return DenoiserInput(
+            xt=input_ids,
+            attention_mask=attention_mask,
+            context_mask=context_mask,
+            past_key_values=past_key_values,
+        )
+
+    @staticmethod
+    def _get_past_key_values_seq_length(past_key_values: DynamicCache):
+        seq_length = 0
+        for i in range(len(past_key_values)):
+            if past_key_values[i][0].shape[0] > 0:  # type: ignore
+                seq_length = max(
+                    past_key_values[i][0].shape[-2],  # type: ignore
+                    seq_length,
+                )
+        return seq_length
+
+    def update_past_key_values(
+        self,
+        inputs: Tensor,
+        past_key_values: DynamicCache | None = None,
+        **backbone_kwargs: Any,
     ) -> DynamicCache:
         """
         Cache the key-value pairs for the context.
         Args:
-            model (torch.nn.Module): The model to use for caching.
-            context (Tensor): The context tensor.
-            past_key_values (DynamicCache | None): Previous key-value pairs.
+            inputs (Tensor): The context tensor.
+            past_key_values (DynamicCache | None): Previous key-value cache.
         Returns:
             DynamicCache: Cached key-value pairs.
         """
         context_input = self._prepare_inputs_inference(
-            input_ids=None,
-            context=context,
+            input_ids=inputs,
             past_key_values=past_key_values,
         )
         past_key_values = self._backbone_forward(
             context_input,
             use_cache=True,
             past_key_values=past_key_values,
+            return_past_key_values=True,
+            **backbone_kwargs,
         )
         return past_key_values
 
-    @abstractmethod
-    def generate(  # TODO: clean up signature and docstring
+    @torch.no_grad()
+    def generate(
         self,
-        max_seq_length: int,
+        inputs: Optional[Tensor] = None,
+        generation_config: Optional[GenerationConfig] = None,
+        logits_processor: Optional[LogitsProcessorList] = None,
+        stopping_criteria: Optional[StoppingCriteriaList] = None,
+        max_length: int | None = None,
+        max_new_tokens: int | None = None,
         batch_size: int | None = None,
         device: str | None = None,
-        context: Tensor | None = None,
-        **kwargs: Any,
-    ) -> Tuple[Tensor, int]:
+        **kwargs,
+    ) -> Union[GenerateOutput, torch.LongTensor]:
         """Generates sample from denoising model.
-        # TODO: will need to enable infilling / starting from partially noised sequences
-
-        Args:
-            batch_size (int): Batch size.
-            max_seq_length (int): Maximum sequence length.
-            device (str, optional): Device to use for computation.
-                Defaults to None, which will select cuda (if available).
-            disable_cache (bool, optional): Whether to disable caching.
-                Defaults to False.
-            context (Tensor, optional): Optional prompt tensor
-        Returns:
-            Tensor: Generated samples of token_ids (B, L).
-            int: Total number of function evaluations (NFEs).
+        Follows signature of transformers.GenerationMixin.
         """
         raise NotImplementedError("Denoiser subclasses must implement generate")

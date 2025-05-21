@@ -10,7 +10,7 @@ from transformers.utils import logging
 
 try:
     from torch.nn.attention.flex_attention import BlockMask
-except ModuleNotFoundError:
+except ImportError:
     BlockMask = None
 
 
@@ -37,6 +37,9 @@ class LLMasEncoderDecoder(nn.Module):
         )
         assert keep_every_n_decoder_layers % keep_every_n_encoder_layers == 0, (
             "Encoder-Decoder layers are mismatched; cross attention will not work."
+        )
+        assert not (tie_encoder_decoder_weights and reinit_decoder), (
+            "Cannot tie encoder-decoder weights and reinitialize decoder."
         )
         super().__init__()
         if reinit_encoder:
@@ -149,8 +152,9 @@ class LLMasEncoderDecoder(nn.Module):
         cache_position: torch.LongTensor | None = None,
         position_ids: Tensor | None = None,
         encoder_position_ids: Tensor | None = None,
+        return_past_key_values: bool = False,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
-    ) -> Tensor:
+    ) -> Tensor | DynamicCache:
         if past_key_values is None:
             past_key_values = DynamicCache()
             cache_position = position_ids
@@ -179,7 +183,7 @@ class LLMasEncoderDecoder(nn.Module):
                 past_key_values=past_key_values,
                 cache_position=cache_position,
             ).past_key_values
-            if input_ids is None:
+            if return_past_key_values:
                 return past_key_values
 
         # Run decoder with xattn to clean tokens

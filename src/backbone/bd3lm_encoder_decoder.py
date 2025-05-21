@@ -10,7 +10,7 @@ from transformers.utils import logging
 
 try:
     from torch.nn.attention.flex_attention import BlockMask
-except ModuleNotFoundError:
+except ImportError:
     BlockMask = None
 
 logger = logging.get_logger(__name__)
