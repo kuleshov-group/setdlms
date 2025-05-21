@@ -28,6 +28,7 @@ class AutoModelFromPreTrained(nn.Module):
         pretrained_model_name_or_path: str,
         trust_remote_code: bool = True,
         keep_every_n_layers: int = 1,
+        keep_bottom_n_layers: int = -1,
         reinit_model: bool = False,
         **kwargs,
     ):
@@ -47,7 +48,7 @@ class AutoModelFromPreTrained(nn.Module):
             )
         if keep_every_n_layers > 1:
             layers_post_surgery = []
-            for i, layer in enumerate(self.model.model.layers):
+            for i, layer in enumerate(self.model.model.layers[:keep_bottom_n_layers]):
                 if (i + 1) % keep_every_n_layers == 0:
                     layers_post_surgery.append(layer)
             self.model.model.layers = nn.ModuleList(layers_post_surgery)
