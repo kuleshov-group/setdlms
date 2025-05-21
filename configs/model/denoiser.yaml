@@ -1,6 +1,6 @@
 #file: noinspection LongLine
 # Not actually used, just serves as a placeholder to put `_target_` as first key
-_target_: src.denoiser.Denoiser
+_target_: src.denoiser.denoiser.Denoiser
 config:
   _target_: src.denoiser.DenoiserConfig
   # Prevents backbone and noise from being instantiated when `hydra.utils.instantiate` is called.

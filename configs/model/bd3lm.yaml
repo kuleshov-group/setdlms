@@ -2,7 +2,7 @@ defaults:
   - mdlm@_here_
   - _self_
 
-_target_: src.denoiser.BD3LM
+_target_: src.denoiser.diffusion.BD3LM
 config:
   _target_: src.denoiser.BD3LMConfig
   block_size: ${block_size}

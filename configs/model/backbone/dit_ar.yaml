@@ -1,6 +1,0 @@
-defaults:
-  - dit@_here_
-  - _self_
-
-causal: true
-use_adaln: false

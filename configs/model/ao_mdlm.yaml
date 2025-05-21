@@ -1,7 +1,0 @@
-defaults:
-  - mdlm@_here_
-  - _self_
-
-_target_: src.denoiser.AnyOrderMDLM
-config:
-  _target_: src.denoiser.AnyOrderMDLMConfig

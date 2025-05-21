@@ -2,7 +2,7 @@ defaults:
   - denoiser@_here_
   - _self_
 
-_target_: src.denoiser.D3PM
+_target_: src.denoiser.diffusion.D3PM
 config:
   _target_: src.denoiser.D3PMConfig
   keep_clean_bos: true
