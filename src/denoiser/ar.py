@@ -11,7 +11,7 @@ from transformers import (
 from transformers.cache_utils import Cache
 from transformers.generation.utils import GenerateOutput
 
-from src.denoiser.denoiser import (
+from src.denoiser.base import (
     Denoiser,
     DenoiserConfig,
     DenoiserInput,

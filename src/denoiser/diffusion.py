@@ -21,7 +21,7 @@ except ImportError:
     BlockMask, create_block_mask = None, None
 
 
-from src.denoiser.denoiser import (
+from src.denoiser.base import (
     Denoiser,
     DenoiserConfig,
     DenoiserInput,

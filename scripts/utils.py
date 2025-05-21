@@ -12,7 +12,7 @@ from composer.utils import dist
 from omegaconf import DictConfig, OmegaConf
 from transformers import PreTrainedTokenizer, StoppingCriteria
 
-from src.denoiser import Denoiser
+from src.denoiser.base import Denoiser
 
 
 def _make_tokenization_config(tokenizer_cfg: DictConfig) -> dict[str, Any]:

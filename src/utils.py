@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -253,10 +254,11 @@ def push_to_hub(
         [ignore_file[:-1] for ignore_file in ignore if ignore_file.endswith("/")]
     )
     ignore.append("__init__.py")
+    model_src_file = inspect.getfile(model.__class__)
     # Copy source files
     paths_to_copy = {
+        model_src_file: f"denoiser_{model_src_file.split('/')[-1]}",
         project_root / ".gitignore": ".gitignore",
-        project_root / "src/denoiser.py": "denoiser.py",
         project_root / "src/backbone": "backbone",
         project_root / "src/noise_schedule": "noise_schedule",
     }

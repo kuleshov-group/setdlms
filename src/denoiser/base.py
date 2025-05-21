@@ -157,7 +157,7 @@ class Denoiser(ABC, PreTrainedModel):
         self,
         input_ids: torch.LongTensor,
         attention_mask: torch.FloatTensor | None = None,
-        context_mask: torch.FloatTensorTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
         t: torch.FloatTensor | None = None,
         past_key_values: Cache | None = None,
     ) -> DenoiserInput:

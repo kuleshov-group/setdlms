@@ -1,10 +1,10 @@
 defaults:
-  - denoiser@_here_
+  - base@_here_
   - _self_
 
 _target_: src.denoiser.diffusion.D3PM
 config:
-  _target_: src.denoiser.D3PMConfig
+  _target_: src.denoiser.diffusion.D3PMConfig
   keep_clean_bos: true
   shift_logits: null
   T: 1000  # T > 0 indicates finite-time vs. continuous (e.g., MDLM, UDLM), i.e., T = 0.
