@@ -97,9 +97,9 @@ class D3PMConfig(DenoiserConfig):
 
     model_type = "d3pm"
     auto_map = {
-        "AutoConfig": "denoiser.D3PMConfig",
-        "AutoModel": "denoiser.D3PM",
-        "AutoModelForMaskedLM": "denoiser.D3PM",
+        "AutoConfig": "denoiser.diffusion.D3PMConfig",
+        "AutoModel": "denoiser.diffusion.D3PM",
+        "AutoModelForMaskedLM": "denoiser.diffusion.D3PM",
     }
 
     def __init__(
@@ -543,9 +543,9 @@ class MDLMConfig(D3PMConfig):
 
     model_type = "mdlm"
     auto_map = {
-        "AutoConfig": "denoiser.MDLMConfig",
-        "AutoModel": "denoiser.MDLM",
-        "AutoModelForMaskedLM": "denoiser.MDLM",
+        "AutoConfig": "denoiser.diffusion.MDLMConfig",
+        "AutoModel": "denoiser.diffusion.MDLM",
+        "AutoModelForMaskedLM": "denoiser.diffusion.MDLM",
     }
 
 
@@ -622,9 +622,9 @@ class BD3LMConfig(MDLMConfig):
 
     model_type = "bd3lm"
     auto_map = {
-        "AutoConfig": "denoiser.BD3LMConfig",
-        "AutoModel": "denoiser.BD3LM",
-        "AutoModelForMaskedLM": "denoiser.BD3LM",
+        "AutoConfig": "denoiser.diffusion.BD3LMConfig",
+        "AutoModel": "denoiser.diffusion.BD3LM",
+        "AutoModelForMaskedLM": "denoiser.diffusion.BD3LM",
     }
 
     def __init__(

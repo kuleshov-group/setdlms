@@ -1,5 +1,4 @@
 import hashlib
-import inspect
 import logging
 import os
 import re
@@ -207,6 +206,18 @@ def push_to_hub(
 
     # Update model config paths to remove `src` and flatten (replace `.` with `_`)
     # in `_target_` (e.g. `src.backbone.dit` -> `backbone_dit`)
+    if re.match(r"^src\.", model["_target_"]):
+        model["_target_"] = re.sub(
+            r"^([\w.]+)\.",
+            lambda m: f"{m.group(1).replace('.', '_')}.",
+            re.sub(r"^src\.", "", model["_target_"]),
+        )
+    if re.match(r"^src\.", model.config["_target_"]):
+        model.config["_target_"] = re.sub(
+            r"^([\w.]+)\.",
+            lambda m: f"{m.group(1).replace('.', '_')}.",
+            re.sub(r"^src\.", "", model.config["_target_"]),
+        )
     if re.match(r"^src\.", model.config.backbone_config["_target_"]):
         model.config.backbone_config["_target_"] = re.sub(
             r"^([\w.]+)\.",
@@ -254,11 +265,10 @@ def push_to_hub(
         [ignore_file[:-1] for ignore_file in ignore if ignore_file.endswith("/")]
     )
     ignore.append("__init__.py")
-    model_src_file = inspect.getfile(model.__class__)
     # Copy source files
     paths_to_copy = {
-        model_src_file: f"denoiser_{model_src_file.split('/')[-1]}",
         project_root / ".gitignore": ".gitignore",
+        project_root / "src/denoiser": "denoiser",
         project_root / "src/backbone": "backbone",
         project_root / "src/noise_schedule": "noise_schedule",
     }

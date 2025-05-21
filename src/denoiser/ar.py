@@ -24,9 +24,9 @@ class ARConfig(DenoiserConfig):
 
     model_type = "ar"
     auto_map = {
-        "AutoConfig": "denoiser.ARConfig",
-        "AutoModel": "denoiser.AR",
-        "AutoModelForCausalLM": "denoiser.AR",
+        "AutoConfig": "denoiser.ar.ARConfig",
+        "AutoModel": "denoiser.ar.AR",
+        "AutoModelForCausalLM": "denoiser.ar.AR",
     }
 
     def __init__(
