@@ -75,7 +75,7 @@ class LMEvalHarness(LM):
         # LM eval harness args
         generated_samples_path="",
         # Model args
-        max_cont_length: int = 128,
+        max_new_tokens: int = 128,
         model_path: str = "",
         tokenizer_name_or_path: str = "",
         device: str = "cuda",
@@ -100,14 +100,14 @@ class LMEvalHarness(LM):
     ):
         """
         Args:
-            max_cont_len (int): Max length of continuation tokens.
+            max_new_tokens (int): Max length of continuation tokens.
             model_path (str): Checkpoint path.
             tokenizer_name_or_path (str): Tokenizer name or path.
         """
         super().__init__()
         self.generated_samples_path = generated_samples_path
 
-        self.max_cont_length = max_cont_length
+        self.max_new_tokens = max_new_tokens
         self.generated_samples_path = f"{model_path}/lm_eval_harness_output"
         accelerator = accelerate.Accelerator()
         if accelerator.num_processes > 1:
@@ -220,7 +220,7 @@ class LMEvalHarness(LM):
         ds = Dataset.from_list(ds)
         ds = ds.map(_tokenize)
         ds = ds.with_format("torch")
-        total_len = [len(x["prefix"]) + self.max_cont_length for x in ds]
+        total_len = [len(x["prefix"]) + self.max_new_tokens for x in ds]
         assert max(total_len) <= self.sampler_config.max_length, (
             "Input length(s) exceeds max_length"
         )
@@ -239,7 +239,7 @@ class LMEvalHarness(LM):
             stopping_criteria = StoppingCriteriaList([boxed_stopping_criteria])
             if not self.hf_model:
                 sample, _ = self.model.generate(
-                    max_length=len(prefix) + self.max_cont_length,
+                    max_length=len(prefix) + self.max_new_tokens,
                     context=prefix[None, ...].to(self.device),
                     device=self.device,
                     stopping_criteria=stopping_criteria,
@@ -249,7 +249,7 @@ class LMEvalHarness(LM):
             else:
                 sample = self.model.generate(
                     input_ids=elem["prefix"][None, ...].to(self.device),
-                    max_new_tokens=len(elem["prefix"]) + self.max_cont_length,
+                    max_new_tokens=len(elem["prefix"]) + self.max_new_tokens,
                     num_return_sequences=1,
                     stopping_criteria=stopping_criteria,
                     top_k=None,

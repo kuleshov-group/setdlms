@@ -49,7 +49,7 @@ class StreamingTextDataset(StreamingDataset):
     """Generic text dataset using MosaicML's StreamingDataset.
     Args:
             tokenizer (Tokenizer): HuggingFace tokenizer to tokenize samples.
-            max_seq_length (int): The max sequence length of each sample.
+            max_length (int): The max sequence length of each sample.
             streams (Sequence[Stream], optional): One or more Streams to stream/cache
                 samples, from which may be upsampled or downsampled. StreamingDataset
                 uses either ``streams`` or ``remote``/``local``.
@@ -104,7 +104,7 @@ class StreamingTextDataset(StreamingDataset):
     def __init__(
         self,
         tokenizer: Tokenizer,
-        max_seq_length: int,
+        max_length: int,
         streams: Sequence[Stream] | None = None,
         remote: str | None = None,
         local: str | None = None,
@@ -164,7 +164,7 @@ class StreamingTextDataset(StreamingDataset):
             shuffle_seed=shuffle_seed,
         )
         self.tokenizer = tokenizer
-        self.max_seq_length = max_seq_length
+        self.max_length = max_length
 
         # How to tokenize a text sample to a token sample
 
@@ -184,15 +184,13 @@ class StreamingTextDataset(StreamingDataset):
             text_sample["text"],
             truncation=True,
             padding="max_length",
-            max_length=self.max_seq_length,
+            max_length=self.max_length,
         )
         return tokens
 
     def _read_binary_tokenized_sample(self, sample):
         return torch.from_numpy(
-            np.frombuffer(sample["tokens"], dtype=np.int64)[
-                : self.max_seq_length
-            ].copy()
+            np.frombuffer(sample["tokens"], dtype=np.int64)[: self.max_length].copy()
         )
 
     # How to process a sample
@@ -255,7 +253,7 @@ def build_text_dataloader(
     # build dataset potentially with streams
     dataset = StreamingTextDataset(
         tokenizer=tokenizer,
-        max_seq_length=cfg.dataset.max_seq_length,
+        max_length=cfg.dataset.max_length,
         streams=streams,
         remote=cfg.dataset.get("remote", None),
         local=cfg.dataset.get("local", None),
@@ -331,7 +329,7 @@ if __name__ == "__main__":
         "--split", type=str, default="val", help="which split of the dataset to use"
     )
     parser.add_argument(
-        "--max_seq_length", type=int, default=32, help="max sequence length to test"
+        "--max_length", type=int, default=32, help="max sequence length to test"
     )
 
     args = parser.parse_args()
@@ -350,7 +348,7 @@ if __name__ == "__main__":
             "remote": args.remote_path,
             "split": args.split,
             "shuffle": False,
-            "max_seq_length": args.max_seq_length,
+            "max_length": args.max_length,
         },
         "drop_last": False,
         "num_workers": 4,
@@ -360,7 +358,7 @@ if __name__ == "__main__":
 
     tokenizer_cfg = {
         "name": args.tokenizer,
-        "kwargs": {"model_max_length": args.max_seq_length},
+        "kwargs": {"model_max_length": args.max_length},
     }
     tokenizer_cfg = OmegaConf.create(tokenizer_cfg)
     testing_tokenizer = build_tokenizer(tokenizer_cfg)

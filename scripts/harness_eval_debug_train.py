@@ -38,7 +38,7 @@ class LMEvalHarness(LM):
     def __init__(
         self,
         # Model args
-        max_cont_len: int = 128,
+        max_new_tokens: int = 128,
         model_path: str = "",
         tokenizer_name_or_path: str = "",
         data_split: str = "test",
@@ -65,12 +65,12 @@ class LMEvalHarness(LM):
     ):
         """
         Args:
-            max_cont_len (int): Max length of continuation tokens.
+            max_new_tokens (int): Max length of continuation tokens.
             model_path (str): Checkpoint path.
             tokenizer_name_or_path (str): Tokenizer name or path.
         """
         super().__init__()
-        self.max_cont_length = max_cont_len
+        self.max_new_tokens = max_new_tokens
         accelerator = accelerate.Accelerator()
         if accelerator.num_processes > 1:
             self.accelerator = accelerator
@@ -140,7 +140,7 @@ class LMEvalHarness(LM):
         self.train_dataset = GSM8KDataset(
             tokenizer=self.tokenizer,
             split=data_split,
-            max_seq_length=self.model.config.max_length,
+            max_length=self.model.config.max_length,
         )
         self.profiling_flag = profiling_flag
 
@@ -192,7 +192,7 @@ class LMEvalHarness(LM):
             context_mask = elem["context_mask"]
             context_mask[(context_mask == 0).nonzero()[:1]] = 1
             length_stopping_criteria = LengthStoppingCriteria(
-                max_length=context_mask.sum() + self.max_cont_length
+                max_length=context_mask.sum() + self.max_new_tokens
             )
             stopping_criteria = StoppingCriteriaList(
                 [boxed_stopping_criteria, length_stopping_criteria]
@@ -203,7 +203,7 @@ class LMEvalHarness(LM):
             start_event.record()
             if not self.hf_model:
                 sample, _ = self.model.generate(
-                    max_length=context_mask.sum() + self.max_cont_length,
+                    max_length=context_mask.sum() + self.max_new_tokens,
                     context=elem["input_ids"][context_mask.bool()][None, ...].to(
                         self.device
                     ),
@@ -214,7 +214,7 @@ class LMEvalHarness(LM):
             else:
                 sample = self.model.generate(
                     input_ids=elem["input_ids"][None, ...].to(self.device),
-                    max_length=len(elem["input_ids"]) + self.max_cont_length,
+                    max_length=len(elem["input_ids"]) + self.max_new_tokens,
                     num_return_sequences=1,
                     stopping_criteria=stopping_criteria,
                 )

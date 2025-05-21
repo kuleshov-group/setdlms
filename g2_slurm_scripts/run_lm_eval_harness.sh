@@ -52,7 +52,7 @@ accelerate launch scripts/harness_eval.py \
   --output_path ${OUTPUT_PATH} \
   --model_args \
     "generated_samples_path=${OUTPUT_PATH},\
-max_cont_len=${L},\
+max_new_tokens=${L},\
 model_path=${MODEL_PATH},\
 ckpt_file=${CKPT_FILE},\
 load_ema_weights=False,\

@@ -48,7 +48,7 @@ python scripts/harness_eval_debug_train.py \
   --device cuda:0 \
   --output_path ${OUTPUT_PATH} \
   --model_args \
-    "max_cont_len=${L},\
+    "max_new_tokens=${L},\
 model_path=${MODEL_PATH},\
 load_ema_weights=False,\
 tokenizer_name_or_path=Qwen/Qwen3-0.6B-Base,\

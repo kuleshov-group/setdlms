@@ -86,7 +86,7 @@ def main(args):
     dataset = dataset_cls(
         tokenizer=tokenizer,
         split="test",
-        max_seq_length=args.max_length,
+        max_length=args.max_length,
         separate_input_output=True,
     )
     sampler = DistributedSampler(
