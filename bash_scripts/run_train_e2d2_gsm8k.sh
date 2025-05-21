@@ -6,10 +6,9 @@ source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
-KEEP_EVERY_N_ENCODER_LAYERS=1
-KEEP_EVERY_N_DECODER_LAYERS=1 # 2, 4
 USE_ENCODER_CAUSAL_MASK=false # true, false
-KEEP_TOP_N_DECODER_LAYERS=28
+KEEP_BOTTOM_N_ENCODER_LAYERS=2
+KEEP_TOP_N_DECODER_LAYERS=1
 
 # Hyperparameters
 LR=1e-5 # 1e-5, 1e-4, 1e-3
@@ -19,12 +18,12 @@ GRAD_CLIP=1.0 # 0.25, 0.5, 0.75, 1.0
 WEIGHT_DECAY=1e-5 # 1e-5, 1e-3
 MAX_DURATION="20000ba" # 20000ba, 10000ba, 5000ba
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
 
-TAG=e2d2_qwen2B_tie_v1-testing
-RUN_NAME=gsm8k-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keeptop${KEEP_TOP_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
+TAG=e2d2_qwen2B_tie_v1-test
+RUN_NAME=gsm8k-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keepbottomenc${KEEP_BOTTOM_N_ENCODER_LAYERS}-keeptopdec${KEEP_TOP_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
-MICRO_BATCH_SIZE=4 # TODO: tune
+MICRO_BATCH_SIZE=2 # TODO: tune
 NUM_WORKERS=0 # TODO: tune
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -35,7 +34,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.optimizer.lr=${LR} \
   composer.optimizer.weight_decay=${WEIGHT_DECAY} \
   composer.algorithms.gradient_clipping.clipping_threshold=${GRAD_CLIP} \
-  composer.trainer.eval_interval="1ep" \
+  composer.trainer.eval_interval="5ep" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=cosine_annealing_with_warmup \
@@ -43,8 +42,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model=bd3lm \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
   model.config.max_length=768 \
-  model.config.backbone_config.keep_every_n_encoder_layers=${KEEP_EVERY_N_ENCODER_LAYERS} \
-  model.config.backbone_config.keep_every_n_decoder_layers=${KEEP_EVERY_N_DECODER_LAYERS} \
+  model.config.backbone_config.keep_bottom_n_encoder_layers=${KEEP_BOTTOM_N_ENCODER_LAYERS} \
   model.config.backbone_config.keep_top_n_decoder_layers=${KEEP_TOP_N_DECODER_LAYERS} \
   model.config.backbone_config.tie_encoder_decoder_weights=true \
   model.config.backbone_config.use_encoder_causal_mask=${USE_ENCODER_CAUSAL_MASK} \

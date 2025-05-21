@@ -1,7 +1,5 @@
 _target_: src.backbone.encoder_decoder.LLMasEncoderDecoder
 pretrained_model_name_or_path: ${pretrained_model_name_or_path}
-keep_every_n_encoder_layers: 1
-keep_every_n_decoder_layers: 8
 max_length: ${model.config.max_length}
 attn_backend: ${model.config.attn_backend}
 freeze_encoder: false
@@ -9,4 +7,5 @@ reinit_decoder: false
 reinit_encoder: false
 tie_encoder_decoder_weights: false
 use_encoder_causal_mask: false
+keep_bottom_n_encoder_layers: -1
 keep_top_n_decoder_layers: -1

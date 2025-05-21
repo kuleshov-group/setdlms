@@ -20,26 +20,26 @@ class LLMasEncoderDecoder(nn.Module):
         self,
         pretrained_model_name_or_path: str,
         max_length: int,
-        keep_every_n_encoder_layers: int = 1,
-        keep_every_n_decoder_layers: int = 1,
         attn_backend: str = "sdpa",
         freeze_encoder: bool = False,
         reinit_encoder: bool = False,
         reinit_decoder: bool = False,
         tie_encoder_decoder_weights: bool = False,
         use_encoder_causal_mask: bool = False,
+        keep_bottom_n_encoder_layers: int = -1,
         keep_top_n_decoder_layers: int = -1,
     ):
-        assert keep_every_n_encoder_layers <= keep_every_n_decoder_layers, (
-            "Cannot remove more encoder than decoder layers."
-        )
-        assert keep_every_n_decoder_layers % keep_every_n_encoder_layers == 0, (
-            "Encoder-Decoder layers are mismatched; cross attention will not work."
+        assert keep_top_n_decoder_layers <= keep_bottom_n_encoder_layers, (
+            "Cannot keep more decoder layers than encoder layers: "
+            f"{keep_top_n_decoder_layers=} > {keep_bottom_n_encoder_layers=}."
         )
         assert not (tie_encoder_decoder_weights and reinit_decoder), (
             "Cannot tie encoder-decoder weights and reinitialize decoder."
         )
         super().__init__()
+        self.use_encoder_causal_mask = use_encoder_causal_mask
+        self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
+
         if reinit_encoder:
             encoder_config = AutoConfig.from_pretrained(
                 pretrained_model_name_or_path,
@@ -53,6 +53,22 @@ class LLMasEncoderDecoder(nn.Module):
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
             )
+        keep_top_n_decoder_layers = (
+            len(self.decoder.model.layers)
+            if keep_top_n_decoder_layers == -1
+            else keep_top_n_decoder_layers
+        )
+        keep_bottom_n_encoder_layers = (
+            len(self.encoder.model.layers)
+            if keep_bottom_n_encoder_layers == -1
+            else keep_bottom_n_encoder_layers
+        )
+        self.encoder.model.layers = self.encoder.model.layers[
+            :keep_bottom_n_encoder_layers
+        ]
+        self.decoder_layers_to_keep = list(range(keep_bottom_n_encoder_layers))[
+            -keep_top_n_decoder_layers:
+        ]
 
         # freeze encoder layers
         if freeze_encoder:
@@ -65,11 +81,8 @@ class LLMasEncoderDecoder(nn.Module):
         if tie_encoder_decoder_weights:
             assert not freeze_encoder
             self.decoder = self.encoder
-            self.keep_every_n_decoder_layers = (
-                keep_every_n_decoder_layers // keep_every_n_encoder_layers
-            )
+
         else:
-            self.keep_every_n_decoder_layers = keep_every_n_decoder_layers
             # reinitialize decoder layers
             if reinit_decoder:
                 decoder_config = AutoConfig.from_pretrained(
@@ -84,34 +97,13 @@ class LLMasEncoderDecoder(nn.Module):
                     trust_remote_code=True,
                     attn_implementation=attn_backend,
                 )
-
-        # delete layers from encoder / decoder
-        keep_top_n_decoder_layers = (
-            len(self.decoder.model.layers)
-            if keep_top_n_decoder_layers == -1
-            else keep_top_n_decoder_layers
-        )
-        if keep_every_n_encoder_layers > 1:
-            encoder_layers_post_surgery = []
-            for i, encoder_layer in enumerate(self.encoder.model.layers):
-                if (i + 1) % keep_every_n_encoder_layers == 0:
-                    encoder_layers_post_surgery.append(encoder_layer)
-            self.encoder.model.layers = nn.ModuleList(encoder_layers_post_surgery)
-        if not tie_encoder_decoder_weights:
-            decoder_layers_post_surgery = []
-            for i, decoder_layer in enumerate(
-                self.decoder.model.layers[-keep_top_n_decoder_layers:]
-            ):
-                if (i + 1) % keep_every_n_decoder_layers == 0:
-                    decoder_layers_post_surgery.append(decoder_layer)
-            self.decoder.model.layers = nn.ModuleList(decoder_layers_post_surgery)
-        self.keep_every_n_encoder_layers = keep_every_n_encoder_layers
-        self.use_encoder_causal_mask = use_encoder_causal_mask
-        self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
-        if not tie_encoder_decoder_weights:
-            keep_top_n_decoder_layers = 0
             del self.decoder.model.embed_tokens
-            # del self.decoder.model.norm
+            decoder_layers_post_surgery = []
+            for decoder_layer_idx in self.decoder_layers_to_keep:
+                decoder_layers_post_surgery.append(
+                    self.decoder.model.layers[decoder_layer_idx]
+                )
+            self.decoder.model.layers = nn.ModuleList(decoder_layers_post_surgery)
             unused_self_attn_params = ["o_proj", "q_norm", "q_proj"]
             unused_layernorm_params = ["input_layernorm", "post_attention_layernorm"]
             for unused_param in unused_self_attn_params:
@@ -128,16 +120,13 @@ class LLMasEncoderDecoder(nn.Module):
                     )
             # if lm head is weight-tied to embedding, point decoder lm head to encoder
             # (instead of initializing a separate lm head)
-            if not hasattr(self.encoder, "lm_head"):
+            if (
+                self.encoder.lm_head.weight.data_ptr()
+                == self.encoder.model.embed_tokens.weight.data_ptr()
+            ):  # noqa: E501
                 self.decoder.lm_head = self.encoder.lm_head
             else:
                 del self.encoder.lm_head
-        self.layers_to_keep = [
-            i
-            for i in range(len(self.decoder.model.layers))
-            if ((i + 1) % keep_every_n_decoder_layers == 0)
-            and (i >= len(self.decoder.model.layers) - keep_top_n_decoder_layers)
-        ]
         self.max_length = max_length
 
     def forward(
@@ -225,10 +214,7 @@ class LLMasEncoderDecoder(nn.Module):
 
         for decoder_layer in self.decoder.model.layers:
             layer_idx = decoder_layer.self_attn.layer_idx
-            if (
-                self.tie_encoder_decoder_weights
-                and layer_idx not in self.layers_to_keep
-            ):
+            if layer_idx not in self.decoder_layers_to_keep:
                 continue
             if past_key_values is not None and len(past_key_values) == len(
                 self.encoder.model.layers
