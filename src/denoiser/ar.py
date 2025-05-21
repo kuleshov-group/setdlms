@@ -1,12 +1,15 @@
 import copy
-from typing import Any, Tuple
+from typing import Any
 
 import torch
-from torch import Tensor
 from transformers import (
+    GenerationConfig,
+    LogitsProcessorList,
     PreTrainedTokenizer,
     StoppingCriteriaList,
 )
+from transformers.cache_utils import Cache
+from transformers.generation.utils import GenerateOutput
 
 from src.denoiser.denoiser import (
     Denoiser,
@@ -58,11 +61,11 @@ class AR(Denoiser):
 
     def _prepare_inputs(
         self,
-        input_ids: Tensor,
-        attention_mask: Tensor | None = None,
-        context_mask: Tensor | None = None,
-        t: Tensor | None = None,
-        past_key_values: Tensor | None = None,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.FloatTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        t: torch.FloatTensor | None = None,
+        past_key_values: Cache | None = None,
     ) -> DenoiserInput:
         # Prepare inputs for autoregressive model
         labels = copy.deepcopy(input_ids[..., 1:])[..., None]
@@ -76,8 +79,8 @@ class AR(Denoiser):
         else:
             context_mask = context_mask[..., :-1]
         return DenoiserInput(
-            xt=input_ids,
-            x0=labels,
+            xt=input_ids,  # type: ignore
+            x0=labels,  # type: ignore
             attention_mask=attention_mask,
             context_mask=context_mask,
             tokens_mask=attention_mask * (1 - context_mask),
@@ -85,7 +88,10 @@ class AR(Denoiser):
         )
 
     def _compute_loss(
-        self, model_output: Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
+        self,
+        model_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs: Any,
     ) -> LossAndNllOutput:
         # Shift labels
         loss = -torch.gather(model_output, -1, denoiser_inputs.x0).squeeze(-1)
@@ -96,38 +102,33 @@ class AR(Denoiser):
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
 
-        return LossAndNllOutput(loss=token_nll, nlls=nlls)
+        return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
 
-    def generate(  # TODO: clean up signature and docstring
+    @torch.no_grad()
+    def generate(
         self,
-        max_length: int | None = None,
-        batch_size: int | None = None,
-        disable_cache: bool | None = None,
-        device: str | None = None,
-        context: Tensor | None = None,
+        inputs: torch.LongTensor | None = None,
+        generation_config: GenerationConfig | None = None,
+        logits_processor: LogitsProcessorList | None = None,
         stopping_criteria: StoppingCriteriaList | None = None,
+        max_length: int | None = None,
+        max_new_tokens: int | None = None,
+        batch_size: int | None = None,
+        device: str | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
-        disable_pbar: bool = False,
-        **kwargs: Any,
-    ) -> Tuple[Tensor, int]:
-        length_penalty = kwargs.pop("length_penalty", 1.0)
-        regulation_start = kwargs.pop("regulation_start", None)
-        repetition_penalty = kwargs.pop("repetition_penalty", None)
-        exponential_decay_length_penalty = (
-            (regulation_start, length_penalty) if length_penalty != 1.0 else None
-        )
+        **kwargs,
+    ) -> GenerateOutput | torch.LongTensor:
         outputs = self.backbone.model.generate(
-            input_ids=context,
-            attention_mask=torch.ones_like(context),
-            max_new_tokens=max_length - context.shape[-1],
+            input_ids=inputs,
+            generation_config=generation_config,
+            logits_processor=logits_processor,
             stopping_criteria=stopping_criteria,
-            repetition_penalty=repetition_penalty,
-            exponential_decay_length_penalty=exponential_decay_length_penalty,
-            top_k=kwargs.pop("top_k", None),  # None implies greedy decoding
+            max_length=max_length,
+            max_new_tokens=max_new_tokens,
             **kwargs,
         )
 
         if tokenizer is not None:
             print(tokenizer.batch_decode(outputs))
         # Decode output
-        return outputs, -1
+        return outputs

@@ -1,6 +1,7 @@
 from typing import Literal
 
-from torch import Tensor, nn
+import torch
+from torch import nn
 from transformers import (
     AutoConfig,
     AutoModel,
@@ -52,8 +53,8 @@ class AutoModelFromPreTrained(nn.Module):
             self.model.model.layers = nn.ModuleList(layers_post_surgery)
 
     def forward(
-        self, input_ids: Tensor, return_past_key_values=False, **kwargs
-    ) -> Tensor | DynamicCache:
+        self, input_ids: torch.LongTensor, return_past_key_values=False, **kwargs
+    ) -> torch.FloatTensor | DynamicCache:
         if return_past_key_values:
             return self.model(input_ids, **kwargs).past_key_values
         return self.model(input_ids, **kwargs)

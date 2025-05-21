@@ -4,20 +4,20 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 import hydra.utils
 import torch
-from torch import Tensor
 from transformers import (
     AutoTokenizer,
+    DynamicCache,
     GenerationConfig,
     LogitsProcessorList,
     PretrainedConfig,
     PreTrainedModel,
     StoppingCriteriaList,
 )
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import Cache
 from transformers.generation.utils import GenerateOutput
 from transformers.modeling_outputs import ModelOutput
 
@@ -30,20 +30,20 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 class DenoiserInput(OrderedDict):
     """Input to the denoiser model."""
 
-    xt: Tensor  # (B, L) Tensor of token_ids
-    x0: Optional[Tensor] = None  # (B, L) Tensor of token_ids (not used in gen.)
+    xt: torch.LongTensor  # (B, L) token_ids
+    x0: Optional[torch.LongTensor] = None  # (B, L) token_ids (not used in gen.)
     # 1 / True indicates attention applies; 0 / False indicates ignore (e.g., padding)
-    attention_mask: Optional[Tensor] = None
+    attention_mask: Optional[torch.FloatTensor] = None
     # 1 / True indicates token is part of context; 0 / False indicates token should be
     # generated / predicted
-    context_mask: Optional[Tensor] = None
+    context_mask: Optional[torch.FloatTensor] = None
     # 1 / True indicates token contributes to loss; 0 / False indicates otherwise;
     # for most use cases, this should be `= attention_mask & ~context_mask`
-    tokens_mask: Optional[Tensor] = None  # (B, L)
-    t: Optional[Tensor] = None  # (B,)
-    alpha_t: Optional[Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
-    alpha_t_prime: Optional[Tensor] = None  # (B,) | (B, 1) | (B, 1, 1)
-    past_key_values: Optional[Tensor] = None  # (B, ctx_len, D)
+    tokens_mask: Optional[torch.FloatTensor] = None  # (B, L)
+    t: Optional[torch.FloatTensor] = None  # (B,)
+    alpha_t: Optional[torch.FloatTensor] = None  # (B,) | (B, 1) | (B, 1, 1)
+    alpha_t_prime: Optional[torch.FloatTensor] = None  # (B,) | (B, 1) | (B, 1, 1)
+    past_key_values: Optional[torch.FloatTensor] = None  # (B, ctx_len, D)
     # Placeholder in case future experiments require different inputs
     backbone_kwargs: dict[str, Any] = field(default_factory=dict)
 
@@ -52,20 +52,20 @@ class DenoiserInput(OrderedDict):
 class LossAndNllOutput(OrderedDict):
     """Loss output for denoiser models."""
 
-    loss: Tensor
-    nlls: Tensor
+    loss: torch.FloatTensor
+    nlls: torch.FloatTensor
 
 
 @dataclass
 class DenoiserOutput(ModelOutput):
     """Output of the denoiser model."""
 
-    denoiser_output: Tensor
-    logits: Optional[Tensor] = None
-    tokens_mask: Optional[Tensor] = None  # Which tokens contribute to loss
-    past_key_values: Optional[Tensor] = None
-    loss: Optional[Tensor] = None
-    nlls: Optional[Tensor] = None
+    denoiser_output: torch.FloatTensor
+    logits: Optional[torch.FloatTensor] = None
+    tokens_mask: Optional[torch.FloatTensor] = None  # Which tokens contribute to loss
+    past_key_values: Optional[Cache] = None
+    loss: Optional[torch.FloatTensor] = None
+    nlls: Optional[torch.FloatTensor] = None
     # Placeholder in case future models produce different outputs
     output_kwargs: Optional[Dict[str, Any]] = None
 
@@ -155,20 +155,20 @@ class Denoiser(ABC, PreTrainedModel):
     @abstractmethod
     def _prepare_inputs(
         self,
-        input_ids: Tensor,
-        attention_mask: Tensor | None = None,
-        context_mask: Tensor | None = None,
-        t: Tensor | None = None,
-        past_key_values: Tensor | None = None,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.FloatTensor | None = None,
+        context_mask: torch.FloatTensorTensor | None = None,
+        t: torch.FloatTensor | None = None,
+        past_key_values: Cache | None = None,
     ) -> DenoiserInput:
         """
         Prepare inputs for the model.
 
         Parameters:
-            input_ids (Tensor): Input tensor to the model.
-            attention_mask (Optional[Tensor]): Attention mask for the model.
-            t (Optional[Tensor]): Time step for the model.
-            past_key_values (Optional[Tensor]): Past key values for the model.
+            input_ids (LongTensor): Input tensor to the model.
+            attention_mask (Optional[FloatTensor]): Attention mask for the model.
+            t (Optional[FloatTensor]): Time step for the model.
+            past_key_values (Optional[Cache]): Past key values for the model.
         Returns:
             Denoiser inputs.
         """
@@ -176,26 +176,29 @@ class Denoiser(ABC, PreTrainedModel):
 
     @abstractmethod
     def _compute_loss(
-        self, model_output: Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
+        self,
+        model_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs: Any,
     ) -> LossAndNllOutput:
         """
         Compute the loss for the denoising model.
 
         Parameters:
-            model_output (Tensor): Output tensor from self.forward.
+            model_output (FloatTensor): Output tensor from self.forward.
             denoiser_inputs (DenoiserInput): Inputs passed to the denoiser model.
 
         Returns:
-            LossAndNllOutput: loss (Tensor) and nlls (Tensor).
+            LossAndNllOutput: loss (FloatTensor) and nlls (FloatTensor).
         """
         raise NotImplementedError("Denoiser subclasses must implement _compute_loss")
 
     def _forward(
         self,
-        backbone_output: Tensor,
+        backbone_output: torch.FloatTensor,
         denoiser_inputs: DenoiserInput,
         **kwargs: Any,
-    ) -> Tensor:
+    ) -> torch.FloatTensor:
         """
         Forward pass for the denoiser model returns probabilities over denoised
         sequence.
@@ -203,20 +206,20 @@ class Denoiser(ABC, PreTrainedModel):
         Some classes may need to override this method.
 
         Parameters:
-            backbone_output (Tensor): Output tensor from the backbone model.
+            backbone_output (FloatTensor): Output tensor from the backbone model.
             denoiser_inputs (DenoiserInput): Inputs passed to the denoiser model.
 
         Returns:
-            Model outputs (Tensor).
+            Model outputs (FloatTensor).
         """
-        return torch.log_softmax(backbone_output, dim=-1)
+        return torch.log_softmax(backbone_output, dim=-1)  # type: ignore
 
     def _backbone_forward(
         self,
         denoiser_inputs: DenoiserInput,
         return_past_key_values: bool = False,
         **backbone_kwargs: Any,
-    ) -> Tensor | DynamicCache:
+    ) -> torch.FloatTensor | Cache:
         """Forward pass for the backbone model (should return logits).
 
         Some classes may need to override this method.
@@ -227,7 +230,7 @@ class Denoiser(ABC, PreTrainedModel):
                 logits.
 
         Returns:
-            Backbone output (Tensor) or Cache (DynamicCache).
+            Backbone output (logits) or cache.
         """
         if self.time_conditioned_backbone:
             return self.backbone(
@@ -248,11 +251,11 @@ class Denoiser(ABC, PreTrainedModel):
 
     def forward(
         self,
-        input_ids: Tensor,
-        attention_mask: Tensor | None = None,
-        context_mask: Tensor | None = None,
-        t: Tensor | None = None,
-        past_key_values: Tensor | None = None,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.FloatTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        t: torch.FloatTensor | None = None,
+        past_key_values: Cache | None = None,
         compute_loss: bool | None = True,
         **kwargs,
     ) -> DenoiserOutput:
@@ -261,11 +264,11 @@ class Denoiser(ABC, PreTrainedModel):
         (optionally) compute the loss.
 
         Parameters:
-            input_ids (Tensor): Input tensor to the model.
-            attention_mask (Optional[Tensor]): Attention mask for the model.
-            context_mask (Optional[Tensor]): Indicator for context tokens.
-            t (Optional[Tensor]): Denoising time step for the model.
-            past_key_values (Optional[Tensor]): KV cache.
+            input_ids (LongTensor): Input tensor to the model.
+            attention_mask (Optional[FloatTensor]): Attention mask for the model.
+            context_mask (Optional[FloatTensor]): Indicator for context tokens.
+            t (Optional[FloatTensor]): Denoising time step for the model.
+            past_key_values (Optional[Cache]): KV cache.
             compute_loss (Optional[bool]): Flag to compute loss.
 
         Returns:
@@ -321,11 +324,11 @@ class Denoiser(ABC, PreTrainedModel):
 
     def _prepare_inputs_inference(
         self,
-        input_ids: Tensor | None = None,
-        attention_mask: Tensor | None = None,
-        context: Tensor | None = None,
-        context_mask: Tensor | None = None,
-        past_key_values: Tensor | None = None,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.FloatTensor | None = None,
+        context: torch.LongTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        past_key_values: Cache | None = None,
         **kwargs: Any,
     ) -> DenoiserInput:
         assert input_ids is not None or context is not None, (
@@ -363,14 +366,14 @@ class Denoiser(ABC, PreTrainedModel):
 
     def update_past_key_values(
         self,
-        inputs: Tensor,
-        past_key_values: DynamicCache | None = None,
+        inputs: torch.LongTensor,
+        past_key_values: Cache | None = None,
         **backbone_kwargs: Any,
     ) -> DynamicCache:
         """
         Cache the key-value pairs for the context.
         Args:
-            inputs (Tensor): The context tensor.
+            inputs (torch.LongTensor): The context tensor.
             past_key_values (DynamicCache | None): Previous key-value cache.
         Returns:
             DynamicCache: Cached key-value pairs.
@@ -391,16 +394,16 @@ class Denoiser(ABC, PreTrainedModel):
     @torch.no_grad()
     def generate(
         self,
-        inputs: Optional[Tensor] = None,
-        generation_config: Optional[GenerationConfig] = None,
-        logits_processor: Optional[LogitsProcessorList] = None,
-        stopping_criteria: Optional[StoppingCriteriaList] = None,
+        inputs: torch.LongTensor | None = None,
+        generation_config: GenerationConfig | None = None,
+        logits_processor: LogitsProcessorList | None = None,
+        stopping_criteria: StoppingCriteriaList | None = None,
         max_length: int | None = None,
         max_new_tokens: int | None = None,
         batch_size: int | None = None,
         device: str | None = None,
-        **kwargs,
-    ) -> Union[GenerateOutput, torch.LongTensor]:
+        **kwargs: Any,
+    ) -> GenerateOutput | torch.LongTensor:
         """Generates sample from denoising model.
         Follows signature of transformers.GenerationMixin.
         """

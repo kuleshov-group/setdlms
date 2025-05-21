@@ -1,16 +1,15 @@
 from functools import partial
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Dict, Literal, Tuple
 
 import torch
-from torch import Tensor
 from tqdm.auto import tqdm
 from transformers import (
-    DynamicCache,
     GenerationConfig,
     LogitsProcessorList,
     PreTrainedTokenizer,
     StoppingCriteriaList,
 )
+from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import ModelOutput
 
 try:
@@ -134,10 +133,10 @@ class D3PM(Denoiser):
 
     def _sample_q_xt(
         self,
-        x0: Tensor,
-        alpha_t: Tensor,
-        context_mask: Tensor,
-    ) -> Tensor:
+        x0: torch.LongTensor,
+        alpha_t: torch.FloatTensor,
+        context_mask: torch.FloatTensor,
+    ) -> torch.LongTensor:
         """Sample from the pre-defined forward / noising process.
 
         Parameters:
@@ -154,24 +153,24 @@ class D3PM(Denoiser):
             )
             if self.config.keep_clean_bos:
                 xt[..., 0] = x0[..., 0]
-            return xt
+            return xt  # type: ignore
         if self.diffusion_type == "uniform":
             xt = torch.randint(0, self.vocab_size, x0.shape, device=x0.device)
             xt = torch.where(context_mask.bool(), x0, xt)
             if self.config.keep_clean_bos:
                 xt[..., 0] = x0[..., 0]
-            return xt
+            return xt  # type: ignore
         raise NotImplementedError(
             f"Diffusion type '{self.diffusion_type}' not implemented."
         )
 
     def _prepare_inputs(
         self,
-        input_ids: Tensor,
-        attention_mask: Tensor | None = None,
-        context_mask: Tensor | None = None,
-        t: Tensor | None = None,
-        past_key_values: Tensor | None = None,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.FloatTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        t: torch.FloatTensor | None = None,
+        past_key_values: Cache | None = None,
     ):
         # Prepare inputs for D3PM model
         if attention_mask is None:
@@ -203,7 +202,10 @@ class D3PM(Denoiser):
         )
 
     def _compute_loss(
-        self, model_output: Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
+        self,
+        model_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs: Any,
     ) -> LossAndNllOutput:
         raise NotImplementedError
 
@@ -227,11 +229,11 @@ class D3PM(Denoiser):
 
     def _compute_posterior(
         self,
-        x: Tensor,
-        xt: Tensor,
-        alpha_t: Tensor,
-        alpha_s: Tensor,
-    ) -> Tensor:
+        x: torch.FloatTensor | torch.LongTensor,
+        xt: torch.LongTensor,
+        alpha_t: torch.FloatTensor,
+        alpha_s: torch.FloatTensor,
+    ) -> torch.FloatTensor:
         """Computes posterior / approximate posterior q(x_s | x_t, x),
             where x represents clean sequence (as one-hots) or the output of the
             denoising model.
@@ -271,7 +273,7 @@ class D3PM(Denoiser):
         generation_config: DiffusionGenerationConfig,
         max_length: int | None = None,
         device: str | None = None,
-    ) -> Tensor:
+    ) -> torch.FloatTensor:
         """Sample timesteps for the diffusion process."""
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -279,32 +281,32 @@ class D3PM(Denoiser):
             max_length = generation_config.max_new_tokens
 
         if generation_config.first_hitting:
-            timesteps = Tensor([1.0])
+            timesteps = torch.FloatTensor([1.0])
             for i in range(max_length, 0, -1):
                 u = torch.rand(1)
                 next_t = timesteps[-1] * u ** (1 / i)
                 timesteps = torch.cat((timesteps, next_t), dim=0)
-            return timesteps[1:].to(device)
+            return timesteps[1:].to(device)  # type: ignore
         timesteps = torch.linspace(
             1.0,
             generation_config.min_t,
             generation_config.num_steps + 1,
             device=device,
         )
-        return timesteps
+        return timesteps  # type: ignore
 
     def _generate_unconditional(  # TODO add CBG and CFG generation
         self,
         generation_config: DiffusionGenerationConfig,
-        alpha_t: Tensor,
-        alpha_s: Tensor,
+        alpha_t: torch.FloatTensor,
+        alpha_s: torch.FloatTensor,
         denoiser_inputs: DenoiserInput | None = None,
-        cache: Dict[str, Tensor] | None = None,
+        cache: Dict[str, torch.FloatTensor] | None = None,
         past_key_values: DynamicCache | None = None,
-        running_generation: Tensor | None = None,
+        running_generation: torch.LongTensor | None = None,
         logits_processor: LogitsProcessorList | None = None,
         **kwargs: Any,
-    ) -> Tuple[Tensor, Dict[str, Tensor]]:
+    ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor]]:
         if cache is None:  # execute function evaluation
             backbone_output = self._backbone_forward(
                 denoiser_inputs, past_key_values=past_key_values, **kwargs
@@ -321,7 +323,7 @@ class D3PM(Denoiser):
                     #   at once to the entire block, to be applied in parallel.
                     log_x_theta[:, token_idx] = logits_processor(
                         input_ids=running_generation,
-                        scores=log_x_theta[:, token_idx],
+                        scores=log_x_theta[:, token_idx],  # type: ignore
                     )
                 log_x_theta = torch.log_softmax(log_x_theta, dim=-1)  # re-normalize
             x_theta = log_x_theta.exp()
@@ -375,10 +377,10 @@ class D3PM(Denoiser):
     @torch.no_grad()
     def generate(
         self,
-        inputs: Optional[Tensor] = None,
-        generation_config: Optional[DiffusionGenerationConfig] = None,
-        logits_processor: Optional[LogitsProcessorList] = None,
-        stopping_criteria: Optional[StoppingCriteriaList] = None,
+        inputs: torch.LongTensor | None = None,
+        generation_config: DiffusionGenerationConfig | None = None,
+        logits_processor: LogitsProcessorList | None = None,
+        stopping_criteria: StoppingCriteriaList | None = None,
         max_length: int | None = None,
         max_new_tokens: int | None = None,
         batch_size: int | None = None,
@@ -386,7 +388,7 @@ class D3PM(Denoiser):
         tokenizer: PreTrainedTokenizer | None = None,
         disable_pbar: bool = False,
         **kwargs: Any,
-    ) -> Tensor:
+    ) -> torch.LongTensor:
         # Setup sampling variables
         if generation_config is None:
             assert getattr(self, "generation_config", None) is not None, (
@@ -518,7 +520,7 @@ class D3PM(Denoiser):
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
-                    input_ids=accumulated_samples[:, inputs_offset:],
+                    input_ids=accumulated_samples[:, inputs_offset:],  # type: ignore
                     scores=None,  # type: ignore
                 )
                 if torch.any(is_done):
@@ -533,7 +535,7 @@ class D3PM(Denoiser):
                     inputs=xt,
                     past_key_values=past_key_values,
                 )
-        return accumulated_samples
+        return accumulated_samples  # type: ignore
 
 
 class MDLMConfig(D3PMConfig):
@@ -557,8 +559,11 @@ class MDLM(D3PM):
         self.neg_infinity = -1e12
 
     def _forward(
-        self, backbone_output: Tensor, denoiser_inputs: DenoiserInput, **kwargs
-    ) -> Tensor:
+        self,
+        backbone_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs,
+    ) -> torch.FloatTensor:
         if self.config.shift_logits:
             backbone_output = backbone_output[:, :-1, ...]
         # Zero-mask probability
@@ -579,10 +584,13 @@ class MDLM(D3PM):
         unmasked_indices = xt != self.mask_token_id
         log_probs[unmasked_indices] = self.neg_infinity
         log_probs[unmasked_indices, xt[unmasked_indices]] = 0
-        return log_probs
+        return log_probs  # type: ignore
 
     def _compute_loss(
-        self, model_output: Tensor, denoiser_inputs: DenoiserInput, **kwargs: Any
+        self,
+        model_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs: Any,
     ) -> LossAndNllOutput:
         if self.config.shift_logits:
             denoiser_inputs.x0 = denoiser_inputs.x0[..., 1:]
@@ -652,7 +660,7 @@ class BD3LM(MDLM):
         q_idx,
         kv_idx,
         block_size: int | None = None,
-    ) -> Tensor:
+    ) -> torch.Tensor:
         """
         Args:
             q_idx (Tensor): Query indices.
@@ -681,7 +689,7 @@ class BD3LM(MDLM):
         kv_idx,
         block_size: int | None = None,
         seq_length: int | None = None,
-    ) -> Tensor:
+    ) -> torch.Tensor:
         del b, h
 
         # Indicate whether token belongs to xt or x0:
@@ -779,11 +787,11 @@ class BD3LM(MDLM):
 
     def _prepare_inputs(
         self,
-        input_ids: Tensor,
-        attention_mask: Tensor | None = None,
-        context_mask: Tensor | None = None,
-        t: Tensor | None = None,
-        past_key_values: Tensor | None = None,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.FloatTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        t: torch.FloatTensor | None = None,
+        past_key_values: Cache | None = None,
     ):
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
@@ -848,11 +856,11 @@ class BD3LM(MDLM):
 
     def _prepare_inputs_inference(
         self,
-        input_ids: Tensor | None = None,
-        attention_mask: Tensor | None = None,
-        context: Tensor | None = None,
-        context_mask: Tensor | None = None,
-        past_key_values: Tensor | None = None,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.FloatTensor | None = None,
+        context: torch.LongTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        past_key_values: DynamicCache | None = None,
         **backbone_kwargs: Any,
     ) -> DenoiserInput:
         device = input_ids.device

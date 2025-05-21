@@ -1,7 +1,5 @@
-from typing import Union
-
 import torch
-from torch import Tensor, nn
+from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
@@ -144,17 +142,17 @@ class LLMasEncoderDecoder(nn.Module):
 
     def forward(
         self,
-        input_ids: Tensor,  # for Decoder
-        attention_mask: Union[Tensor, BlockMask],  # for Decoder
-        encoder_input_ids: Tensor | None = None,  # for Encoder
-        encoder_attention_mask: Union[Tensor, BlockMask] | None = None,
+        input_ids: torch.LongTensor,  # for Decoder
+        attention_mask: torch.FloatTensor | BlockMask | None = None,  # for Decoder
+        encoder_input_ids: torch.LongTensor | None = None,  # for Encoder
+        encoder_attention_mask: torch.FloatTensor | BlockMask | None = None,
         past_key_values: DynamicCache | None = None,
         cache_position: torch.LongTensor | None = None,
-        position_ids: Tensor | None = None,
-        encoder_position_ids: Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        encoder_position_ids: torch.LongTensor | None = None,
         return_past_key_values: bool = False,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
-    ) -> Tensor | DynamicCache:
+    ) -> torch.FloatTensor | DynamicCache:
         if past_key_values is None:
             past_key_values = DynamicCache()
             cache_position = position_ids
@@ -173,7 +171,9 @@ class LLMasEncoderDecoder(nn.Module):
                 )
                 min_dtype = torch.finfo(self.encoder.dtype).min
                 encoder_attention_mask = torch.where(
-                    encoder_attention_mask == 0.0, min_dtype, 0.0
+                    (encoder_attention_mask == 0.0).bool(),  # type: ignore
+                    min_dtype,
+                    0.0,
                 ).to(self.encoder.dtype)
             past_key_values = self.encoder.model(
                 input_ids=encoder_input_ids,
@@ -209,9 +209,12 @@ class LLMasEncoderDecoder(nn.Module):
 
         attention_mask = attention_mask[:, None, ...].to(self.decoder.dtype)
         min_dtype = torch.finfo(self.encoder.dtype).min
-        attention_mask = torch.where(attention_mask == 0.0, min_dtype, 0.0).to(
-            self.decoder.dtype
-        )
+        attention_mask = torch.where(
+            (attention_mask == 0.0).bool(),  # type: ignore
+            min_dtype,
+            0.0,
+        ).to(self.decoder.dtype)
+        # noinspection PyProtectedMember
         attention_mask = self.decoder.model._update_causal_mask(
             attention_mask=attention_mask,
             input_tensor=decoder_hidden_states,
@@ -230,12 +233,12 @@ class LLMasEncoderDecoder(nn.Module):
             if past_key_values is not None and len(past_key_values) == len(
                 self.encoder.model.layers
             ):
-                prev_cache_len = past_key_values[layer_idx][0].shape[-2]
+                prev_cache_len = past_key_values[layer_idx][0].shape[-2]  # type: ignore
             else:
                 prev_cache_len = 0
 
             # TODO maybe adopt gradient checkpointing from transformers
-            # cross-attend to encoder kvs
+            # Cross-attend to encoder kvs
             decoder_hidden_states = decoder_layer(
                 hidden_states=decoder_hidden_states,
                 attention_mask=attention_mask,
