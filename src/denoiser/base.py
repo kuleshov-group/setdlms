@@ -25,6 +25,17 @@ from transformers.modeling_outputs import ModelOutput
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.append(str(Path(__file__).resolve().parent))
 
+# Local imports not used, but added here so that HF push_to_hub adds them to model repo
+# noinspection PyUnresolvedReferences
+from src.backbone.automodel import AutoModelFromPreTrained  # noqa: F401
+from src.backbone.encoder_decoder import LLMasEncoderDecoder  # noqa: F401
+from src.noise_schedule.noise_schedules import (  # noqa: F401
+    CosineNoise,
+    ExponentialNoise,
+    LinearNoise,
+    LogarithmicNoise,
+)
+
 
 @dataclass
 class DenoiserInput(OrderedDict):

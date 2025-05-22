@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -196,28 +197,23 @@ def push_to_hub(
             the parent of __file__ path.
             Use this parameter if, for example, pushing from a tmp copy of the repo.
     """
-    # For some reason auto_map needs to be explicitly set again
-    model.config.auto_map = model.config.auto_map
     # Register config and model classes
-    model.config.register_for_auto_class()
+    model.config.auto_map = model.config.auto_map
+    model_cls_path = (  # e.g.:
+        inspect.getfile(model.__class__)  # <project_path>/src/denoiser/diffusion.py
+        .split(str(Path(__file__).resolve().parent.parent))[-1]
+        .replace("/", ".")  # .src.denoiser.diffusion.py
+        .split(".py")[0][1:]  # src.denoiser.diffusion
+    )
+    exec(f"from {model_cls_path} import {type(model).__name__}")
+    exec(f"from {model_cls_path} import {type(model.config).__name__}")
+    exec(f"{type(model.config).__name__}.register_for_auto_class()")
     for automodel in ["AutoModel", "AutoModelForCausalLM", "AutoModelForMaskedLM"]:
-        if automodel in model.config.auto_map.keys():
-            model.register_for_auto_class(automodel)
+        if automodel in model.config.__class__.auto_map.keys():
+            exec(f'{type(model).__name__}.register_for_auto_class("{automodel}")')
 
     # Update model config paths to remove `src` and flatten (replace `.` with `_`)
     # in `_target_` (e.g. `src.backbone.dit` -> `backbone_dit`)
-    if re.match(r"^src\.", model["_target_"]):
-        model["_target_"] = re.sub(
-            r"^([\w.]+)\.",
-            lambda m: f"{m.group(1).replace('.', '_')}.",
-            re.sub(r"^src\.", "", model["_target_"]),
-        )
-    if re.match(r"^src\.", model.config["_target_"]):
-        model.config["_target_"] = re.sub(
-            r"^([\w.]+)\.",
-            lambda m: f"{m.group(1).replace('.', '_')}.",
-            re.sub(r"^src\.", "", model.config["_target_"]),
-        )
     if re.match(r"^src\.", model.config.backbone_config["_target_"]):
         model.config.backbone_config["_target_"] = re.sub(
             r"^([\w.]+)\.",
@@ -233,13 +229,6 @@ def push_to_hub(
     log.debug("Updated model.config:")
     log.debug(model.config)
 
-    if not repo_id:
-        raise ValueError("Argument `repo_id` is required")
-    if project_root is None:
-        project_root = Path(__file__).resolve().parent.parent
-    else:
-        project_root = Path(project_root).resolve()
-
     # Set up destination
     tmp_dir = TemporaryDirectory() if not local else None
     dest_path = Path(repo_id) if local else Path(tmp_dir.name)
@@ -251,6 +240,8 @@ def push_to_hub(
         model.save_pretrained(dest_path, safe_serialization=False)
         tokenizer.save_pretrained(dest_path)
     else:
+        if not repo_id:
+            raise ValueError("Argument `repo_id` is required for push_to_hub.")
         model.push_to_hub(
             repo_id,
             private=True,
@@ -259,16 +250,24 @@ def push_to_hub(
         )
         tokenizer.push_to_hub(repo_id, private=True, commit_message=commit_message)
 
+    # Copy source files
+    if project_root is None:
+        project_root = Path(__file__).resolve().parent.parent
+    else:
+        project_root = Path(project_root).resolve()
     with open(project_root / ".gitignore", "r", encoding="utf-8") as gf:
         ignore = [line.strip() for line in gf.readlines()]
     ignore.extend(
         [ignore_file[:-1] for ignore_file in ignore if ignore_file.endswith("/")]
     )
     ignore.append("__init__.py")
-    # Copy source files
+    model_file_path = inspect.getfile(model.__class__).split(
+        str(Path(__file__).resolve().parent.parent)
+    )[-1][1:]
     paths_to_copy = {
         project_root / ".gitignore": ".gitignore",
-        project_root / "src/denoiser": "denoiser",
+        project_root / "src/denoiser/base.py": "denoiser_base.py",
+        project_root / model_file_path: model_file_path.split("/")[-1],
         project_root / "src/backbone": "backbone",
         project_root / "src/noise_schedule": "noise_schedule",
     }

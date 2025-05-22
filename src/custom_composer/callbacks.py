@@ -126,6 +126,7 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
                 repo_id=save_hf_filename,
                 local=True,
                 project_root=self.project_root,
+                # commit_message=repo_id,  # TODO: Use push_to_hub and pass info here
             )
             saved_hf_path = save_hf_filename
         else:
