@@ -1,0 +1,32 @@
+#file: noinspection LongLine
+defaults:
+  - generation@generation_config: diffusion_generation_config
+  - generation/logits_processor@logits_processor_list:
+      - top_p_logits_wrapper
+      - exponential_decay_length_penalty
+      - repetition_penalty_logits_processor
+  - generation/stopping_criteria@stopping_criteria_list:
+      - eos_token_criteria
+      - max_length_criteria
+  - tokenizer: autotokenizer
+  - _self_
+
+task: ???  # Set with CLI, e.g., `+eval/lm_eval_harness@task=gsm8k`
+seed: 1234
+pretrained_model_name_or_path: ???
+output_path: ???  # Where to save metrics
+generated_samples_output_path: null  # Where to save the generated samples
+
+eos_token_id: ${get_tokenizer_eos_token_id:${tokenizer}}
+# Generation parameters
+block_size: null  # Use for BD3LMs
+max_length: null
+max_new_tokens: ???
+batch_size: 1
+device: ${set_backend:}
+gen_kwargs_logits_processor:
+  _target_: src.custom_transformers.generation.HydraCompatibleLogitsProcessorList
+  logits_processor_dict: ${logits_processor_list}
+gen_kwargs_stopping_criteria:
+  _target_: src.custom_transformers.generation.HydraCompatibleStoppingCriteriaList
+  stopping_criteria_dict: ${stopping_criteria_list}

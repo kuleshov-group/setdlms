@@ -26,6 +26,8 @@ from scripts.utils import (
 from src.datasets.tokenize_on_demand import CNNDailyMailDataset, WMTDataset
 from src.sampler import SamplerConfig
 
+# TODO: CONVERT THIS SCRIPT TO USE HYDRA CONFIG SCHEMA
+
 
 def str2bool(v):
     if isinstance(v, bool):

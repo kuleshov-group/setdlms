@@ -1,0 +1,3 @@
+eos_token_criteria:
+  _target_: transformers.generation.EosTokenCriteria
+  eos_token_id: ${eos_token_id}

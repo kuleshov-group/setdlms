@@ -1,0 +1,2 @@
+_target_: transformers.GenerationConfig
+# TODO add args here that we can use

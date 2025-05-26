@@ -1,0 +1,8 @@
+#file: noinspection LongLine
+exponential_decay_length_penalty:
+  _target_: transformers.generation.ExponentialDecayLengthPenalty
+  exponential_decay_length_penalty:
+    - 30
+    - 1.1
+  eos_token_id: ${eos_token_id}
+  input_ids_seq_length: 0  # 0 means will start penalty after first item in `exponential_decay_length_penalty` tuple

@@ -119,7 +119,7 @@ class AR(Denoiser):
         **kwargs,
     ) -> GenerateOutput | torch.LongTensor:
         outputs = self.backbone.model.generate(
-            input_ids=inputs,
+            inputs=inputs,
             generation_config=generation_config,
             logits_processor=logits_processor,
             stopping_criteria=stopping_criteria,

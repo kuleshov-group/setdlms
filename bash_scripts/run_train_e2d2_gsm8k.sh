@@ -7,8 +7,8 @@ source setup_env.sh
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
 USE_ENCODER_CAUSAL_MASK=false # true, false
-KEEP_BOTTOM_N_ENCODER_LAYERS=2
-KEEP_TOP_N_DECODER_LAYERS=1
+KEEP_BOTTOM_N_ENCODER_LAYERS=-1
+KEEP_TOP_N_DECODER_LAYERS=14
 
 # Hyperparameters
 LR=1e-5 # 1e-5, 1e-4, 1e-3
@@ -20,11 +20,11 @@ MAX_DURATION="20000ba" # 20000ba, 10000ba, 5000ba
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
 
-TAG=e2d2_qwen2B_tie_v1-test
+TAG=e2d2_qwen2B
 RUN_NAME=gsm8k-block${BLOCK_SIZE}-bs${BATCH_SIZE}-keepbottomenc${KEEP_BOTTOM_N_ENCODER_LAYERS}-keeptopdec${KEEP_TOP_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-max${MAX_DURATION}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
-MICRO_BATCH_SIZE=2 # TODO: tune
-NUM_WORKERS=0 # TODO: tune
+MICRO_BATCH_SIZE=2
+NUM_WORKERS=8
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
@@ -52,7 +52,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   ~composer.trainer.parallelism_config \
   block_size=${BLOCK_SIZE} \
   training.antithetic_sampling=false \
-  hydra.run.dir=${RUN_DIR}/dllm-dev/${RUN_NAME} \
+  hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
   composer.trainer.save_interval="1ep" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS}

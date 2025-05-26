@@ -1,25 +1,9 @@
 #!/bin/bash
-#SBATCH -J lm_eval_harness            # Job name
-#SBATCH -o ../watch_folder/%x_%j.out  # Output file (%j expands to jobID)
-#SBATCH --get-user-env                # Retrieve the users login environment
-#SBATCH --partition=kuleshov               # Request partition
-#SBATCH --constraint="[a100|a6000|a5000|3090]"
-#SBATCH -t 960:00:00                  # Time limit (hh:mm:ss)
-#SBATCH --mem=64000                   # Server memory requested (per node)
-#SBATCH -N 1                          # Total number of nodes requested
-#SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:4                  # Type/number of GPUs needed
-#SBATCH --open-mode=append            # Do not overwrite logs
-#SBATCH --requeue                     # Requeue upon preemption
-#SBATCH --mail-user=yzs2@cornell.edu  # Email
-#SBATCH --mail-type=END               # Request status by email
-
 # Setup environment
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="/home/ubuntu/runs/dllm-dev/cnn-dm-block4-bs128-keep1-causalencfalse-max10000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen600m_v1"
-# MODEL_PATH="Qwen/Qwen3-0.6B-Base"
+MODEL_PATH="${RUN_DIR}/cnn-dm-block4-bs128-keep1-causalencfalse-max10000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen600m_v1"
 
 DATASET="cnndm"  # "cnndm" or "wmt"
 OUTPUT_DIR="outputs/${MODEL_PATH}"
@@ -41,7 +25,7 @@ OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-greedy-${GREEDY}-use_
 NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 PORT=29501
 
-torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/seq2seq_eval.py \
+torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/seq2seq_eval.py \
   --dataset ${DATASET} \
   --max_new_tokens ${L} \
   --model_path ${MODEL_PATH} \

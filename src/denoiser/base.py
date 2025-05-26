@@ -392,10 +392,10 @@ class Denoiser(ABC, PreTrainedModel):
         context_input = self._prepare_inputs_inference(
             input_ids=inputs,
             past_key_values=past_key_values,
+            return_past_key_values=True,
         )
         past_key_values = self._backbone_forward(
             context_input,
-            use_cache=True,
             past_key_values=past_key_values,
             return_past_key_values=True,
             **backbone_kwargs,

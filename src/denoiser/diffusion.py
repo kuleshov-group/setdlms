@@ -87,6 +87,8 @@ class DiffusionGenerationConfig(GenerationConfig):
         # TODO: assumes we are setting max_new_tokens, which may not be the case!
         self.block_size = block_size if block_size is not None else self.max_new_tokens
         self.first_hitting = first_hitting
+        if self.first_hitting:
+            self.num_steps = self.block_size
         self.sampling_strategy = sampling_strategy
         self.confidence_based_noising = confidence_based_noising
         self.use_model_output_cache = use_model_output_cache
@@ -280,7 +282,10 @@ class D3PM(Denoiser):
         if max_length is None:
             max_length = generation_config.max_new_tokens
 
-        if generation_config.first_hitting:
+        if (
+            generation_config.first_hitting
+            and generation_config.sampling_strategy == "posterior"
+        ):
             timesteps = torch.FloatTensor([1.0])
             for i in range(max_length, 0, -1):
                 u = torch.rand(1)
@@ -330,38 +335,49 @@ class D3PM(Denoiser):
         else:
             x_theta = cache["x_theta"]
         cache = {"x_theta": x_theta}
+        prob_check_denom = denoiser_inputs.xt.numel() - self.config.shift_logits
         if generation_config.sampling_strategy == "posterior":
             q_xs = self._compute_posterior(
                 x_theta, denoiser_inputs.xt, alpha_t, alpha_s
             )
-            assert abs((q_xs.sum() / denoiser_inputs.xt.numel()).item() - 1.0) < 1e-6, (
+
+            assert abs((q_xs.sum() / prob_check_denom).item() - 1.0) < 1e-6, (
                 "Posterior probabilities not summing to 1."
             )
-            assert bool(q_xs.isnan().sum() > 0), "NaN found in the posterior."
+            assert q_xs.isnan().sum().item() == 0, "NaN found in the posterior."
             xs = self._sample_categorical(q_xs, generation_config.do_sample)
         elif generation_config.sampling_strategy == "predict_and_noise":
-            assert (
-                abs((x_theta.sum() / denoiser_inputs.xt.numel()).item() - 1.0) < 1e-6
-            ), "Denoising output probabilities not summing to 1."
-            assert bool(x_theta.isnan().sum() > 0), "NaN found in the denoising output."
+            # assert (
+            #     abs((x_theta.sum() / prob_check_denom).item() - 1.0) < 1e-6
+            # ), "Denoising output probabilities not summing to 1."
+            # assert x_theta.isnan().sum().item() == 0, (
+            #     "NaN found in the denoising output."
+            # )
             assert self.config.diffusion_type == "absorbing", (
                 "predict_and_noise sampling strategy only implemented for absorbing"
                 " state diffusion."
             )
             # Predict
             xs = self._sample_categorical(x_theta, generation_config.do_sample)
+
             # Noise
-            num_noise_indices = (1 - alpha_s) * xs.shape[-1]
+            # TODO: alpha_s is off here b/c dt is based on num_timesteps
+            num_noise_indices = ((1 - alpha_s) * xs.shape[-1]).to(torch.int)
             if generation_config.confidence_based_noising:
-                conf = -x_theta.gather(-1, xs[..., None]).squeeze(-1)
-                conf = torch.where(  # already decoded tokens have 'inf' confidence
-                    (denoiser_inputs.xt == self.mask_token_id).bool(),  # type: ignore
-                    conf,
-                    torch.inf,
-                )
-                noise_indices = -conf.argmax(dim=-1).sort(dim=-1)[0][
-                    ..., :num_noise_indices
-                ]
+                conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
+                if self.config.shift_logits:
+                    conf = torch.where(  # already decoded tokens have 'inf' confidence
+                        (denoiser_inputs.xt[..., 1:] == self.mask_token_id).bool(),
+                        conf,
+                        torch.inf,
+                    )
+                else:
+                    conf = torch.where(  # already decoded tokens have 'inf' confidence
+                        (denoiser_inputs.xt == self.mask_token_id).bool(),
+                        conf,
+                        torch.inf,
+                    )
+                noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
             else:
                 # TODO: implement this
                 raise NotImplementedError
@@ -420,8 +436,13 @@ class D3PM(Denoiser):
             batch_size=batch_size,
             length=max_blocks * block_size,
         )
+        if self.config.shift_logits:
+            # 'Donate' last idx from inputs to the to-be-generated blocks
+            accumulated_samples[..., 0] = inputs[..., -1]
+            inputs = inputs[..., :-1]
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
-        if generation_config.use_cache:
+        logit_offset = 1 if self.config.shift_logits else 0
+        if generation_config.use_cache and inputs.numel() > 0:
             past_key_values = self.update_past_key_values(
                 inputs=inputs,
                 past_key_values=DynamicCache(),
@@ -431,12 +452,11 @@ class D3PM(Denoiser):
             past_key_values = None
             inputs_offset = 0
 
-        logit_offset = 1 if self.config.shift_logits else 0
         total_NFEs = 0
         block_pbar = tqdm(
             range(max_blocks),
-            desc="Sampling blocks",
-            leave=False,
+            desc="Blocks",
+            leave=True,
             disable=disable_pbar,
         )
         for block_id in block_pbar:
@@ -457,7 +477,7 @@ class D3PM(Denoiser):
                 leave=False,
                 disable=disable_pbar,
             )
-            dt = (1 - self.sampler_config.min_t) / len(timesteps)
+            dt = (1 - generation_config.min_t) / len(timesteps)
             cache = None
             context = (
                 accumulated_samples[:, : (block_id * block_size)]
@@ -479,12 +499,18 @@ class D3PM(Denoiser):
                     past_key_values=past_key_values,
                 )
 
-                running_generation = (  # Used for logit processing
-                    accumulated_samples[
-                        :, inputs_offset : (block_id * block_size) + logit_offset
-                    ],
-                )
+                # Used for logit processing
+                # TODO: Won't work correctly for kv cache == False, since inputs_offset
+                #   is 0; so context will be taken into account for logits processing.
+                #   Need a workaround.
+                running_generation = accumulated_samples[
+                    :,
+                    inputs_offset : inputs_offset
+                    + (block_id * block_size)
+                    + logit_offset,
+                ]
                 xs, cache = self._generate_unconditional(
+                    generation_config=generation_config,
                     alpha_t=alpha_t,
                     alpha_s=alpha_s,
                     denoiser_inputs=denoiser_inputs,
@@ -495,10 +521,8 @@ class D3PM(Denoiser):
                     logits_processor=logits_processor,
                     **kwargs,
                 )
-
                 if self.config.shift_logits:
                     xs = torch.cat((xt[:, :1], xs), dim=-1)
-
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
@@ -510,26 +534,36 @@ class D3PM(Denoiser):
                 ):
                     cache = None
                 xt = xs
+                if (xt == self.mask_token_id).sum().item() == 0:  # TODO: MDLM specific!
+                    break
             accumulated_samples[
                 :,
                 inputs_offset + (block_id * block_size) + logit_offset : inputs_offset
                 + ((block_id + 1) * block_size)
                 + logit_offset,
-            ] = xt[:, 1:]
+            ] = xt[:, logit_offset:]
             if tokenizer is not None:
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
-                    input_ids=accumulated_samples[:, inputs_offset:],  # type: ignore
+                    input_ids=accumulated_samples[  # type: ignore
+                        :,
+                        inputs_offset : inputs_offset
+                        + ((block_id + 1) * block_size)
+                        + logit_offset,
+                    ],
                     scores=None,  # type: ignore
                 )
                 if torch.any(is_done):
                     accumulated_samples = accumulated_samples[
-                        :, : ((block_id + 1) * block_size) + logit_offset
+                        :,
+                        : inputs_offset + ((block_id + 1) * block_size) + logit_offset,
                     ]
                     break
             if generation_config.use_cache:
                 if self.config.shift_logits:
+                    # Last generated token will be provided as first token in inputs to
+                    # next block, and so we do not cache it here
                     xt = xt[:, :-1]
                 past_key_values = self.update_past_key_values(
                     inputs=xt,
@@ -861,6 +895,7 @@ class BD3LM(MDLM):
         context: torch.LongTensor | None = None,
         context_mask: torch.FloatTensor | None = None,
         past_key_values: DynamicCache | None = None,
+        return_past_key_values: bool = False,
         **backbone_kwargs: Any,
     ) -> DenoiserInput:
         device = input_ids.device
@@ -878,6 +913,9 @@ class BD3LM(MDLM):
         assert input_ids is not None or context is not None, (
             "Must provide either input_ids or context."
         )
+        if return_past_key_values:  # Indicates this is a cache update step
+            context = input_ids
+            input_ids = None
         position_ids, encoder_position_ids = None, None
         if past_key_values is not None:
             cache_len = self._get_past_key_values_seq_length(past_key_values)

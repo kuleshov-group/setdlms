@@ -1,5 +1,4 @@
 import os
-import re
 from typing import Any
 
 import fsspec
@@ -10,7 +9,7 @@ import torch
 import yaml
 from composer.utils import dist
 from omegaconf import DictConfig, OmegaConf
-from transformers import PreTrainedTokenizer, StoppingCriteria
+from transformers import PreTrainedTokenizer
 
 from src.denoiser.base import Denoiser
 
@@ -27,6 +26,13 @@ def _make_tokenization_config(tokenizer_cfg: DictConfig) -> dict[str, Any]:
         "eos_token_id": tokenizer.eos_token_id,
         "pad_vocab_size_multiple": pad_vocab_size_multiple,
     }
+
+
+def _get_tokenizer_eos_token_id(tokenizer_cfg: DictConfig) -> int:
+    tokenizer = hydra.utils.instantiate(tokenizer_cfg)
+    if not hasattr(tokenizer, "eos_token_id"):
+        raise ValueError("Tokenizer must have 'eos_token_id'.")
+    return tokenizer.eos_token_id
 
 
 def _get_world_size() -> int:
@@ -80,6 +86,10 @@ def register_useful_resolvers() -> None:
     OmegaConf.register_new_resolver(
         "make_tokenization_config",
         lambda tokenizer_cfg: _make_tokenization_config(tokenizer_cfg),
+    )
+    OmegaConf.register_new_resolver(
+        "get_tokenizer_eos_token_id",
+        lambda tokenizer_cfg: _get_tokenizer_eos_token_id(tokenizer_cfg),
     )
 
 
@@ -199,45 +209,3 @@ def load_model_from_ckpt_dir_path(
     model.load_state_dict(state_dict, strict=False)
 
     return model
-
-
-class BoxedStoppingCriteria(StoppingCriteria):
-    def __init__(self, tokenizer, pattern):
-        self.tokenizer = tokenizer
-        self.pattern = pattern
-
-    def __call__(
-        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
-    ) -> bool:
-        if input_ids.numel() == 0:
-            return False
-        matches = re.findall(self.pattern, self.tokenizer.decode(input_ids[0]))
-        if len(matches) > 0:
-            return True
-        return False
-
-
-class LengthStoppingCriteria(StoppingCriteria):
-    def __init__(self, max_length):
-        self.max_length = max_length
-
-    def __call__(
-        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
-    ) -> bool:
-        if input_ids.shape[-1] >= self.max_length:
-            return True
-        else:
-            return False
-
-
-class EOSStoppingCriteria(StoppingCriteria):
-    def __init__(self, stop_token_ids):
-        self.stop_token_ids = stop_token_ids
-
-    def __call__(
-        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
-    ) -> bool:
-        for stop_token_id in self.stop_token_ids:
-            if stop_token_id in input_ids:
-                return True
-        return False
