@@ -15,7 +15,7 @@ script_full_path=$(realpath "./${script_name}")
 if [ ! -e "${script_full_path}" ]; then
   echo "Script '$script_full_path' not found."
 fi
-
-export NUM_VISIBLE_DEVICES=${SLURM_GPUS_ON_NODE}
-export RUN_DIR="/home/ubuntu/runs"
+NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
+export NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES}
+export RUN_DIR="/home/ubuntu/runs/dllm-dev"
 source ${script_full_path}
