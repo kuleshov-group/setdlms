@@ -29,7 +29,10 @@ class LLMasEncoderDecoder(nn.Module):
         keep_bottom_n_encoder_layers: int = -1,
         keep_top_n_decoder_layers: int = -1,
     ):
-        assert keep_top_n_decoder_layers <= keep_bottom_n_encoder_layers, (
+        assert (
+            keep_top_n_decoder_layers <= keep_bottom_n_encoder_layers
+            or keep_bottom_n_encoder_layers == -1
+        ), (
             "Cannot keep more decoder layers than encoder layers: "
             f"{keep_top_n_decoder_layers=} > {keep_bottom_n_encoder_layers=}."
         )
