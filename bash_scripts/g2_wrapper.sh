@@ -3,7 +3,7 @@
 #SBATCH -o ../watch_folder/%x_%j.out  # Output file (%j expands to jobID)
 #SBATCH -e ../watch_folder/%x_%j.err  # Error file (%j expands to jobID)
 #SBATCH --get-user-env                # Retrieve the users login environment
-#SBATCH --partition=kuleshov               # Request partition
+#SBATCH --partition=kuleshov,gpu      # Request partition
 #SBATCH --constraint="[a100|a6000|a5000|3090]"
 #SBATCH -t 960:00:00                  # Time limit (hh:mm:ss)
 #SBATCH --mem=64000                   # Server memory requested (per node)
@@ -33,5 +33,5 @@ if [ ! -e "${script_full_path}" ]; then
 fi
 
 export NUM_VISIBLE_DEVICES=${SLURM_GPUS_ON_NODE}
-export RUN_DIR="/share/kuleshov/yzs2/runs"
+export RUN_DIR="/share/kuleshov/yzs2/runs/dllm-dev"
 source ${script_full_path}
