@@ -284,6 +284,7 @@ class D3PM(Denoiser):
 
         if (
             generation_config.first_hitting
+            # TODO: first-hitting does not work with posterior
             and generation_config.sampling_strategy == "posterior"
         ):
             timesteps = torch.FloatTensor([1.0])
@@ -437,11 +438,11 @@ class D3PM(Denoiser):
             length=max_blocks * block_size,
         )
         if self.config.shift_logits:
-            # 'Donate' last idx from inputs to the to-be-generated blocks
+            # 'Donate' last idx from inputs as first idx for the to-be-generated blocks
             accumulated_samples[..., 0] = inputs[..., -1]
             inputs = inputs[..., :-1]
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
-        logit_offset = 1 if self.config.shift_logits else 0
+        logit_offset = int(self.config.shift_logits)
         if generation_config.use_cache and inputs.numel() > 0:
             past_key_values = self.update_past_key_values(
                 inputs=inputs,
@@ -500,15 +501,13 @@ class D3PM(Denoiser):
                 )
 
                 # Used for logit processing
-                # TODO: Won't work correctly for kv cache == False, since inputs_offset
-                #   is 0; so context will be taken into account for logits processing.
-                #   Need a workaround.
                 running_generation = accumulated_samples[
                     :,
-                    inputs_offset : inputs_offset
+                    inputs.shape[-1] : inputs.shape[-1]
                     + (block_id * block_size)
                     + logit_offset,
                 ]
+
                 xs, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t,
@@ -564,7 +563,7 @@ class D3PM(Denoiser):
                 if self.config.shift_logits:
                     # Last generated token will be provided as first token in inputs to
                     # next block, and so we do not cache it here
-                    xt = xt[:, :-1]
+                    xt = xt[..., :-1]
                 past_key_values = self.update_past_key_values(
                     inputs=xt,
                     past_key_values=past_key_values,

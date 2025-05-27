@@ -1,8 +1,10 @@
 import os
+import random
 from typing import Any
 
 import fsspec
 import hydra
+import numpy as np
 import rich.syntax
 import rich.tree
 import torch
@@ -209,3 +211,12 @@ def load_model_from_ckpt_dir_path(
     model.load_state_dict(state_dict, strict=False)
 
     return model
+
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
