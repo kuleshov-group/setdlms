@@ -12,6 +12,7 @@ greedy: false
 use_x0_pred: false
 first_hitting: false
 low_confidence_remasking: false
+remdm: false
 kv_caching: false
 shift_logits: ${model.config.shift_logits}
 repetition_penalty: 1.0

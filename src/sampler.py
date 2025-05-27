@@ -16,6 +16,7 @@ class SamplerConfig(OrderedDict):
     use_x0_pred: bool = False
     first_hitting: bool = False
     low_confidence_remasking: bool = False
+    remdm: bool = False
     disable_cache: bool = False
     kv_caching: bool = False
     shift_logits: bool = False

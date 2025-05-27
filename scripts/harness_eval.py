@@ -92,6 +92,7 @@ class LMEvalHarness(LM):
         use_x0_pred: bool = False,
         first_hitting: bool = False,
         low_confidence_remasking: bool = False,
+        remdm: bool = False,
         disable_cache: bool = False,
         kv_caching: bool = False,
         max_length: int | None = None,  # Default to model config, if None
@@ -166,6 +167,7 @@ class LMEvalHarness(LM):
             use_x0_pred=use_x0_pred,
             first_hitting=first_hitting,
             low_confidence_remasking=low_confidence_remasking,
+            remdm=remdm,
             disable_cache=disable_cache,
             kv_caching=kv_caching,
             max_length=max_length
@@ -231,6 +233,8 @@ class LMEvalHarness(LM):
 
         res = []
         res_for_json = []
+        NFEs = []
+        # confidences = []
         correct, total = 0, 0
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
@@ -238,14 +242,16 @@ class LMEvalHarness(LM):
             prefix = elem["prefix"][:-1]
             stopping_criteria = StoppingCriteriaList([boxed_stopping_criteria])
             if not self.hf_model:
-                sample, _ = self.model.generate(
+                sample, total_NFEs = self.model.generate(
                     max_length=len(prefix) + self.max_cont_length,
                     context=prefix[None, ...].to(self.device),
                     device=self.device,
                     stopping_criteria=stopping_criteria,
                     disable_pbar=(self.rank != 0),
-                    # tokenizer=self.tokenizer,
+                    tokenizer=self.tokenizer,
                 )
+                NFEs.append(total_NFEs / (sample.shape[1] - len(prefix)))
+                # confidences.append(sample_conf)
             else:
                 sample = self.model.generate(
                     input_ids=elem["prefix"][None, ...].to(self.device),
@@ -298,6 +304,13 @@ class LMEvalHarness(LM):
                 indent=2,
             )
         print(f"RANK {self.rank} completed!")
+        # gather results across all ranks
+        if self.accelerator is not None:
+            NFEs = self.accelerator.gather(NFEs)
+        else:
+            NFEs = NFEs
+        if self.rank == 0:
+            print(r"Avg \% of total NFEs:", np.mean(NFEs))
         return res
 
 

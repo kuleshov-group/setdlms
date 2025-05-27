@@ -810,31 +810,38 @@ class D3PM(Denoiser):
         xs: torch.Tensor,
         q_xs: torch.Tensor,
         xt: torch.Tensor,
-    ) -> torch.Tensor:
+        confidence_cache: torch.Tensor | None = None,
+        final_timestep: bool = False,
+    ) -> Tuple[torch.Tensor, int]:
         """
         Remask the sampled sequence based on different strategies.
         Args:
             xs (torch.Tensor): Sampled sequence.
             q_xs (torch.Tensor): Posterior distribution.
             xt (torch.Tensor): Masked sequence.
-            mask_token_id (int): Mask token ID.
+            confidence_cache (torch.Tensor): Confidence cache (current block).
         Returns:
             torch.Tensor: Remasked tokens.
+            int: added NFEs from remasking
         """
+        remask_nfes = 0
         # TODO implement remdm
         if self.config.shift_logits:
             xt = xt[:, 1:]
 
-        if self.sampler_config.first_hitting:
+        if (
+            self.sampler_config.first_hitting
+            or self.sampler_config.low_confidence_remasking
+        ):
             # unmask a token (among currently masked tokens)
             num_masked = (xt == self.mask_token_id).sum(-1)
             if num_masked == 0:
-                return xs
+                return (xs, 0)
 
             if self.sampler_config.low_confidence_remasking:
                 # select the index with the highest confidence
                 xs_q = q_xs.gather(-1, xs[..., None]).squeeze(-1)
-                xs_q[xt != self.mask_token_id] = 0
+                xs_q[xt != self.mask_token_id] = float("-inf")
                 ind = xs_q.argmax(dim=-1)
             else:
                 # uniformly select an index (among masked tokens)
@@ -847,8 +854,58 @@ class D3PM(Denoiser):
 
             # remask tokens not selected
             xs[~unmask_flag] = self.mask_token_id
+        if (
+            self.sampler_config.remdm
+            and confidence_cache is not None
+            and not final_timestep
+        ):
+            # confidences of newly predicted tokens
+            xs_q = q_xs.gather(-1, xs[..., None]).squeeze(-1)
+            xs_q[xs == self.mask_token_id] = float("inf")
+            cache_flag = xs_q <= 1
+            # if we can only sample with low confidence, remask that token and its previous token
+            # if self.mask_token_id in xt:
+            #     import ipdb ; ipdb.set_trace()
+            # if (xs_q < 1).any() and xs_q[xs_q < 1].max() < 0.95:
+            #     # remask the entire block!!
+            #     # if xs_q.min() < 1:
+            #     #     remask_idx = torch.where(xs_q != 1)[1]
+            #     #     xs[:, remask_idx] = self.mask_token_id
+            #     #     xs_q[:, remask_idx] = float('inf')
+            #     #     remask_nfes += remask_idx.numel()
+            #     # remask the least confident token
+            #     remask_idx = xs_q.argmin(dim=-1)
+            #     xs[:, remask_idx] = self.mask_token_id
+            #     xs_q[:, remask_idx] = float('inf')
+            #     remask_nfes += 1
 
-        return xs
+            #     # # remask that token
+            #     # remask_idx = torch.where(xs_q < 0.95)[1]
+            #     # xs[:, remask_idx] = self.mask_token_id
+            #     # xs_q[:, remask_idx] = float('inf')
+            #     # remask_nfes += 1
+            #     # if xs_q.min() < 1:
+            #     #     remask_idx = xs_q.argmin(dim=-1)
+            #     #     # remask the prev lowest-confidence token
+            #     #     xs[:, remask_idx] = self.mask_token_id
+            #     #     xs_q[:, remask_idx] = float('inf')
+            #     #     remask_nfes += 1
+            if self.mask_token_id in xt:
+                remask_idx = xs_q.argmin(dim=-1)
+                xs[:, remask_idx] = self.mask_token_id
+                xs_q[:, remask_idx] = float("inf")
+                remask_nfes += 1
+
+            # in-place update
+            confidence_cache.masked_scatter_(cache_flag, xs_q[cache_flag])
+
+            # check if t is within remasking thresholds
+            # if it is, remask up to k tokens (hyperparam)
+            # TODO: also just try remasking if max confidence is below a threshold
+            # TODO: beam search
+        if self.sampler_config.remdm and final_timestep:
+            xs[xs == self.mask_token_id] = q_xs[xs == self.mask_token_id].argmax(dim=-1)
+        return (xs, remask_nfes)
 
     def _compute_posterior(
         self,
@@ -892,6 +949,7 @@ class D3PM(Denoiser):
             f"Diffusion type {self.diffusion_type} not implemented."
         )
 
+    @torch.no_grad()
     def _generate_unconditional(  # TODO add CBG and CFG generation
         self,
         alpha_t: torch.Tensor,
@@ -982,6 +1040,7 @@ class D3PM(Denoiser):
         q_xs = self._compute_posterior(x_theta, denoiser_inputs.xt, alpha_t, alpha_s)
         return q_xs, cache
 
+    @torch.no_grad()
     def generate(  # TODO: clean up signature and docstring
         self,
         max_length: int | None = None,
@@ -1016,6 +1075,7 @@ class D3PM(Denoiser):
         block_size = self.sampler_config.block_size
         max_blocks = max_length // block_size
         total_NFEs = 0
+        remask_NFEs = 0
         # cache kvs of context
         past_key_values = None
         blocks_to_cache = 0
@@ -1026,6 +1086,9 @@ class D3PM(Denoiser):
             batch_size=batch_size,
             length=max_blocks * block_size,
         )
+        # sample_confidence = torch.zeros_like(
+        #     accumulated_samples, dtype=torch.float32, device=device
+        # )
 
         if context is not None:
             accumulated_samples[:, :context_len] = context
@@ -1059,6 +1122,8 @@ class D3PM(Denoiser):
                 xt = accumulated_samples[
                     :, (block_id * block_size) : ((block_id + 1) * block_size)
                 ]
+            if self.mask_token_id not in xt:
+                continue
             timesteps = self._sample_generation_timesteps(
                 max_seq_len=block_size, device=device
             )
@@ -1071,6 +1136,7 @@ class D3PM(Denoiser):
             )
             dt = (1 - self.sampler_config.min_t) / len(timesteps)
             cache = None
+            confidence_cache = None
             context_block = (
                 accumulated_samples[:, : (block_id * block_size)]
                 if block_id > 0
@@ -1078,6 +1144,8 @@ class D3PM(Denoiser):
             )
 
             for t in step_pbar:
+                if self.mask_token_id not in xt:
+                    break
                 if cache is None:
                     block_NFEs += 1
                     total_NFEs += 1
@@ -1112,15 +1180,33 @@ class D3PM(Denoiser):
                 )
 
                 xs = self._sample_categorical(q_xs)
-                xs = self._maybe_remask(xs, q_xs, xt)
+                xs, remask_i_NFEs = self._maybe_remask(
+                    xs,
+                    q_xs,
+                    xt,
+                    confidence_cache=confidence_cache,
+                    final_timestep=t == timesteps[-1],
+                )
+                block_NFEs += remask_i_NFEs
+                total_NFEs += remask_i_NFEs
+                remask_NFEs += remask_i_NFEs
+
+                if self.sampler_config.remdm and confidence_cache is None:
+                    confidence_cache = q_xs.gather(-1, xs[..., None]).squeeze(-1)
+                    confidence_cache[xs == self.mask_token_id] = float("inf")
+                    # sample_confidence[
+                    #     :, (block_id * block_size) : ((block_id + 1) * block_size)
+                    # ] = confidence_cache
                 if self.config.shift_logits:
                     xs = torch.cat((xt[:, :1], xs), dim=-1)
 
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
-                    prob_check=(q_xs.sum() / xt.numel()).item(),
+                    remask_NFEs=remask_NFEs,
+                    prob_check=q_xs.sum(-1).mean().item(),
                     nan_check=bool(q_xs.isnan().sum() > 0),
+                    # block_confidence=confidence_cache[confidence_cache != float('inf')].mean().item() if confidence_cache is not None else None,
                 )
 
                 if not torch.allclose(xs, xt) or not disable_cache:
@@ -1134,8 +1220,6 @@ class D3PM(Denoiser):
                 accumulated_samples[
                     :, (block_id * block_size) : ((block_id + 1) * block_size)
                 ] = xt
-            if tokenizer is not None:
-                print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
                 stop_criteria_met = stopping_criteria(
                     input_ids=accumulated_samples[:, context_len:], scores=None
@@ -1145,10 +1229,16 @@ class D3PM(Denoiser):
                         accumulated_samples = accumulated_samples[
                             :, : ((block_id + 1) * block_size) + 1
                         ]
+                        # sample_confidence = sample_confidence[
+                        #     :, : ((block_id + 1) * block_size) + 1
+                        # ]
                     else:
                         accumulated_samples = accumulated_samples[
                             :, : ((block_id + 1) * block_size)
                         ]
+                        # sample_confidence = sample_confidence[
+                        #     :, : ((block_id + 1) * block_size)
+                        # ]
                     break
             if self.sampler_config.kv_caching:
                 if self.config.shift_logits:
@@ -1157,7 +1247,7 @@ class D3PM(Denoiser):
                     context=xt,
                     past_key_values=past_key_values,
                 )
-        return accumulated_samples, total_NFEs
+        return accumulated_samples, total_NFEs  # , sample_confidence.mean().item()
 
 
 class MDLMConfig(D3PMConfig):
