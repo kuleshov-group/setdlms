@@ -4,13 +4,11 @@ This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 
 import json
 import os
-import random
 import re
 from typing import Any, List, Tuple
 
 import accelerate
 import hydra
-import numpy as np
 import torch
 from lm_eval.api.model import LM
 from omegaconf import DictConfig
@@ -26,6 +24,7 @@ from scripts.utils import (
     load_model_from_ckpt_dir_path,
     print_and_save_config,
     register_useful_resolvers,
+    set_seed,
 )
 
 
@@ -43,15 +42,6 @@ class RegexStoppingCriteria(StoppingCriteria):
         if len(matches) > 1:
             return True
         return False
-
-
-def set_seed(seed):
-    torch.manual_seed(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 class LMEvalHarnessModel(LM):

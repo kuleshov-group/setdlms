@@ -1,0 +1,6 @@
+stop_string_criteria:
+  _target_: transformers.generation.StopStringCriteria
+  tokenizer: ${tokenizer}
+  stop_strings:
+    - '<|im_end|>'
+    - '<|endoftext|>'
