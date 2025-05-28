@@ -41,7 +41,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=bd3lm \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
-  model.config.max_length=768 \
+  model.config.length=768 \
   model.config.backbone_config.keep_bottom_n_encoder_layers=${KEEP_BOTTOM_N_ENCODER_LAYERS} \
   model.config.backbone_config.keep_top_n_decoder_layers=${KEEP_TOP_N_DECODER_LAYERS} \
   model.config.backbone_config.tie_encoder_decoder_weights=true \

@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
 
 import fsspec
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, file_exists, repo_exists
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 log = logging.getLogger(__name__)
@@ -175,12 +175,13 @@ def _flatten_and_copy(src_path: Path, dest_path: Path, ignore: list[str]) -> Non
     _copy_file_contents_and_flatten_relative_imports(src_path, dest_path)
 
 
-def push_to_hub(
+def save_pretrained_or_push_to_hub(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
     repo_id: str = "kuleshov-group/dllm-dev",
     commit_message: str = "Add model and code",
     local: bool = False,
+    private: bool = True,
     project_root: str | None = None,
 ) -> None:
     """Push / Save model and code to hub / local directory.
@@ -193,6 +194,7 @@ def push_to_hub(
         repo_id (str) Repository ID on Hugging Face Hub / Local directory.
         commit_message (str): Commit message.
         local (bool): If True, push to local directory instead of Hugging Face Hub.
+        private (bool): Whether remote hub repo is private.
         project_root (optional: str): Path to the project root directory. If None, uses
             the parent of __file__ path.
             Use this parameter if, for example, pushing from a tmp copy of the repo.
@@ -244,11 +246,14 @@ def push_to_hub(
             raise ValueError("Argument `repo_id` is required for push_to_hub.")
         model.push_to_hub(
             repo_id,
-            private=True,
-            commit_message=commit_message,
+            private=private,
+            commit_message="Update pytorch.bin; " + commit_message,
             safe_serialization=False,
         )
-        tokenizer.push_to_hub(repo_id, private=True, commit_message=commit_message)
+        if not repo_exists(repo_id) or not file_exists(repo_id, "tokenizer.json"):
+            tokenizer.push_to_hub(
+                repo_id, private=private, commit_message="Upload tokenizer"
+            )
 
     # Copy source files
     if project_root is None:
@@ -281,7 +286,7 @@ def push_to_hub(
     if not local:
         api = HfApi()
         log.debug(f"Creating repo or fetching URL for {repo_id}")
-        url = api.create_repo(repo_id=repo_id, exist_ok=True, private=True)
+        url = api.create_repo(repo_id=repo_id, exist_ok=True, private=private)
         log.debug(f"Found repo at {url}")
 
         log.debug(f"Uploading files to {repo_id} from {dest_path}")

@@ -7,3 +7,6 @@ hf_compatible_checkpointing:
   num_checkpoints_to_keep: ${composer.trainer.save_num_checkpoints_to_keep}
   overwrite: ${composer.trainer.save_overwrite}
   disable_hf: false
+  save_local: true
+  save_to_hub: false
+  hub_repo_id: null

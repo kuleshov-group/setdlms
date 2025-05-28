@@ -1,6 +1,6 @@
 _target_: src.datasets.tokenize_on_demand.GSM8KDataset
 split: "train"
-max_length: ${model.config.max_length}
+max_length: ${model.config.length}
 dataset_path: "openai/gsm8k"
 config_name: "main"
 padding: false

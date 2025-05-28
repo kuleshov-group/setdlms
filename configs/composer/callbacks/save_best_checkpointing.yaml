@@ -5,4 +5,7 @@ save_best_checkpointing:
   num_checkpoints_to_keep: -1
   metric_to_monitor: eval/loss  # <train|val>/<metric_name>
   mode: 'min'
-  disable_hf: true
+  disable_hf: ${composer.callbacks.hf_compatible_checkpointing.disable_hf}
+  save_local: ${composer.callbacks.hf_compatible_checkpointing.save_local}
+  save_to_hub: ${composer.callbacks.hf_compatible_checkpointing.save_to_hub}
+  hub_repo_id: ${composer.callbacks.hf_compatible_checkpointing.hub_repo_id}

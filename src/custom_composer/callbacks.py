@@ -13,7 +13,11 @@ from composer.core import Callback, State, Timestamp
 from composer.loggers import Logger
 from composer.utils import PartialFilePath, dist, get_save_filename
 
-from src.utils import fsspec_exists, push_to_hub, snapshot_repo_to_tmp_dir
+from src.utils import (
+    fsspec_exists,
+    save_pretrained_or_push_to_hub,
+    snapshot_repo_to_tmp_dir,
+)
 
 log = logging.getLogger(__name__)
 __all__ = ["DataloaderSpeedMonitor"]
@@ -48,9 +52,22 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
 
     """
 
-    def __init__(self, disable_hf: bool = False, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        disable_hf: bool = False,
+        save_local: bool = True,
+        save_to_hub: bool = False,
+        hub_repo_id: str | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self.disable_hf = disable_hf
+        self.save_to_hub = save_to_hub and not disable_hf
+        self.hub_repo_id = hub_repo_id
+        if self.save_to_hub and hub_repo_id is None:
+            raise ValueError("Saving to hub requires a hub repo id be provided.")
+        self.save_local = save_local and not disable_hf
+        self.disable_hf = disable_hf or not (self.save_to_hub or self.save_local)
         self.project_root = ""
         self.hf_filename = PartialFilePath(
             f"HF_{self.filename.filename.split('.pt')[0]}", self.filename.folder
@@ -115,23 +132,65 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
         self.all_saved_hf_checkpoints_to_timestamp[save_hf_filename] = state.timestamp
 
         # Adapting `checkpoint.save_checkpoint / ._save_checkpoint` for HF
+        saved_hf_path = None
         if dist.get_global_rank() == 0:
-            push_to_hub(
-                model=state.model.module.model
-                if hasattr(state.model, "module")
-                else state.model.model,
-                tokenizer=state.model.module.tokenizer
-                if hasattr(state.model, "module")
-                else state.model.tokenizer,
-                repo_id=save_hf_filename,
-                local=True,
-                project_root=self.project_root,
-                # commit_message=repo_id,  # TODO: Use push_to_hub and pass info here
-            )
-            saved_hf_path = save_hf_filename
-        else:
-            saved_hf_path = None
-        log.debug(f"HF checkpoint locally saved to {saved_hf_path}")
+            if self.save_local:
+                save_pretrained_or_push_to_hub(
+                    model=state.model.module.model
+                    if hasattr(state.model, "module")
+                    else state.model.model,
+                    tokenizer=state.model.module.tokenizer
+                    if hasattr(state.model, "module")
+                    else state.model.tokenizer,
+                    repo_id=save_hf_filename,
+                    local=True,
+                    project_root=self.project_root,
+                )
+                saved_hf_path = save_hf_filename
+                log.debug(f"HF checkpoint locally saved to {saved_hf_path}")
+            if self.save_to_hub:
+                metrics_str = "Train metrics:\n\t" + "\n\t".join(
+                    [
+                        f"{k}={v.item():0.4f}"
+                        for k, v in state.train_metric_values.items()
+                    ]
+                )
+                if hasattr(state, "eval_metric_values"):
+                    metrics_str += "\n\nVal metrics:\n\t" + "\n\t".join(
+                        [
+                            f"{k}={v.item():0.4f}"
+                            for k, v in state.train_metric_values.items()
+                        ]
+                    )
+                commit_message = (
+                    f"Checkpoint @ Epoch {state.timestamp.epoch.value}, "
+                    f"Batch {state.timestamp.batch.value}\n\n"
+                    f"{metrics_str}\n\n"
+                    f"Timestamp:\n"
+                    f"\titeration={state.timestamp.iteration.value}\n"
+                    f"\tepoch={state.timestamp.epoch.value}\n"
+                    f"\tbatch={state.timestamp.batch.value}\n"
+                    f"\tsample={state.timestamp.sample.value}\n"
+                    f"\ttoken={state.timestamp.token.value}\n"
+                    f"\tepoch_in_iteration={state.timestamp.epoch_in_iteration.value}\n"
+                    f"\ttoken_in_iteration={state.timestamp.token_in_iteration.value}\n"
+                    f"\tbatch_in_epoch={state.timestamp.batch_in_epoch.value}\n"
+                    f"\tsample_in_epoch={state.timestamp.sample_in_epoch.value}\n"
+                    f"\ttoken_in_epoch={state.timestamp.token_in_epoch.value}"
+                )
+                save_pretrained_or_push_to_hub(
+                    model=state.model.module.model
+                    if hasattr(state.model, "module")
+                    else state.model.model,
+                    tokenizer=state.model.module.tokenizer
+                    if hasattr(state.model, "module")
+                    else state.model.tokenizer,
+                    repo_id=self.hub_repo_id,
+                    local=False,
+                    project_root=self.project_root,
+                    commit_message=commit_message,
+                )
+            log.debug(f"HF checkpoint pushed to {self.hub_repo_id}")
 
         if not saved_hf_path:  # not all ranks save
             super()._save_checkpoint(state, logger)  # Perform standard checkpointing
@@ -186,10 +245,15 @@ class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
         metric_to_monitor: str,
         mode: Literal["min", "max"] = "min",
         disable_hf: bool = False,
+        save_local: bool = True,
+        save_to_hub: bool = False,
+        hub_repo_id: str | None = None,
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        super().__init__(disable_hf, *args, **kwargs)
+        super().__init__(
+            disable_hf, save_local, save_to_hub, hub_repo_id, *args, **kwargs
+        )
 
         self.metric_to_monitor = metric_to_monitor
         self.train_or_eval = metric_to_monitor.split("/")[0]

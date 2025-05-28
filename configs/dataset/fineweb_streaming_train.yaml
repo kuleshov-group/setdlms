@@ -1,7 +1,7 @@
 _target_: src.datasets.streaming_dataset_hf.StreamingHFDataset
 name: HuggingFaceFW/fineweb-edu
 split: train
-max_length: ${model.config.max_length}
+max_length: ${model.config.length}
 shuffle_buffer_size: null
 seed: ${seed}
 take_size: null

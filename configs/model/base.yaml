@@ -6,7 +6,7 @@ config:
   # Prevents backbone and noise from being instantiated when `hydra.utils.instantiate` is called.
   # These should be instantiated by in model init.
   _recursive_: false
-  max_length: ???
+  length: ???
   time_conditioned_backbone: null
   # OmegaConf resolver creates the dictionary that contains tokenizer config params
   tokenization_config: ${oc.create:${make_tokenization_config:${tokenizer}}}

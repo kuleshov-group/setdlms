@@ -31,7 +31,7 @@ class ARConfig(DenoiserConfig):
 
     def __init__(
         self,
-        max_length: int | None = None,
+        length: int | None = None,
         backbone_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         noise_config: None = None,
@@ -39,7 +39,7 @@ class ARConfig(DenoiserConfig):
         **kwargs,
     ):
         super().__init__(
-            max_length=max_length,
+            length=length,
             backbone_config=backbone_config,
             noise_config=noise_config,
             tokenization_config=tokenization_config,
