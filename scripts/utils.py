@@ -106,7 +106,10 @@ def format_number(num):
 
 
 def print_and_save_config(
-    cfg: DictConfig, resolve: bool = True, save_cfg: bool = True
+    cfg: DictConfig,
+    resolve: bool = True,
+    save_cfg: bool = True,
+    save_dir: str | None = None,
 ) -> None:
     """Prints content of DictConfig using Rich library and its tree structure.
 
@@ -114,6 +117,8 @@ def print_and_save_config(
       cfg (DictConfig): Configuration composed by Hydra.
       resolve (bool): Whether to resolve reference fields of DictConfig.
       save_cfg (bool): Whether to save the configuration tree to a file.
+      save_dir (Optional[str]): Directory to save the configuration tree to.
+        If None, defaults to `os.getcwd()`.
     """
 
     style = "dim"
@@ -131,9 +136,10 @@ def print_and_save_config(
         branch.add(rich.syntax.Syntax(branch_content, "yaml"))
     rich.print(tree)
     if save_cfg:
-        with fsspec.open(f"{os.getcwd()}/config_tree.txt", "w") as fp:
+        save_dir = save_dir if save_dir is not None else os.getcwd()
+        with fsspec.open(os.path.join(save_dir, "config_tree.txt"), "w") as fp:
             rich.print(tree, file=fp)
-        with fsspec.open(f"{os.getcwd()}/config.yaml", "w") as fp:
+        with fsspec.open(os.path.join(save_dir, "config.yaml"), "w") as fp:
             OmegaConf.save(cfg, fp, resolve=resolve)
 
 
