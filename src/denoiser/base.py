@@ -95,7 +95,6 @@ class DenoiserConfig(PretrainedConfig):
         length: int | None = None,
         backbone_config: dict[str, Any] | None = None,
         noise_config: dict[str, Any] | None = None,
-        sampler_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         time_conditioned_backbone: bool | None = None,
         **kwargs,
@@ -117,7 +116,7 @@ class DenoiserConfig(PretrainedConfig):
                 setattr(self, v, None)
         self.backbone_config = backbone_config
         self.noise_config = noise_config
-        self.sampler_config = sampler_config
+        self.tokenization_config = tokenization_config
         self.length = length
         self.time_conditioned_backbone = time_conditioned_backbone
 
