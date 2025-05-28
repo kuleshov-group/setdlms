@@ -57,5 +57,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.loggers=null \
   composer.trainer.eval_subset_num_batches=2 \
+  composer.callbacks.hf_compatible_checkpointing.save_local=false \
   composer.callbacks.hf_compatible_checkpointing.save_to_hub=true \
   composer.callbacks.hf_compatible_checkpointing.hub_repo_id=yairschiff/test-hf-ckpt
