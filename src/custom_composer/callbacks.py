@@ -159,7 +159,7 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
                     metrics_str += "\n\nVal metrics:\n\t" + "\n\t".join(
                         [
                             f"{k}={v.item():0.4f}"
-                            for k, v in state.train_metric_values.items()
+                            for k, v in state.eval_metric_values.items()
                         ]
                     )
                 commit_message = (
