@@ -244,16 +244,16 @@ def save_pretrained_or_push_to_hub(
     else:
         if not repo_id:
             raise ValueError("Argument `repo_id` is required for push_to_hub.")
+        if not repo_exists(repo_id) or not file_exists(repo_id, "tokenizer.json"):
+            tokenizer.push_to_hub(
+                repo_id, private=private, commit_message="Upload tokenizer"
+            )
         model.push_to_hub(
             repo_id,
             private=private,
             commit_message="Update pytorch.bin; " + commit_message,
             safe_serialization=False,
         )
-        if not repo_exists(repo_id) or not file_exists(repo_id, "tokenizer.json"):
-            tokenizer.push_to_hub(
-                repo_id, private=private, commit_message="Upload tokenizer"
-            )
 
     # Copy source files
     if project_root is None:
@@ -298,5 +298,4 @@ def save_pretrained_or_push_to_hub(
         log.debug(f"Commit info: {commit_info}")
         log.debug(f"Removing temporary directory {tmp_dir.name}")
         tmp_dir.cleanup()
-
     log.debug("Done")
