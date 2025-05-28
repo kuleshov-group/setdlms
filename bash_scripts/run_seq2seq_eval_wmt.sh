@@ -3,10 +3,13 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/cnn-dm-block4-bs128-keep1-causalencfalse-max10000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen600m_v1"
-
-OUTPUT_DIR="${MODEL_PATH}/wmt"
+#MODEL_PATH="${RUN_DIR}/cnn-dm-block4-bs128-keep1-causalencfalse-max10000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen600m_v1"
+#OUTPUT_DIR="${MODEL_PATH}/wmt"
+MODEL_PATH="yairschiff/wmt-e2d2-qwen600M"
+OUTPUT_DIR="${RUN_DIR}/${MODEL_PATH}"
+REVISION=null
 mkdir -p ${OUTPUT_DIR}
+
 L=256
 BLOCK_SIZE=4
 DO_SAMPLE=false # True, False
@@ -25,6 +28,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   hydra/hydra_logging=disabled \
   +eval/seq2seq@task=wmt \
   pretrained_model_name_or_path=${MODEL_PATH} \
+  pretrained_model_revision=${REVISION} \
   +ckpt_file=best-rank0.pt \
   +load_ema_weights=false \
   tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B" \

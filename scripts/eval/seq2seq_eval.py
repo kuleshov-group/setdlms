@@ -9,7 +9,7 @@ import torch.distributed as dist
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 from transformers.generation import StopStringCriteria
 
 from scripts.utils import (
@@ -78,10 +78,18 @@ def main(cfg: DictConfig) -> None:
             ckpt_file=cfg.ckpt_file,
         )
     except FileNotFoundError:
-        model = AutoModelForCausalLM.from_pretrained(
-            cfg.pretrained_model_name_or_path,
-            trust_remote_code=True,
-        )
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                cfg.pretrained_model_name_or_path,
+                trust_remote_code=True,
+                revision=getattr(cfg, "pretrained_model_revision", None),
+            )
+        except ValueError:  # Model not compatible with CausalLM
+            model = AutoModelForMaskedLM.from_pretrained(
+                cfg.pretrained_model_name_or_path,
+                trust_remote_code=True,
+                revision=getattr(cfg, "pretrained_model_revision", None),
+            )
     model = model.to(device)
     model.eval()
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
@@ -114,7 +122,7 @@ def main(cfg: DictConfig) -> None:
             outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=(local_rank != 0),
-                tokenizer=tokenizer,
+                # tokenizer=tokenizer,  # For debugging: prints intermediate generation
                 **gen_kwargs,
             )
         outputs = outputs[:, input_ids.shape[-1] :]

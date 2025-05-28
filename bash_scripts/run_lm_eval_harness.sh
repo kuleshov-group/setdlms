@@ -5,6 +5,7 @@ source setup_env.sh
 
 MODEL_PATH="${RUN_DIR}/gsm8k-block4-bs96-keeptop14-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen2B_tie_redo"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
+REVISION=null
 mkdir -p ${OUTPUT_DIR}
 L=256
 BLOCK_SIZE=4
@@ -26,6 +27,7 @@ accelerate launch scripts/eval/harness_eval.py \
   hydra/hydra_logging=disabled \
   +eval/lm_eval_harness@task=gsm8k \
   pretrained_model_name_or_path=${MODEL_PATH} \
+  pretrained_model_revision=${REVISION} \
   task.model.ckpt_file=${CKPT_FILE} \
   tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B" \
   output_path=${OUTPUT_PATH} \

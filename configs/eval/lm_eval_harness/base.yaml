@@ -17,6 +17,7 @@ model:
   _target_: scripts.harness_eval.LMEvalHarnessModel
   tokenizer: ${tokenizer}
   pretrained_model_name_or_path: ${pretrained_model_name_or_path}
+  pretrained_model_revision: ${pretrained_model_revision}
   generated_samples_output_path: ${generated_samples_output_path}
   load_ema_weights: false
   ckpt_file: 'best-rank0.pt'  # best-rank0.pt or latest-rank0.pt

@@ -1,12 +1,11 @@
-import os
-from argparse import ArgumentParser
+import logging
 
 import hydra
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
-from omegaconf import OmegaConf
+from omegaconf import DictConfig
 from streaming import StreamingDataset
-from transformers import AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
@@ -15,41 +14,57 @@ from scripts.utils import (
     register_useful_resolvers,
 )
 
+log = logging.getLogger(__name__)
 
-def main(args):
-    config = OmegaConf.load(os.path.join(args.model_path, "config.yaml"))
-    reproducibility.seed_all(config.seed)
 
-    config.composer.trainer.autoresume = False
-    config.composer.trainer.save_folder = "~/trash"
+@hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
+def main(cfg: DictConfig) -> None:
+    print_and_save_config(cfg, resolve=True, save_cfg=False)
+    reproducibility.seed_all(cfg.seed)
 
-    print_and_save_config(config, resolve=True, save_cfg=False)
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.tokenizer.pretrained_model_name_or_path,
-        trust_remote_code=True,
-    )
+    # Load tokenizer
+    tokenizer = hydra.utils.instantiate(cfg.tokenizer)
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
-    model = load_model_from_ckpt_dir_path(
-        path_to_ckpt_dir=args.model_path,
-        load_ema_weights=False,
-        ckpt_file="best-rank0.pt",
-        verbose=True,
-    ).to("cuda")
-
+    # Load model
+    try:
+        model = load_model_from_ckpt_dir_path(
+            path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
+            load_ema_weights=cfg.task.load_ema_weights,
+            ckpt_file=cfg.task.ckpt_file,
+        )
+    except FileNotFoundError:
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                cfg.pretrained_model_name_or_path,
+                trust_remote_code=True,
+                revision=getattr(cfg, "pretrained_model_revision", None),
+            )
+        except ValueError:  # Model not compatible with CausalLM
+            model = AutoModelForMaskedLM.from_pretrained(
+                cfg.pretrained_model_name_or_path,
+                trust_remote_code=True,
+                revision=getattr(cfg, "pretrained_model_revision", None),
+            )
     model = HuggingFaceModel(
-        model=model,
+        model=model,  # type: ignore
         tokenizer=tokenizer,
-        metrics=list(hydra.utils.instantiate(config.metrics).values()),
+        metrics=list(hydra.utils.instantiate(cfg.task.metrics).values()),
     )
+
+    # Setup distributed
+    if not dist.is_initialized():
+        log.info("Initializing dist")
+        dist.initialize_dist()
+    log.info("All nodes connected")
 
     eval_dataset = hydra.utils.instantiate(
-        config.eval_dataset,
-        tokenizer=tokenizer,
+        cfg.task.eval_dataset, tokenizer=tokenizer, max_length=model.config.length
     )
 
-    collator = hydra.utils.instantiate(config.collator, tokenizer=tokenizer)
+    collator = hydra.utils.instantiate(
+        cfg.task.collator, tokenizer=tokenizer, max_length=model.config.length
+    )
     eval_sampler = (
         dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
         if not isinstance(eval_dataset, StreamingDataset)
@@ -57,7 +72,7 @@ def main(args):
     )
 
     eval_dataloader = hydra.utils.instantiate(
-        config.eval_dataloader,
+        cfg.task.eval_dataloader,
         _convert_="partial",
         dataset=eval_dataset,
         collate_fn=collator,
@@ -65,28 +80,23 @@ def main(args):
     )
 
     trainer = hydra.utils.instantiate(
-        config.composer.trainer,
+        cfg.task.trainer,
         _convert_="all",
         model=model,
         eval_dataloader=eval_dataloader,
-        loggers=None,
     )
-    metrics = trainer.eval()
-    print(metrics)
+    trainer.eval()
+    print(
+        "\nMetrics:\n\t"
+        + "\n\t".join(
+            [
+                f"{k}: {v.item():0.4f}"
+                for k, v in trainer.state.eval_metric_values.items()
+            ]
+        )
+    )
 
 
 if __name__ == "__main__":
     register_useful_resolvers()
-    parser = ArgumentParser(description="Likelihood evaluation script")
-    parser.add_argument(
-        "--model_path",
-        type=str,
-        help="Path to the model checkpoint directory",
-    )
-    parser.add_argument(
-        "--output_path",
-        type=str,
-        help="Path to the output file",
-    )
-    opts = parser.parse_args()
-    main(opts)
+    main()

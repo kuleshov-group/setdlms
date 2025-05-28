@@ -15,6 +15,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 from transformers import (
     AutoModelForCausalLM,
+    AutoModelForMaskedLM,
     PreTrainedTokenizer,
     StoppingCriteria,
 )
@@ -50,6 +51,7 @@ class LMEvalHarnessModel(LM):
         pretrained_model_name_or_path: str,
         generated_samples_output_path: str,
         tokenizer: PreTrainedTokenizer,
+        pretrained_model_revision: str | None = None,
         load_ema_weights: bool = False,
         ckpt_file: str = "best-rank0.pt",  # best-rank0.pt or latest-rank0.pt
         gen_kwargs: Any | None = None,
@@ -59,6 +61,8 @@ class LMEvalHarnessModel(LM):
             pretrained_model_name_or_path (str): Path to ckpt dir or HF model repo.
             generated_samples_output_path (str): Path to generated samples dir.
             tokenizer (str): Tokenizer name or path.
+            pretrained_model_revision (Optional[str]): Revision (e.g., commit id)
+                passed to `.from_pretrained` model instantiation.
             load_ema_weights (bool): Whether to load ema weights (for local ckpts).
             ckpt_file (str): Name of ckpt file (for local ckpts).
             gen_kwargs (dict): Generator kwargs.
@@ -95,10 +99,18 @@ class LMEvalHarnessModel(LM):
                 ckpt_file=ckpt_file,
             )
         except FileNotFoundError:
-            model = AutoModelForCausalLM.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=True,
-            )
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    revision=pretrained_model_revision,
+                )
+            except ValueError:  # Model not compatible with CausalLM
+                model = AutoModelForMaskedLM.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    revision=pretrained_model_revision,
+                )
         self.model = model.to(self.device)
         self.model.eval()
         self.tokenizer = tokenizer
