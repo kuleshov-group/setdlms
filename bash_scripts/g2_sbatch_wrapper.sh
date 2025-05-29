@@ -20,7 +20,7 @@ fi
 NUM_VISIBLE_DEVICES=8
 RUN_DIR="/share/kuleshov/yzs2/runs/dllm-dev"
 sbatch \
-  --job-name=${script_name::-3} \
+  --job-name=${script_name:4:-3} \
   --output="../watch_folder/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
