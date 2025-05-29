@@ -203,6 +203,16 @@ class D3PM(Denoiser):
             alpha_t_prime=alpha_t_prime,
         )
 
+    def _forward(
+        self,
+        backbone_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs,
+    ) -> torch.FloatTensor:
+        if self.config.shift_logits:
+            backbone_output = backbone_output[:, :-1, ...]
+        return torch.log_softmax(backbone_output, dim=-1)  # type: ignore
+
     def _compute_loss(
         self,
         model_output: torch.FloatTensor,
@@ -600,14 +610,10 @@ class MDLM(D3PM):
         if self.config.shift_logits:
             backbone_output = backbone_output[:, :-1, ...]
         # Zero-mask probability
-        mask = (
-            torch.arange(backbone_output.shape[-1], device=backbone_output.device)
-            == self.mask_token_id
-        ).view(1, 1, -1)  # unsqueeze for broadcast to (batch, seq_length, vocab_size)
-        log_probs = torch.where(
-            mask, backbone_output + self.neg_infinity, backbone_output
+        backbone_output[..., self.mask_token_id] = self.neg_infinity
+        log_probs = backbone_output - torch.logsumexp(
+            backbone_output, dim=-1, keepdim=True
         )
-        log_probs = log_probs - torch.logsumexp(log_probs, dim=-1, keepdim=True)
         # Copy-over unmasked: For the log_probs of the unmasked tokens, set all values
         # to -infinity except for the indices corresponding to
         # the unmasked tokens.
@@ -752,9 +758,6 @@ class BD3LM(MDLM):
         if self.config.backbone_is_decoder_only:
             assert self.config.attn_backend != "flex_attention", (
                 "FlexAttention not supported yet"
-            )
-            assert self.config.block_size == self.config.length, (
-                "Only MDLM supported as decoder-only"
             )
             static_mask = torch.full(
                 (self.config.length, self.config.length), fill_value=True
