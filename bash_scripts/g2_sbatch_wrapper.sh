@@ -17,6 +17,7 @@ if [ ! -e "${script_full_path}" ]; then
   echo "Script '$script_full_path' not found."
 fi
 
+USERNAME=$(whoami)
 NUM_VISIBLE_DEVICES=8
 RUN_DIR="/share/kuleshov/yzs2/runs/dllm-dev"
 sbatch \
@@ -31,7 +32,7 @@ sbatch \
   --nodes=1 \
   --ntasks-per-node=${NUM_VISIBLE_DEVICES} \
   --gres=gpu:${NUM_VISIBLE_DEVICES} \
-  --mail-user=yzs2@cornell.edu \
+  --mail-user=${USERNAME}@cornell.edu \
   --mail-type=END \
   --requeue \
   --exclude=brandal \
