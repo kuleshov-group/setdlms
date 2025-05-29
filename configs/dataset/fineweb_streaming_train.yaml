@@ -4,5 +4,5 @@ split: train
 max_length: ${model.config.length}
 shuffle_buffer_size: null
 seed: ${seed}
-take_size: null
 padding: false
+take_size: 0
