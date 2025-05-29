@@ -20,11 +20,11 @@ fi
 NUM_VISIBLE_DEVICES=8
 RUN_DIR="/share/kuleshov/yzs2/runs/dllm-dev"
 sbatch \
-  --job-name=dllm \
+  --job-name=${script_name::-3} \
   --output="../watch_folder/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=kuleshov \
+  --partition=kuleshov,gpu \
   --constraint="[a100|a6000|a5000|3090]" \
   --time=960:00:00 \
   --mem=64000 \
@@ -34,5 +34,6 @@ sbatch \
   --mail-user=yzs2@cornell.edu \
   --mail-type=END \
   --requeue \
+  --exclude=brandal \
   --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR}" \
   ${script_full_path}
