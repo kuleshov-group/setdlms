@@ -5,6 +5,7 @@ import torch
 from transformers import DataCollatorWithPadding, PreTrainedTokenizerBase
 
 
+# TODO: For AR init diffusion models, implement attn_mask annealing? (see DiffuLlama)
 class DenoisingCollator:
     """Custom collator that samples a random t value for each example in the batch."""
 
