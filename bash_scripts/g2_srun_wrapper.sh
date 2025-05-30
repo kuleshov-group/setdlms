@@ -25,5 +25,6 @@ if [ ! -e "${script_full_path}" ]; then
 fi
 
 export NUM_VISIBLE_DEVICES=${SLURM_GPUS_ON_NODE}
-export RUN_DIR="/share/kuleshov/yzs2/runs/dllm-dev"
+RUN_DIR="/share/kuleshov/$(whoami)/runs/dllm-dev"
+export RUN_DIR
 source ${script_full_path}
