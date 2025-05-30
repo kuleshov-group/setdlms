@@ -21,7 +21,7 @@ PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/
 TAG=e2d2_qwen600M
 RUN_NAME=gsm8k-block${BLOCK_SIZE}-keepbottomenc${KEEP_BOTTOM_N_ENCODER_LAYERS}-keeptopdec${KEEP_TOP_N_DECODER_LAYERS}-${TAG}
 
-MICRO_BATCH_SIZE=1
+MICRO_BATCH_SIZE=8
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -30,7 +30,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="2ep" \
+  composer.trainer.eval_interval="5ep" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=cosine_annealing_with_warmup \
@@ -49,9 +49,9 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   block_size=${BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="1ep" \
+  composer.trainer.save_interval="5ep" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.save_local=false \
   composer.callbacks.hf_compatible_checkpointing.save_to_hub=true \
-  composer.callbacks.hf_compatible_checkpointing.hub_repo_id=yairschiff/${RUN_NAME} \
+  composer.callbacks.hf_compatible_checkpointing.hub_repo_id=yairschiff/${RUN_NAME}

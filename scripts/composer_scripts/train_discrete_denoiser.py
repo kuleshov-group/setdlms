@@ -1,6 +1,7 @@
 import logging
 
 import hydra
+import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
 from omegaconf import DictConfig, OmegaConf
@@ -27,6 +28,10 @@ def main(cfg: DictConfig) -> None:
     # Tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
+    # Chat template is causing issues for composer when running save_checkpoint:
+    #   https://github.com/mosaicml/composer/blob/main/composer/models/huggingface.py#L635-L663 # noqa: E501
+    if hasattr(tokenizer, "chat_template"):
+        delattr(tokenizer, "chat_template")
 
     # Model
     model = hydra.utils.instantiate(
@@ -51,8 +56,16 @@ def main(cfg: DictConfig) -> None:
     log.info("All nodes connected")
 
     # Collator
-    collator = hydra.utils.instantiate(
+    train_collator = hydra.utils.instantiate(
         cfg.collator,
+        tokenizer=tokenizer,
+        rank=dist.get_global_rank(),
+        world_size=dist.get_world_size(),
+    )
+    eval_collator = hydra.utils.instantiate(
+        cfg.collator,
+        # Disable, as this makes reproducibility per_device_batch_size dependent
+        antitehtic_sampling=False,
         tokenizer=tokenizer,
         rank=dist.get_global_rank(),
         world_size=dist.get_world_size(),
@@ -73,7 +86,7 @@ def main(cfg: DictConfig) -> None:
         cfg.train_dataloader,
         _convert_="partial",
         dataset=train_dataset,
-        collate_fn=collator,
+        collate_fn=train_collator,
         sampler=train_sampler,
     )
     # time.sleep(30)  # Needed for multi-node training
@@ -93,11 +106,11 @@ def main(cfg: DictConfig) -> None:
             cfg.eval_dataloader,
             _convert_="partial",
             dataset=eval_dataset,
-            collate_fn=collator,
+            collate_fn=eval_collator,
             sampler=eval_sampler,
         )
     else:
-        eval_dataloader = None
+        eval_dataset, eval_dataloader = None, None
     # time.sleep(30)  # Needed for multi-node training
 
     # Optimizer
@@ -145,14 +158,13 @@ def main(cfg: DictConfig) -> None:
 
     trainer.fit()
 
-    # TODO: when training is done save / push ema params to hub
-    # TODO: check that the ema_model is same as the one from trainer.state
-    # algorithms.ema.ema_model.named_parameters()
+    if torch_dist.is_initialized():
+        torch_dist.destroy_process_group()
 
     # Clean up `tmp` dir potentially created StreamingDataset
     if hasattr(train_dataset, "remove_tmp_files"):
         train_dataset.remove_tmp_files()
-    if hasattr(eval_dataset, "remove_tmp_files"):
+    if eval_dataset is not None and hasattr(eval_dataset, "remove_tmp_files"):
         eval_dataset.remove_tmp_files()
 
 

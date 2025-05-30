@@ -100,7 +100,7 @@ class DenoisingCollator:
         batch = self.base_collate_fn(features)
         batch_size = batch["input_ids"].shape[0]
         global_batch_size = self._world_size * batch_size
-        t_index = (  # index t's for the given device
+        t_index = (  # index t's for the given device (used for antithetic_sampling
             self._rank * batch_size,
             min((self._rank + 1) * batch_size, global_batch_size),
         )

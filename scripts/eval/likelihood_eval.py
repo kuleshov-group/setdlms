@@ -2,6 +2,7 @@ import logging
 import os
 
 import hydra
+import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
 from omegaconf import DictConfig
@@ -101,6 +102,9 @@ def main(cfg: DictConfig) -> None:
             ]
         )
     )
+
+    if torch_dist.is_initialized():
+        torch_dist.destroy_process_group()
 
 
 if __name__ == "__main__":
