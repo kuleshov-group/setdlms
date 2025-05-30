@@ -1,5 +1,12 @@
 #!/bin/bash
 
+<<comment
+#  Usage:
+cd bash_scripts/
+source g2_run_wrapper.sh <SHELL_SCRIPT>
+comment
+
+
 if [ -z "$1" ]; then
   echo "Usage: $0 script_name"
 fi
