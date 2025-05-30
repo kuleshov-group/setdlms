@@ -13,6 +13,7 @@ defaults:
       - runtime_estimator
       - save_best_checkpointing
       - speed_monitor
+#      - log_sampled_timestep
   - loggers: wandb
   - lr_scheduler: constant_with_warmup
   - optimizer: decoupled_adamw

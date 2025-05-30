@@ -17,7 +17,7 @@ max_duration: '1000000ba'
 eval_interval: '10000ba'
 progress_bar: false
 log_to_console: true
-console_log_interval: '100ba'
+console_log_interval: '10ba'
 precision: 'amp_bf16'
 device_train_microbatch_size: ${div_up:${train_dataloader.batch_size}, ${training.grad_accum}}
 save_folder: ${checkpointing.save_dir}

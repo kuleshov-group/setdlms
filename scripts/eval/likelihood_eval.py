@@ -1,4 +1,5 @@
 import logging
+import os
 
 import hydra
 from composer.models import HuggingFaceModel
@@ -13,6 +14,7 @@ from scripts.utils import (
     print_and_save_config,
     register_useful_resolvers,
 )
+from src.utils import fsspec_exists
 
 log = logging.getLogger(__name__)
 
@@ -27,13 +29,13 @@ def main(cfg: DictConfig) -> None:
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
     # Load model
-    try:
+    if fsspec_exists(os.path.join(cfg.pretrained_model_name_or_path, "config.yaml")):
         model = load_model_from_ckpt_dir_path(
             path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
             load_ema_weights=cfg.task.load_ema_weights,
             ckpt_file=cfg.task.ckpt_file,
         )
-    except FileNotFoundError:
+    else:
         try:
             model = AutoModelForCausalLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
@@ -55,7 +57,7 @@ def main(cfg: DictConfig) -> None:
     # Setup distributed
     if not dist.is_initialized():
         log.info("Initializing dist")
-        dist.initialize_dist()
+        dist.initialize_dist(timeout=600)
     log.info("All nodes connected")
 
     eval_dataset = hydra.utils.instantiate(
@@ -63,7 +65,11 @@ def main(cfg: DictConfig) -> None:
     )
 
     collator = hydra.utils.instantiate(
-        cfg.task.collator, tokenizer=tokenizer, max_length=model.config.length
+        cfg.task.collator,
+        rank=dist.get_global_rank(),
+        world_size=dist.get_world_size(),
+        tokenizer=tokenizer,
+        max_length=model.config.length,
     )
     eval_sampler = (
         dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)

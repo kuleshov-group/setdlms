@@ -41,7 +41,7 @@ def _get_world_size() -> int:
     # Setup distributed
     if not dist.is_initialized():
         print("Initializing dist")
-        dist.initialize_dist()
+        dist.initialize_dist(timeout=600)
     return dist.get_world_size()
 
 
@@ -93,6 +93,12 @@ def register_useful_resolvers() -> None:
         "get_tokenizer_eos_token_id",
         lambda tokenizer_cfg: _get_tokenizer_eos_token_id(tokenizer_cfg),
     )
+
+
+def count_parameters(model: torch.nn.Module, trainable: bool = True) -> int:
+    if trainable:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return sum(p.numel() for p in model.parameters())
 
 
 def format_number(num):

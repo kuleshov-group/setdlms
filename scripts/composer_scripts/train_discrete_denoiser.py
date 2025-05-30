@@ -7,6 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 from streaming import StreamingDataset
 
 from scripts.utils import (
+    count_parameters,
     format_number,
     maybe_add_missing_special_tokens,
     print_and_save_config,
@@ -38,20 +39,23 @@ def main(cfg: DictConfig) -> None:
         metrics=list(hydra.utils.instantiate(cfg.metrics).values()),
     )
     log.info(
-        f"Num. parameters: {format_number(sum(p.numel() for p in model.parameters()))}"
+        f"Num. parameters: {format_number(count_parameters(model, trainable=False))}"
     )
-    log.info(
-        f"Num. trainable parameters: {format_number(sum(p.numel() for p in model.parameters() if p.requires_grad))}"
-    )
+    log.info(f"Num. trainable parameters: {format_number(count_parameters(model))}")
 
     # Setup distributed
     if not dist.is_initialized():
         log.info("Initializing dist")
-        dist.initialize_dist()
+        dist.initialize_dist(timeout=600)
     log.info("All nodes connected")
 
     # Collator
-    collator = hydra.utils.instantiate(cfg.collator, tokenizer=tokenizer)
+    collator = hydra.utils.instantiate(
+        cfg.collator,
+        tokenizer=tokenizer,
+        rank=dist.get_global_rank(),
+        world_size=dist.get_world_size(),
+    )
 
     # Train dataloader
     train_dataset = hydra.utils.instantiate(
