@@ -13,6 +13,7 @@ from scripts.utils import (
     print_and_save_config,
     register_useful_resolvers,
 )
+from src.datasets.streaming_dataset_hf import StreamingHFDataset
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ def main(cfg: DictConfig) -> None:
     train_sampler = (
         dist.get_sampler(train_dataset, shuffle=True, drop_last=True)
         if not isinstance(train_dataset, StreamingDataset)
+        and not isinstance(train_dataset, StreamingHFDataset)
         else None
     )
     train_dataloader = hydra.utils.instantiate(
@@ -76,23 +78,26 @@ def main(cfg: DictConfig) -> None:
     )
     # time.sleep(30)  # Needed for multi-node training
 
-    # Val dataloader
-    eval_dataset = hydra.utils.instantiate(
-        cfg.eval_dataset,
-        tokenizer=tokenizer,
-    )
-    eval_sampler = (
-        dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
-        if not isinstance(eval_dataset, StreamingDataset)
-        else None
-    )
-    eval_dataloader = hydra.utils.instantiate(
-        cfg.eval_dataloader,
-        _convert_="partial",
-        dataset=eval_dataset,
-        collate_fn=collator,
-        sampler=eval_sampler,
-    )
+    # Val dataloader (optional)
+    if getattr(cfg, "eval_dataset", None) is not None:
+        eval_dataset = hydra.utils.instantiate(
+            cfg.eval_dataset,
+            tokenizer=tokenizer,
+        )
+        eval_sampler = (
+            dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
+            if not isinstance(eval_dataset, StreamingDataset)
+            else None
+        )
+        eval_dataloader = hydra.utils.instantiate(
+            cfg.eval_dataloader,
+            _convert_="partial",
+            dataset=eval_dataset,
+            collate_fn=collator,
+            sampler=eval_sampler,
+        )
+    else:
+        eval_dataloader = None
     # time.sleep(30)  # Needed for multi-node training
 
     # Optimizer

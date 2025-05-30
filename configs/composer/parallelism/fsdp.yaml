@@ -1,7 +1,10 @@
 fsdp:
   sharding_strategy: "FULL_SHARD"
-  cpu_offload: false # Not supported yet
-  mixed_precision: "DEFAULT"
+  cpu_offload: null
+  mixed_precision:
+    param_dtype: ${composer.trainer.precision}
+    reduce_dtype: ${composer.trainer.precision}
+    buffer_dtype: ${composer.trainer.precision}
   backward_prefetch: "BACKWARD_POST"
   activation_checkpointing: false
   activation_cpu_offload: false
