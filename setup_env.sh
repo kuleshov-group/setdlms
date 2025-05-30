@@ -15,7 +15,7 @@ if [ -z "${CONDA_PREFIX}" ]; then
 fi
 
 # W&B / HF Setup
-source "/home/$(whoami)/setup_discdiff.sh"
+source "${HOME}/setup_discdiff.sh"
 export HF_HOME="${PWD}/.hf_cache"
 echo "HuggingFace cache set to '${HF_HOME}'."
 
