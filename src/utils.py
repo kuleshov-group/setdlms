@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
 
 import fsspec
+import torch
 from huggingface_hub import HfApi, file_exists, repo_exists
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
@@ -299,3 +300,11 @@ def save_pretrained_or_push_to_hub(
         log.debug(f"Removing temporary directory {tmp_dir.name}")
         tmp_dir.cleanup()
     log.debug("Done")
+
+
+def preprocess_attention_mask(attention_mask, dtype):
+    min_dtype = torch.finfo(dtype).min
+    attention_mask = torch.where((attention_mask == 0.0).bool(), min_dtype, 0.0).to(
+        dtype
+    )
+    return attention_mask

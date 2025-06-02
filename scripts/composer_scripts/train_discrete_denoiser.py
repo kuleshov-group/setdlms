@@ -30,7 +30,9 @@ def main(cfg: DictConfig) -> None:
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
     # Chat template is causing issues for composer when running save_checkpoint:
     #   https://github.com/mosaicml/composer/blob/main/composer/models/huggingface.py#L635-L663 # noqa: E501
-    if hasattr(tokenizer, "chat_template"):
+    if cfg.composer.callbacks.hf_compatible_checkpointing.save_to_hub and hasattr(
+        tokenizer, "chat_template"
+    ):
         delattr(tokenizer, "chat_template")
 
     # Model
@@ -65,7 +67,7 @@ def main(cfg: DictConfig) -> None:
     eval_collator = hydra.utils.instantiate(
         cfg.collator,
         # Disable, as this makes reproducibility per_device_batch_size dependent
-        antitehtic_sampling=False,
+        antithetic_sampling=False,
         tokenizer=tokenizer,
         rank=dist.get_global_rank(),
         world_size=dist.get_world_size(),

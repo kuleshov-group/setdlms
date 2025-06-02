@@ -35,6 +35,7 @@ def main(cfg: DictConfig) -> None:
             path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
             load_ema_weights=cfg.task.load_ema_weights,
             ckpt_file=cfg.task.ckpt_file,
+            verbose=True,
         )
     else:
         try:

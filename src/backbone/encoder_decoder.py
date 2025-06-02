@@ -57,7 +57,7 @@ class LLMasEncoderDecoder(nn.Module):
                 attn_implementation=attn_backend,
             )
         keep_top_n_decoder_layers = (
-            len(self.decoder.model.layers)
+            len(self.encoder.model.layers)
             if keep_top_n_decoder_layers == -1
             else keep_top_n_decoder_layers
         )
@@ -157,16 +157,6 @@ class LLMasEncoderDecoder(nn.Module):
                 ).unsqueeze(0)
             if self.use_encoder_causal_mask:
                 encoder_attention_mask = None  # must use causal mask
-            if encoder_attention_mask is not None:
-                encoder_attention_mask = encoder_attention_mask[:, None, ...].to(
-                    self.encoder.dtype
-                )
-                min_dtype = torch.finfo(self.encoder.dtype).min
-                encoder_attention_mask = torch.where(
-                    (encoder_attention_mask == 0.0).bool(),  # type: ignore
-                    min_dtype,
-                    0.0,
-                ).to(self.encoder.dtype)
             past_key_values = self.encoder.model(
                 input_ids=encoder_input_ids,
                 attention_mask=encoder_attention_mask,
@@ -199,13 +189,6 @@ class LLMasEncoderDecoder(nn.Module):
                 device=decoder_hidden_states.device,
             )
 
-        attention_mask = attention_mask[:, None, ...].to(self.decoder.dtype)
-        min_dtype = torch.finfo(self.encoder.dtype).min
-        attention_mask = torch.where(
-            (attention_mask == 0.0).bool(),  # type: ignore
-            min_dtype,
-            0.0,
-        ).to(self.decoder.dtype)
         # noinspection PyProtectedMember
         attention_mask = self.decoder.model._update_causal_mask(
             attention_mask=attention_mask,
