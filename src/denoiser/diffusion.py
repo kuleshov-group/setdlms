@@ -27,7 +27,7 @@ from src.denoiser.base import (
     DenoiserInput,
     LossAndNllOutput,
 )
-from src.utils import preprocess_attention_mask
+from src.utils import create_attn_mask, preprocess_attention_mask
 
 
 class DiffusionGenerationConfig(GenerationConfig):
@@ -688,9 +688,6 @@ class BD3LM(MDLM):
 
     def __init__(self, config: BD3LMConfig):
         super().__init__(config)
-        if config.attn_backend == "flex_attention":
-            self.static_attention_mask = None
-            self.encoder_static_attention_mask = None
         self._create_static_mask()
 
     @staticmethod
@@ -784,13 +781,7 @@ class BD3LM(MDLM):
         return block_diagonal | offset_block_causal
 
     def _create_static_mask(self) -> None:
-        assert self.config.attn_backend != "flex_attention", (
-            "FlexAttention not supported yet"
-        )
         if self.config.backbone_is_decoder_only:
-            assert self.config.attn_backend != "flex_attention", (
-                "FlexAttention not supported yet"
-            )
             static_mask = self._block_mask(
                 b=None,
                 h=None,
@@ -807,56 +798,29 @@ class BD3LM(MDLM):
                     static_mask,
                 )
         else:
-            if self.config.attn_backend == "flex_attention":
-                encoder_static_mask = create_block_mask(
-                    partial(
-                        self._encoder_block_mask,
-                        block_size=self.config.block_size,
-                    ),
-                    B=None,
-                    H=None,
-                    Q_LEN=self.config.length,
-                    KV_LEN=self.config.length,
-                )
-                decoder_static_mask = create_block_mask(
-                    partial(
-                        self._decoder_block_mask,
-                        block_size=self.config.block_size,
-                        seq_length=self.config.length,
-                    ),
-                    B=None,
-                    H=None,
-                    Q_LEN=self.config.length,
-                    KV_LEN=self.config.length * 2,
-                )
-            else:
-                encoder_static_mask = self._encoder_block_mask(
-                    b=None,
-                    h=None,
-                    q_idx=torch.arange(self.config.length)[:, None],
-                    kv_idx=torch.arange(self.config.length)[None, :],
-                    block_size=self.config.block_size,
-                )
-                decoder_static_mask = self._decoder_block_mask(
-                    b=None,
-                    h=None,
-                    q_idx=torch.arange(self.config.length)[:, None],
-                    kv_idx=torch.arange(self.config.length * 2)[None, :],
-                    block_size=self.config.block_size,
-                    seq_length=self.config.length,
-                )
-            if self.config.attn_backend == "flex_attention":
-                self.encoder_static_attention_mask = encoder_static_mask
-                self.static_attention_mask = decoder_static_mask
-            else:
-                self.register_buffer(
-                    "encoder_static_attention_mask",
-                    encoder_static_mask,
-                )
-                self.register_buffer(
-                    "static_attention_mask",
-                    decoder_static_mask,
-                )
+            encoder_static_mask = self._encoder_block_mask(
+                b=None,
+                h=None,
+                q_idx=torch.arange(self.config.length)[:, None],
+                kv_idx=torch.arange(self.config.length)[None, :],
+                block_size=self.config.block_size,
+            )
+            decoder_static_mask = self._decoder_block_mask(
+                b=None,
+                h=None,
+                q_idx=torch.arange(self.config.length)[:, None],
+                kv_idx=torch.arange(self.config.length * 2)[None, :],
+                block_size=self.config.block_size,
+                seq_length=self.config.length,
+            )
+            self.register_buffer(
+                "encoder_static_attention_mask",
+                encoder_static_mask,
+            )
+            self.register_buffer(
+                "static_attention_mask",
+                decoder_static_mask,
+            )
 
     def _prepare_inputs(
         self,
@@ -915,23 +879,54 @@ class BD3LM(MDLM):
                 },
             )
         else:
-            decoder_attention_mask = (
-                self.static_attention_mask[None, ...]
-                & attention_mask.repeat(1, 2)[:, None, :]
-                & attention_mask[..., None]
-            )[:, None]
-            encoder_attention_mask = (
-                self.encoder_static_attention_mask[None, ...]
-                & attention_mask[:, None, :]
-                & attention_mask[..., None]
-            )[:, None]
-            encoder_attention_mask = preprocess_attention_mask(
-                encoder_attention_mask.to(torch.float), dtype=torch.float
-            )
-            decoder_attention_mask = preprocess_attention_mask(
-                decoder_attention_mask.to(torch.float), dtype=torch.float
-            )
-
+            if self.config.attn_backend == "sdpa":
+                decoder_attention_mask = (
+                    self.static_attention_mask[None, ...]
+                    & attention_mask.repeat(1, 2)[:, None, :]
+                    & attention_mask[..., None]
+                )[:, None]
+                encoder_attention_mask = (
+                    self.encoder_static_attention_mask[None, ...]
+                    & attention_mask[:, None, :]
+                    & attention_mask[..., None]
+                )[:, None]
+                encoder_attention_mask = preprocess_attention_mask(
+                    encoder_attention_mask, dtype=torch.float
+                )
+                decoder_attention_mask = preprocess_attention_mask(
+                    decoder_attention_mask, dtype=torch.float
+                )
+            elif self.config.attn_backend == "flex_attention":
+                padding_mask = create_attn_mask(attention_mask.bool())
+                dec_padding_mask = create_attn_mask(attention_mask.repeat(1, 2).bool())
+                enc_masks = [
+                    partial(
+                        self._encoder_block_mask, block_size=self.config.block_size
+                    ),
+                    padding_mask,
+                ]
+                encoder_attention_mask = create_block_mask(
+                    torch.nn.attention.flex_attention.and_masks(*enc_masks),
+                    B=None,
+                    H=None,
+                    Q_LEN=input_ids.shape[1],
+                    KV_LEN=input_ids.shape[1],
+                )
+                dec_masks = [
+                    partial(
+                        self._decoder_block_mask,
+                        block_size=self.config.block_size,
+                        seq_length=input_ids.shape[1],
+                    ),
+                    dec_padding_mask,
+                ]
+                decoder_attention_mask = create_block_mask(
+                    torch.nn.attention.flex_attention.and_masks(*dec_masks),
+                    B=None,
+                    H=None,
+                    Q_LEN=input_ids.shape[1],
+                    KV_LEN=input_ids.shape[1] * 2,
+                )
             return DenoiserInput(
                 xt=xt,
                 x0=input_ids,
@@ -1024,6 +1019,21 @@ class BD3LM(MDLM):
                 "encoder_attention_mask": encoder_attention_mask,
                 "position_ids": position_ids,
             },
+        )
+
+    def _compute_loss(
+        self,
+        model_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs: Any,
+    ) -> LossAndNllOutput:
+        if self.config.backbone_is_decoder_only:
+            input_length = denoiser_inputs.xt.shape[1] // 2
+            model_output = model_output[:, input_length:, ...]
+        return super()._compute_loss(
+            model_output=model_output,
+            denoiser_inputs=denoiser_inputs,
+            **kwargs,
         )
 
 

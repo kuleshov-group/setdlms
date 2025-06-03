@@ -56,6 +56,7 @@ class LLMasEncoderDecoder(nn.Module):
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
             )
+        self.encoder.config._attn_implementation = attn_backend
         keep_top_n_decoder_layers = (
             len(self.encoder.model.layers)
             if keep_top_n_decoder_layers == -1
@@ -100,6 +101,7 @@ class LLMasEncoderDecoder(nn.Module):
                     trust_remote_code=True,
                     attn_implementation=attn_backend,
                 )
+            self.decoder.config._attn_implementation = attn_backend
             del self.decoder.model.embed_tokens
             decoder_layers_post_surgery = []
             for decoder_layer_idx in self.decoder_layers_to_keep:
@@ -139,7 +141,6 @@ class LLMasEncoderDecoder(nn.Module):
         encoder_input_ids: torch.LongTensor | None = None,  # for Encoder
         encoder_attention_mask: torch.FloatTensor | BlockMask | None = None,
         past_key_values: DynamicCache | None = None,
-        cache_position: torch.LongTensor | None = None,
         position_ids: torch.LongTensor | None = None,
         encoder_position_ids: torch.LongTensor | None = None,
         return_past_key_values: bool = False,
@@ -147,7 +148,6 @@ class LLMasEncoderDecoder(nn.Module):
     ) -> torch.FloatTensor | DynamicCache:
         if past_key_values is None:
             past_key_values = DynamicCache()
-            cache_position = position_ids
 
         # Encode clean tokens
         if encoder_input_ids is not None:
@@ -163,7 +163,7 @@ class LLMasEncoderDecoder(nn.Module):
                 position_ids=encoder_position_ids,
                 use_cache=True,
                 past_key_values=past_key_values,
-                cache_position=cache_position,
+                cache_position=encoder_position_ids[0],
             ).past_key_values
             if return_past_key_values:
                 return past_key_values
@@ -178,22 +178,11 @@ class LLMasEncoderDecoder(nn.Module):
         decoder_position_embeddings = self.decoder.model.rotary_emb(
             decoder_hidden_states, position_ids
         )
-
-        if cache_position is None:
-            past_seen_tokens = (
-                past_key_values.get_seq_length() if past_key_values is not None else 0
-            )
-            cache_position = torch.arange(
-                past_seen_tokens,
-                past_seen_tokens + decoder_hidden_states.shape[1],
-                device=decoder_hidden_states.device,
-            )
-
         # noinspection PyProtectedMember
         attention_mask = self.decoder.model._update_causal_mask(
             attention_mask=attention_mask,
             input_tensor=decoder_hidden_states,
-            cache_position=cache_position,
+            cache_position=position_ids[0],
             past_key_values=past_key_values,
             output_attentions=False,
         )
@@ -218,7 +207,7 @@ class LLMasEncoderDecoder(nn.Module):
                 past_key_value=past_key_values,
                 output_attentions=False,
                 use_cache=True,
-                cache_position=cache_position,
+                cache_position=position_ids[0],
                 position_embeddings=decoder_position_embeddings,
                 **flash_attn_kwargs,
             )[0]

@@ -308,3 +308,10 @@ def preprocess_attention_mask(attention_mask, dtype):
         dtype
     )
     return attention_mask
+
+
+def create_attn_mask(attn_mask):
+    def padding(b, h, q_idx, kv_idx):
+        return attn_mask[b, q_idx] & attn_mask[b, kv_idx]
+
+    return padding

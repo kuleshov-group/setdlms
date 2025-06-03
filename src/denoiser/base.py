@@ -147,6 +147,10 @@ class Denoiser(ABC, PreTrainedModel):
         self.bos_token_id = config.bos_token_id
         self.eos_token_id = config.eos_token_id
         self.backbone = hydra.utils.instantiate(config.backbone_config)
+        if config.compile_backbone:
+            self.backbone = torch.compile(
+                self.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
+            )
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.tokenizer_name,
             trust_remote_code=True,
