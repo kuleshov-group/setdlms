@@ -152,7 +152,7 @@ def print_and_save_config(
 def load_model_from_ckpt_dir_path(
     path_to_ckpt_dir: str,
     ckpt_file: str = "best-rank0.pt",
-    load_ema_weights: bool = True,
+    load_ema_weights: bool = False,
     verbose: bool = False,
     **kwargs,
 ) -> Denoiser:
@@ -163,7 +163,7 @@ def load_model_from_ckpt_dir_path(
             Assumed to have `checkpoints` subdirectory with checkpoint file(s).
         ckpt_file (str): Name of the checkpoint file inside `checkpoints` directory.
             Defaults to "best-rank0.pt".
-        load_ema_weights (bool): Whether to load the EMA weights. Defaults to True.
+        load_ema_weights (bool): Whether to load the EMA weights. Defaults to False.
         verbose (bool): Whether to print information about the loaded checkpoint,
             e.g., step, metric values. Defaults to False.
 
