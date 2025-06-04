@@ -28,12 +28,6 @@ def main(cfg: DictConfig) -> None:
     # Tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
-    # Chat template is causing issues for composer when running save_checkpoint:
-    #   https://github.com/mosaicml/composer/blob/main/composer/models/huggingface.py#L635-L663 # noqa: E501
-    if cfg.composer.callbacks.hf_compatible_checkpointing.save_to_hub and hasattr(
-        tokenizer, "chat_template"
-    ):
-        delattr(tokenizer, "chat_template")
 
     # Model
     model = hydra.utils.instantiate(

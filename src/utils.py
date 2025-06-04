@@ -276,6 +276,7 @@ def save_pretrained_or_push_to_hub(
         project_root / model_file_path: model_file_path.split("/")[-1],
         project_root / "src/backbone": "backbone",
         project_root / "src/noise_schedule": "noise_schedule",
+        project_root / "src/utils.py": "utils.py",
     }
     for src_path, dest_name in paths_to_copy.items():
         dest = dest_path / dest_name

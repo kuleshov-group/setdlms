@@ -8,5 +8,5 @@ hf_compatible_checkpointing:
   overwrite: ${composer.trainer.save_overwrite}
   disable_hf: false
   save_local: true
-  save_to_hub: false
-  hub_repo_id: null
+  save_to_hub: true
+  hub_repo_id: kuleshov-group/${run_name}
