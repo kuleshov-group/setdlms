@@ -27,7 +27,21 @@ from src.denoiser.base import (
     DenoiserInput,
     LossAndNllOutput,
 )
-from src.utils import create_attn_mask, preprocess_attention_mask
+
+
+def preprocess_attention_mask(attention_mask, dtype):
+    min_dtype = torch.finfo(dtype).min
+    attention_mask = torch.where((attention_mask == 0.0).bool(), min_dtype, 0.0).to(
+        dtype
+    )
+    return attention_mask
+
+
+def create_attn_mask(attn_mask):
+    def padding(b, h, q_idx, kv_idx):
+        return attn_mask[b, q_idx] & attn_mask[b, kv_idx]
+
+    return padding
 
 
 class DiffusionGenerationConfig(GenerationConfig):
