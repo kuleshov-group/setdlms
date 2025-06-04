@@ -1,5 +1,0 @@
-defaults:
-  - bd3lm@_here_
-  - _self_
-
-_target_: src.denoiser.diffusion.AnyOrderBD3LM
