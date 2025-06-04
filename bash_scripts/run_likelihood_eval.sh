@@ -4,12 +4,10 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 MODEL_PATH="${RUN_DIR}/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen600M"
-#MODEL_PATH="/share/kuleshov/yzs2/runs/dllm-dev/wmt-block4-bs128-keepbottomenc-1-keeptopdec14-causalencfalse-max10000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen600M_v2"
-#MODEL_PATH="yairschiff/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen600M"
-REVISION=null #"95937fb0f57a8169d29a4f26ea23ed78eb197a03"
+REVISION=null
 EVAL_DATASET="gsm8k_eval"
 BLOCK_SIZE=4
-BATCH_SIZE=64
+BATCH_SIZE=96
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \
@@ -22,10 +20,10 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   seed=1 \
   batch_size=${BATCH_SIZE} \
   block_size=${BLOCK_SIZE} \
-  task.eval_dataloader.batch_size=16 \
+  task.eval_dataloader.batch_size=2 \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
-  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B" \
+  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B-Base" \
   output_path=null \
   +collator@task.collator=denoising \
   task.collator.global_batch_size=${BATCH_SIZE} \
