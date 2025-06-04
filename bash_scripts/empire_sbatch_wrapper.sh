@@ -26,7 +26,7 @@ fi
 
 USERNAME=$(whoami)
 NUM_VISIBLE_DEVICES=8
-RUN_DIR="/share/kuleshov/yzs2/runs/dllm-dev"
+RUN_DIR="/mnt/home/$(whoami)/runs/dllm-dev"  # TODO: Point to scratch dir when available
 sbatch \
   --job-name=${script_name:4:-3} \
   --output="../watch_folder/%x_%j.log" \

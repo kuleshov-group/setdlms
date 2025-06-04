@@ -25,6 +25,6 @@ if [ ! -e "${script_full_path}" ]; then
 fi
 
 export NUM_VISIBLE_DEVICES=${SLURM_GPUS_ON_NODE}
-RUN_DIR="/mnt/home/$(whoami)/runs/dllm-dev"
+RUN_DIR="/mnt/home/$(whoami)/runs/dllm-dev"  # TODO: Point to scratch dir when available
 export RUN_DIR
 source ${script_full_path}
