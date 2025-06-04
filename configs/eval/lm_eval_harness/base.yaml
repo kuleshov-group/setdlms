@@ -14,7 +14,7 @@ numpy_random_seed: ${.random_seed}
 torch_random_seed: ${.random_seed}
 fewshot_random_seed: ${.random_seed}
 model:
-  _target_: scripts.harness_eval.LMEvalHarnessModel
+  _target_: scripts.eval.harness_eval.LMEvalHarnessModel
   tokenizer: ${tokenizer}
   pretrained_model_name_or_path: ${pretrained_model_name_or_path}
   pretrained_model_revision: ${pretrained_model_revision}
