@@ -60,11 +60,11 @@ def main(cfg: DictConfig) -> None:
     )
     eval_collator = hydra.utils.instantiate(
         cfg.collator,
-        # Disable, as this makes reproducibility per_device_batch_size dependent
-        antithetic_sampling=False,
         tokenizer=tokenizer,
         rank=dist.get_global_rank(),
         world_size=dist.get_world_size(),
+        # Disable; this would make reproducibility per_device_batch_size dependent
+        antithetic_sampling=False,
     )
 
     # Train dataloader

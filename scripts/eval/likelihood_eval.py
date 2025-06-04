@@ -95,7 +95,7 @@ def main(cfg: DictConfig) -> None:
     )
     trainer.eval()
     print(
-        "\nMetrics:\n\t"
+        "\nEval Metrics:\n\t"
         + "\n\t".join(
             [
                 f"{k}: {v.item():0.4f}"
