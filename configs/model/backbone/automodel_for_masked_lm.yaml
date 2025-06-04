@@ -1,4 +1,5 @@
-_target_: transformers.AutoModelForMaskedLM.from_pretrained
-pretrained_model_name_or_path: ${pretrained_model_name_or_path}
-revision: null
-trust_remote_code: true
+defaults:
+  - automodel@_here_
+  - _self_
+
+automodel_cls: AutoModelForMaskedLM

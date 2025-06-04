@@ -3,4 +3,4 @@ project: discrete-diffusion
 group: null
 name: ${run_name}
 init_kwargs:
-  id: ${run_name}
+ id: ${run_name}

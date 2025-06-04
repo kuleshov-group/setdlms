@@ -1,0 +1,6 @@
+defaults:
+  - base@_here_
+  - _self_
+
+dataset:
+  _target_: src.datasets.tokenize_on_demand.WMTDataset

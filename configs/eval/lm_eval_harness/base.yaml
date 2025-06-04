@@ -1,0 +1,24 @@
+#file: noinspection LongLine
+_target_: lm_eval.evaluator.simple_evaluate
+tasks: ???
+num_fewshot: 0
+batch_size: 1
+#evaluation_tracker:  # TODO: throwing error b/c model_args not used so cannot find model name
+#  _target_: lm_eval.loggers.evaluation_tracker.EvaluationTracker
+#  output_path: ${output_path}
+log_samples: true
+system_instruction: null  # TODO: Can we use this instead of tokenizer
+apply_chat_template: false  # TODO: Can we use this instead of tokenizer
+random_seed: ${seed}
+numpy_random_seed: ${.random_seed}
+torch_random_seed: ${.random_seed}
+fewshot_random_seed: ${.random_seed}
+model:
+  _target_: scripts.eval.harness_eval.LMEvalHarnessModel
+  tokenizer: ${tokenizer}
+  pretrained_model_name_or_path: ${pretrained_model_name_or_path}
+  pretrained_model_revision: ${pretrained_model_revision}
+  generated_samples_output_path: ${generated_samples_output_path}
+  load_ema_weights: false
+  ckpt_file: 'best-rank0.pt'  # best-rank0.pt or latest-rank0.pt
+  gen_kwargs: null

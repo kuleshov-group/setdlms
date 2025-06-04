@@ -5,12 +5,16 @@ import torch
 from transformers import DataCollatorWithPadding, PreTrainedTokenizerBase
 
 
+# TODO: For AR init diffusion models, implement attn_mask annealing? (see DiffuLlama)
 class DenoisingCollator:
     """Custom collator that samples a random t value for each example in the batch."""
 
     def __init__(
         self,
         tokenizer: PreTrainedTokenizerBase,
+        global_batch_size: int,
+        rank: int = 0,
+        world_size: int = 1,
         padding: bool = True,
         max_length: int | None = None,
         pad_to_multiple_of: int | None = None,
@@ -25,6 +29,9 @@ class DenoisingCollator:
         """
         Parameters:
             tokenizer (PreTrainedTokenizerBase): Tokenizer used in base collator
+            global_batch_size (int): Used for sampling t.
+            rank (int): Used for sampling t.
+            world_size (int): Used for sampling t.
             padding (bool; default: True): Whether to pad the sequences
             max_length: (Optional: int): Maximum length of the sequences.
             pad_to_multiple_of: (Optional: int): if specified,
@@ -58,37 +65,55 @@ class DenoisingCollator:
         self.restricted_t_range = restricted_t_range
         self.sampling_eps = sampling_eps
         self.antithetic_sampling = antithetic_sampling
+        self.global_batch_size = global_batch_size
         self.max_length = max_length
         self.block_size = block_size
+        # # TODO: Confirm that this works on multi-node
+        self._rank = rank
+        self._world_size = world_size
 
-    def _sample_t(self, batch_size, device):
+    def _sample_t(self, global_batch_size, batch_size, t_index, device):
         num_blocks = self.max_length // self.block_size if self.block_size else 1
         if self.block_size is not None and self.block_size > 0:
             _eps_t = torch.rand(batch_size, num_blocks, device=device)
         else:
             _eps_t = torch.rand(batch_size, device=device)
         if self.antithetic_sampling:
-            offset = torch.arange(batch_size * num_blocks, device=device) / (
-                batch_size * num_blocks
-            )
+            offset = torch.arange(
+                start=t_index[0] * num_blocks,
+                end=t_index[1] * num_blocks,
+                device=device,
+            ) / (global_batch_size * num_blocks)
             offset = offset.view(batch_size, num_blocks)
-            _eps_t = (_eps_t / (batch_size * num_blocks) + offset) % 1
+            _eps_t = (_eps_t / (global_batch_size * num_blocks) + offset) % 1
         t = (1 - self.sampling_eps) * _eps_t + self.sampling_eps
         if self.restricted_t_range is not None:
             low, high = self.restricted_t_range
             t = (low - high) * t + high
-        t = t.repeat_interleave(self.block_size, dim=1) if self.block_size else t
+        if self.block_size is not None and self.block_size > 0:
+            t = t[..., torch.randperm(t.shape[-1])]
+            return t.repeat_interleave(self.block_size, dim=1)
         return t
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
         context_mask = [f.pop("context_mask", None) for f in features]
         batch = self.base_collate_fn(features)
+        batch_size = batch["input_ids"].shape[0]
+        global_batch_size = self._world_size * batch_size
+        t_index = (  # index t's for the given device (used for antithetic_sampling
+            self._rank * batch_size,
+            min((self._rank + 1) * batch_size, global_batch_size),
+        )
         t = self._sample_t(
-            batch_size=batch["input_ids"].shape[0], device=batch["input_ids"].device
+            global_batch_size=global_batch_size,
+            batch_size=batch_size,
+            t_index=t_index,
+            device=batch["input_ids"].device,
         )
         if all([c is not None for c in context_mask]):
             context_mask = torch.nn.utils.rnn.pad_sequence(
-                context_mask, batch_first=True
+                context_mask,
+                batch_first=True,  # type: ignore
             )[..., : self.max_length]  # noqa: type
             context_mask = torch.nn.functional.pad(
                 context_mask, (0, self.max_length - context_mask.shape[-1])

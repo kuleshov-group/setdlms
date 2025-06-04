@@ -1,0 +1,3 @@
+max_length_criteria:
+  _target_: transformers.generation.MaxLengthCriteria
+  max_length: ${max_new_tokens}

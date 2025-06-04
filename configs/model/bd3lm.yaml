@@ -2,9 +2,9 @@ defaults:
   - mdlm@_here_
   - _self_
 
-_target_: src.denoiser.BD3LM
+_target_: src.denoiser.diffusion.BD3LM
 config:
-  _target_: src.denoiser.BD3LMConfig
+  _target_: src.denoiser.diffusion.BD3LMConfig
   block_size: ${block_size}
   attn_backend: "sdpa" # "flex_attention"
   backbone_is_decoder_only: false

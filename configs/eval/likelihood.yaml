@@ -1,0 +1,9 @@
+defaults:
+  - _self_
+load_ema_weights: false
+ckpt_file: 'best-rank0.pt'  # best-rank0.pt or latest-rank0.pt
+eval_dataloader:
+  _target_: torch.utils.data.DataLoader
+  batch_size: ${div_up:${batch_size}, ${get_world_size:}}
+  num_workers: 0
+  pin_memory: true

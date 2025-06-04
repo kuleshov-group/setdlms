@@ -1,6 +1,6 @@
 _target_: src.datasets.tokenize_on_demand.WMTDataset
 split: "train"
-max_seq_len: ${model.config.length}
+max_length: ${model.config.length}
 dataset_path: "wmt/wmt14"
 padding: false
 add_special_tokens: true

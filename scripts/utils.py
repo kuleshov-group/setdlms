@@ -1,18 +1,19 @@
 import os
-import re
+import random
 from typing import Any
 
 import fsspec
 import hydra
+import numpy as np
 import rich.syntax
 import rich.tree
 import torch
 import yaml
 from composer.utils import dist
 from omegaconf import DictConfig, OmegaConf
-from transformers import PreTrainedTokenizer, StoppingCriteria
+from transformers import PreTrainedTokenizer
 
-from src.denoiser import Denoiser
+from src.denoiser.base import Denoiser
 
 
 def _make_tokenization_config(tokenizer_cfg: DictConfig) -> dict[str, Any]:
@@ -29,11 +30,18 @@ def _make_tokenization_config(tokenizer_cfg: DictConfig) -> dict[str, Any]:
     }
 
 
+def _get_tokenizer_eos_token_id(tokenizer_cfg: DictConfig) -> int:
+    tokenizer = hydra.utils.instantiate(tokenizer_cfg)
+    if not hasattr(tokenizer, "eos_token_id"):
+        raise ValueError("Tokenizer must have 'eos_token_id'.")
+    return tokenizer.eos_token_id
+
+
 def _get_world_size() -> int:
     # Setup distributed
     if not dist.is_initialized():
         print("Initializing dist")
-        dist.initialize_dist()
+        dist.initialize_dist(timeout=600)
     return dist.get_world_size()
 
 
@@ -81,6 +89,16 @@ def register_useful_resolvers() -> None:
         "make_tokenization_config",
         lambda tokenizer_cfg: _make_tokenization_config(tokenizer_cfg),
     )
+    OmegaConf.register_new_resolver(
+        "get_tokenizer_eos_token_id",
+        lambda tokenizer_cfg: _get_tokenizer_eos_token_id(tokenizer_cfg),
+    )
+
+
+def count_parameters(model: torch.nn.Module, trainable: bool = True) -> int:
+    if trainable:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return sum(p.numel() for p in model.parameters())
 
 
 def format_number(num):
@@ -94,7 +112,10 @@ def format_number(num):
 
 
 def print_and_save_config(
-    cfg: DictConfig, resolve: bool = True, save_cfg: bool = True
+    cfg: DictConfig,
+    resolve: bool = True,
+    save_cfg: bool = True,
+    save_dir: str | None = None,
 ) -> None:
     """Prints content of DictConfig using Rich library and its tree structure.
 
@@ -102,6 +123,8 @@ def print_and_save_config(
       cfg (DictConfig): Configuration composed by Hydra.
       resolve (bool): Whether to resolve reference fields of DictConfig.
       save_cfg (bool): Whether to save the configuration tree to a file.
+      save_dir (Optional[str]): Directory to save the configuration tree to.
+        If None, defaults to `os.getcwd()`.
     """
 
     style = "dim"
@@ -119,16 +142,17 @@ def print_and_save_config(
         branch.add(rich.syntax.Syntax(branch_content, "yaml"))
     rich.print(tree)
     if save_cfg:
-        with fsspec.open(f"{os.getcwd()}/config_tree.txt", "w") as fp:
+        save_dir = save_dir if save_dir is not None else os.getcwd()
+        with fsspec.open(os.path.join(save_dir, "config_tree.txt"), "w") as fp:
             rich.print(tree, file=fp)
-        with fsspec.open(f"{os.getcwd()}/config.yaml", "w") as fp:
+        with fsspec.open(os.path.join(save_dir, "config.yaml"), "w") as fp:
             OmegaConf.save(cfg, fp, resolve=resolve)
 
 
 def load_model_from_ckpt_dir_path(
     path_to_ckpt_dir: str,
     ckpt_file: str = "best-rank0.pt",
-    load_ema_weights: bool = True,
+    load_ema_weights: bool = False,
     verbose: bool = False,
     **kwargs,
 ) -> Denoiser:
@@ -139,7 +163,7 @@ def load_model_from_ckpt_dir_path(
             Assumed to have `checkpoints` subdirectory with checkpoint file(s).
         ckpt_file (str): Name of the checkpoint file inside `checkpoints` directory.
             Defaults to "best-rank0.pt".
-        load_ema_weights (bool): Whether to load the EMA weights. Defaults to True.
+        load_ema_weights (bool): Whether to load the EMA weights. Defaults to False.
         verbose (bool): Whether to print information about the loaded checkpoint,
             e.g., step, metric values. Defaults to False.
 
@@ -201,43 +225,10 @@ def load_model_from_ckpt_dir_path(
     return model
 
 
-class BoxedStoppingCriteria(StoppingCriteria):
-    def __init__(self, tokenizer, pattern):
-        self.tokenizer = tokenizer
-        self.pattern = pattern
+def set_seed(seed):
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
 
-    def __call__(
-        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
-    ) -> bool:
-        if input_ids.numel() == 0:
-            return False
-        matches = re.findall(self.pattern, self.tokenizer.decode(input_ids[0]))
-        if len(matches) > 0:
-            return True
-        return False
-
-
-class LengthStoppingCriteria(StoppingCriteria):
-    def __init__(self, max_length):
-        self.max_length = max_length
-
-    def __call__(
-        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
-    ) -> bool:
-        if input_ids.shape[-1] >= self.max_length:
-            return True
-        else:
-            return False
-
-
-class EOSStoppingCriteria(StoppingCriteria):
-    def __init__(self, stop_token_ids):
-        self.stop_token_ids = stop_token_ids
-
-    def __call__(
-        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
-    ) -> bool:
-        for stop_token_id in self.stop_token_ids:
-            if stop_token_id in input_ids:
-                return True
-        return False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False

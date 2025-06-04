@@ -1,0 +1,32 @@
+#file: noinspection LongLine
+defaults:
+  - generation@generation_config: diffusion_generation_config
+  - generation/logits_processor@logits_processor_list: ???
+  - generation/stopping_criteria@stopping_criteria_list: ???
+  - tokenizer: autotokenizer
+  - _self_
+
+task: ???  # Set with CLI, e.g., `+eval/lm_eval_harness@task=gsm8k`
+seed: 1234
+pretrained_model_name_or_path: ???
+pretrained_model_revision: null
+output_path: ???  # Where to save metrics
+generated_samples_output_path: null  # Where to save the generated samples
+
+eos_token_id: ${get_tokenizer_eos_token_id:${tokenizer}}
+# Generation parameters
+block_size: null  # Use for BD3LMs
+max_length: null
+max_new_tokens: null
+batch_size: 1
+backend: ${set_backend:}
+gen_kwargs:
+  generation_config: ${generation_config}
+  logits_processor:
+    _target_: src.custom_transformers.generation.HydraCompatibleLogitsProcessorList
+    logits_processor_dict: ${logits_processor_list}
+  stopping_criteria:
+    _target_: src.custom_transformers.generation.HydraCompatibleStoppingCriteriaList
+    stopping_criteria_dict: ${stopping_criteria_list}
+  max_length: ${max_length}
+  max_new_tokens: ${max_new_tokens}

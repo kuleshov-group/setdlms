@@ -6,3 +6,6 @@ save_best_checkpointing:
   metric_to_monitor: eval/loss  # <train|val>/<metric_name>
   mode: 'min'
   disable_hf: true
+  save_local: true
+  save_to_hub: false
+  hub_repo_id: null

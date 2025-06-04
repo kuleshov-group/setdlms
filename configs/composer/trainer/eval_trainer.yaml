@@ -1,0 +1,15 @@
+#file: noinspection LongLine
+_target_: composer.Trainer
+run_name: null
+seed: ${seed}
+device: ${backend}
+eval_subset_num_batches: -1
+progress_bar: true
+log_to_console: false
+precision: 'amp_bf16'
+save_folder: null
+load_path: null
+autoresume: false
+loggers: null
+python_log_level: null
+dist_timeout: 600.0

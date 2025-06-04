@@ -1,9 +1,9 @@
 defaults:
-  - denoiser@_here_
+  - base@_here_
   - _self_
 
-_target_: src.denoiser.AR
+_target_: src.denoiser.ar.AR
 config:
-  _target_: src.denoiser.ARConfig
+  _target_: src.denoiser.ar.ARConfig
   noise_config: null
   time_conditioned_backbone: false

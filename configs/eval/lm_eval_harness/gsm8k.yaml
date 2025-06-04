@@ -1,0 +1,9 @@
+defaults:
+  - base@_here_
+  - _self_
+
+tasks: 'gsm8k'
+system_instruction: null  # TODO: Can we use this instead of tokenizer
+apply_chat_template: false  # TODO: Can we use this instead of tokenizer
+model:
+  gen_kwargs: ${gen_kwargs}

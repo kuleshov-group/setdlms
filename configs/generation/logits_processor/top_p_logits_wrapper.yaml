@@ -1,0 +1,4 @@
+# Implements nucleus sampling
+top_p_logits_wrapper:
+  _target_: transformers.generation.TopPLogitsWarper
+  top_p: 0.95

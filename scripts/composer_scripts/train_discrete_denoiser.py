@@ -1,17 +1,20 @@
 import logging
 
 import hydra
+import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
 from omegaconf import DictConfig, OmegaConf
 from streaming import StreamingDataset
 
 from scripts.utils import (
+    count_parameters,
     format_number,
     maybe_add_missing_special_tokens,
     print_and_save_config,
     register_useful_resolvers,
 )
+from src.datasets.streaming_dataset_hf import StreamingHFDataset
 
 log = logging.getLogger(__name__)
 
@@ -38,20 +41,31 @@ def main(cfg: DictConfig) -> None:
         metrics=list(hydra.utils.instantiate(cfg.metrics).values()),
     )
     log.info(
-        f"Num. parameters: {format_number(sum(p.numel() for p in model.parameters()))}"
+        f"Num. parameters: {format_number(count_parameters(model, trainable=False))}"
     )
-    log.info(
-        f"Num. trainable parameters: {format_number(sum(p.numel() for p in model.parameters() if p.requires_grad))}"
-    )
+    log.info(f"Num. trainable parameters: {format_number(count_parameters(model))}")
 
     # Setup distributed
     if not dist.is_initialized():
         log.info("Initializing dist")
-        dist.initialize_dist()
+        dist.initialize_dist(timeout=600)
     log.info("All nodes connected")
 
     # Collator
-    collator = hydra.utils.instantiate(cfg.collator, tokenizer=tokenizer)
+    train_collator = hydra.utils.instantiate(
+        cfg.collator,
+        tokenizer=tokenizer,
+        rank=dist.get_global_rank(),
+        world_size=dist.get_world_size(),
+    )
+    eval_collator = hydra.utils.instantiate(
+        cfg.collator,
+        tokenizer=tokenizer,
+        rank=dist.get_global_rank(),
+        world_size=dist.get_world_size(),
+        # Disable; this would make reproducibility per_device_batch_size dependent
+        antithetic_sampling=False,
+    )
 
     # Train dataloader
     train_dataset = hydra.utils.instantiate(
@@ -61,34 +75,38 @@ def main(cfg: DictConfig) -> None:
     train_sampler = (
         dist.get_sampler(train_dataset, shuffle=True, drop_last=True)
         if not isinstance(train_dataset, StreamingDataset)
+        and not isinstance(train_dataset, StreamingHFDataset)
         else None
     )
     train_dataloader = hydra.utils.instantiate(
         cfg.train_dataloader,
         _convert_="partial",
         dataset=train_dataset,
-        collate_fn=collator,
+        collate_fn=train_collator,
         sampler=train_sampler,
     )
     # time.sleep(30)  # Needed for multi-node training
 
-    # Val dataloader
-    eval_dataset = hydra.utils.instantiate(
-        cfg.eval_dataset,
-        tokenizer=tokenizer,
-    )
-    eval_sampler = (
-        dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
-        if not isinstance(eval_dataset, StreamingDataset)
-        else None
-    )
-    eval_dataloader = hydra.utils.instantiate(
-        cfg.eval_dataloader,
-        _convert_="partial",
-        dataset=eval_dataset,
-        collate_fn=collator,
-        sampler=eval_sampler,
-    )
+    # Val dataloader (optional)
+    if getattr(cfg, "eval_dataset", None) is not None:
+        eval_dataset = hydra.utils.instantiate(
+            cfg.eval_dataset,
+            tokenizer=tokenizer,
+        )
+        eval_sampler = (
+            dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
+            if not isinstance(eval_dataset, StreamingDataset)
+            else None
+        )
+        eval_dataloader = hydra.utils.instantiate(
+            cfg.eval_dataloader,
+            _convert_="partial",
+            dataset=eval_dataset,
+            collate_fn=eval_collator,
+            sampler=eval_sampler,
+        )
+    else:
+        eval_dataset, eval_dataloader = None, None
     # time.sleep(30)  # Needed for multi-node training
 
     # Optimizer
@@ -136,14 +154,13 @@ def main(cfg: DictConfig) -> None:
 
     trainer.fit()
 
-    # TODO: when training is done save / push ema params to hub
-    # TODO: check that the ema_model is same as the one from trainer.state
-    # algorithms.ema.ema_model.named_parameters()
+    if torch_dist.is_initialized():
+        torch_dist.destroy_process_group()
 
     # Clean up `tmp` dir potentially created StreamingDataset
     if hasattr(train_dataset, "remove_tmp_files"):
         train_dataset.remove_tmp_files()
-    if hasattr(eval_dataset, "remove_tmp_files"):
+    if eval_dataset is not None and hasattr(eval_dataset, "remove_tmp_files"):
         eval_dataset.remove_tmp_files()
 
 

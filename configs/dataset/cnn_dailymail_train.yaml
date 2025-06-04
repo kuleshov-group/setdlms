@@ -1,6 +1,6 @@
 _target_: src.datasets.tokenize_on_demand.CNNDailyMailDataset
 split: "train"
-max_seq_len: ${model.config.length}
+max_length: ${model.config.length}
 dataset_path: "abisee/cnn_dailymail"
 padding: false
 add_special_tokens: true

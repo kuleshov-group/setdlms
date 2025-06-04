@@ -1,4 +1,5 @@
 _target_: src.datasets.collator.DenoisingCollator
+global_batch_size: ${training.global_batch_size}
 padding: "max_length"
 max_length: ${model.config.length}
 pad_to_multiple_of: null

@@ -18,13 +18,15 @@ class GSM8KDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "test"],
-        max_seq_len: int,
+        max_length: int,
         dataset_path: str = "openai/gsm8k",
         config_name: Literal["main", "socratic"] = "main",
         padding: bool = False,
         add_special_tokens: bool = True,
-        question_prompt_text: str | None = _QUESTION_PREFIX,
-        answer_prompt_text: str | None = "Answer: ",
+        source_prompt_text: str | None = _QUESTION_PREFIX,
+        target_prompt_text: str | None = "Answer: ",
+        source_key: str = "question",
+        target_key: str = "answer",
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -32,11 +34,13 @@ class GSM8KDataset(Dataset):
         self.dataset = load_dataset(
             dataset_path, config_name, split=split, trust_remote_code=True
         )
-        self.max_seq_len = max_seq_len
+        self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
-        self.question_prompt_text = question_prompt_text
-        self.answer_prompt_text = answer_prompt_text
+        self.source_prompt_text = source_prompt_text
+        self.target_prompt_text = target_prompt_text
+        self.source_key = source_key
+        self.target_key = target_key
 
     def __len__(self):
         return len(self.dataset)
@@ -57,22 +61,30 @@ class GSM8KDataset(Dataset):
 
     def __getitem__(self, idx):
         example = self.dataset[idx]
-        if self.question_prompt_text is not None:
-            example["question"] = self.question_prompt_text + example["question"]
-        if self.answer_prompt_text is not None:
-            example["answer"] = self.answer_prompt_text + example["answer"]
-        example["answer"] = self._postprocess_box_answer(example["answer"])
+        if self.source_prompt_text is not None:
+            example[self.source_key] = (
+                self.source_prompt_text + example[self.source_key]
+            )
+        if self.target_prompt_text is not None:
+            example[self.target_key] = (
+                self.target_prompt_text + example[self.target_key]
+            )
+        example[self.target_key] = self._postprocess_box_answer(
+            example[self.target_key]
+        )
         if self.add_special_tokens:
-            example["question"] = (
+            example[self.source_key] = (
                 self.tokenizer.bos_token
-                + example["question"]
+                + example[self.source_key]
                 + self.tokenizer.eos_token
             )
-            example["answer"] = example["answer"] + self.tokenizer.eos_token
+            example[self.target_key] = (
+                example[self.target_key] + self.tokenizer.eos_token
+            )
 
         qa_tokenized = self.tokenizer.batch_encode_plus(
-            [example["question"], example["answer"]],
-            max_length=self.max_seq_len // 2,
+            [example[self.source_key], example[self.target_key]],
+            max_length=self.max_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
@@ -103,41 +115,53 @@ class HendrycksMathDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "test"],
-        max_seq_len: int,
+        max_length: int,
         dataset_path: str = "EleutherAI/hendrycks_math",
         padding: bool = False,
         add_special_tokens: bool = True,
-        question_prompt_text: str | None = _QUESTION_PREFIX,
-        answer_prompt_text: str | None = "Answer: ",
+        source_prompt_text: str | None = _QUESTION_PREFIX,
+        target_prompt_text: str | None = "Answer: ",
+        source_key: str = "problem",
+        target_key: str = "solution",
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
         self.tokenizer = tokenizer
         self.dataset = load_dataset(dataset_path, split=split, trust_remote_code=True)
-        self.max_seq_len = max_seq_len
+        self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
-        self.question_prompt_text = question_prompt_text
-        self.answer_prompt_text = answer_prompt_text
+        self.source_prompt_text = source_prompt_text
+        self.target_prompt_text = target_prompt_text
+        self.source_key = source_key
+        self.target_key = target_key
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         example = self.dataset[idx]
-        if self.question_prompt_text is not None:
-            example["problem"] = self.question_prompt_text + example["problem"]
-        if self.answer_prompt_text is not None:
-            example["solution"] = self.answer_prompt_text + example["solution"]
-        if self.add_special_tokens:
-            example["problem"] = (
-                self.tokenizer.bos_token + example["problem"] + self.tokenizer.eos_token
+        if self.source_prompt_text is not None:
+            example[self.source_key] = (
+                self.source_prompt_text + example[self.source_key]
             )
-            example["solution"] = example["solution"] + self.tokenizer.eos_token
+        if self.target_prompt_text is not None:
+            example[self.target_key] = (
+                self.target_prompt_text + example[self.target_key]
+            )
+        if self.add_special_tokens:
+            example[self.source_key] = (
+                self.tokenizer.bos_token
+                + example[self.source_key]
+                + self.tokenizer.eos_token
+            )
+            example[self.target_key] = (
+                example[self.target_key] + self.tokenizer.eos_token
+            )
 
         qa_tokenized = self.tokenizer.batch_encode_plus(
-            [example["problem"], example["solution"]],
-            max_length=self.max_seq_len // 2,
+            [example[self.source_key], example[self.target_key]],
+            max_length=self.max_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
@@ -168,14 +192,16 @@ class CNNDailyMailDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "validation", "test"],
-        max_seq_len: int,
+        max_length: int,
         dataset_path: str = "abisee/cnn_dailymail",
         config_name: Literal["1.0.0", "2.0.0", "3.0.0"] = "3.0.0",
         padding: bool = False,
         add_special_tokens: bool = True,
-        article_prompt_text: str | None = _SUMMARY_PREFIX,
-        summary_prompt_text: str | None = "Summary: ",
+        source_prompt_text: str | None = _SUMMARY_PREFIX,
+        target_prompt_text: str | None = "Summary: ",
         separate_input_output: bool = False,
+        source_key: str = "article",
+        target_key: str = "highlights",
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -183,31 +209,46 @@ class CNNDailyMailDataset(Dataset):
         self.dataset = load_dataset(
             dataset_path, config_name, split=split, trust_remote_code=True
         )
-        self.max_seq_len = max_seq_len
+        self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
-        self.article_prompt_text = article_prompt_text
-        self.summary_prompt_text = summary_prompt_text
+        self.source_prompt_text = source_prompt_text
+        self.target_prompt_text = target_prompt_text
         self.separate_input_output = separate_input_output
+        self.source_key = source_key
+        self.target_key = target_key
+
+    @property
+    def target_references(self) -> list[str]:
+        """Helper method to retrieve list of ground truth labels for downstream eval."""
+        return self.dataset[self.target_key]
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         example = self.dataset[idx]
-        if self.article_prompt_text is not None:
-            example["article"] = self.article_prompt_text + example["article"]
-        if self.summary_prompt_text is not None:
-            example["highlights"] = self.summary_prompt_text + example["highlights"]
-        if self.add_special_tokens:
-            example["article"] = (
-                self.tokenizer.bos_token + example["article"] + self.tokenizer.eos_token
+        if self.source_prompt_text is not None:
+            example[self.source_key] = (
+                self.source_prompt_text + example[self.source_key]
             )
-            example["highlights"] = example["highlights"] + self.tokenizer.eos_token
+        if self.target_prompt_text is not None:
+            example[self.target_key] = (
+                self.target_prompt_text + example[self.target_key]
+            )
+        if self.add_special_tokens:
+            example[self.source_key] = (
+                self.tokenizer.bos_token
+                + example[self.source_key]
+                + self.tokenizer.eos_token
+            )
+            example[self.target_key] = (
+                example[self.target_key] + self.tokenizer.eos_token
+            )
 
         seq2seq_tokenized = self.tokenizer.batch_encode_plus(
-            [example["article"], example["highlights"]],
-            max_length=self.max_seq_len // 2,
+            [example[self.source_key], example[self.target_key]],
+            max_length=self.max_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
@@ -261,7 +302,7 @@ class WMTDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "validation", "test"],
-        max_seq_len: int,
+        max_length: int,
         dataset_path: str = "wmt/wmt14",
         subset: str = "de-en",
         padding: bool = False,
@@ -269,6 +310,8 @@ class WMTDataset(Dataset):
         source_prompt_text: str | None = _TRANSLATION_PREFIX,
         target_prompt_text: str | None = "Translation: ",
         separate_input_output: bool = False,
+        source_key: str = "translation",
+        target_key: str = "translation",
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -278,7 +321,7 @@ class WMTDataset(Dataset):
         )
         self.source = subset.split("-")[0]
         self.target = subset.split("-")[1]
-        self.max_seq_len = max_seq_len
+        self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
         self.source_prompt_text = source_prompt_text.format(
@@ -287,14 +330,21 @@ class WMTDataset(Dataset):
         )
         self.target_prompt_text = target_prompt_text
         self.separate_input_output = separate_input_output
+        self.source_key = source_key
+        self.target_key = target_key
+
+    @property
+    def target_references(self) -> list[str]:
+        """Helper method to retrieve list of ground truth labels for downstream eval."""
+        return [d[self.target_key][self.target] for d in self.dataset]
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         example = self.dataset[idx]
-        source = example["translation"][self.source]
-        target = example["translation"][self.target]
+        source = example[self.source_key][self.source]  # type: ignore
+        target = example[self.target_key][self.target]  # type: ignore
         if self.source_prompt_text is not None:
             source = self.source_prompt_text + source
         if self.target_prompt_text is not None:
@@ -305,7 +355,7 @@ class WMTDataset(Dataset):
 
         seq2seq_tokenized = self.tokenizer.batch_encode_plus(
             [source, target],
-            max_length=self.max_seq_len // 2,
+            max_length=self.max_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
             truncation=True,
