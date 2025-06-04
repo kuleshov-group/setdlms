@@ -42,6 +42,7 @@ training:
   antithetic_sampling: True
   sampling_eps: 1e-3
   restricted_t_range: null  # Set to tuple of floats in range [0, 1] to bias sampling
+  compile_backbone: false
 
 checkpointing:
   # Use custom `save_dir` if, e.g., saving to S3 bucket, otherwise leave this parameter as is

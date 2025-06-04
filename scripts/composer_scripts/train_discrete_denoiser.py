@@ -1,6 +1,7 @@
 import logging
 
 import hydra
+import torch
 import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
@@ -35,6 +36,11 @@ def main(cfg: DictConfig) -> None:
         _convert_="all",  # required to enable json-serialization when saving checkpoint
     )
     print(model)
+    if getattr(cfg.training, "compile_backbone", False):
+        log.info("Compiling model backbone")
+        model.backbone = torch.compile(
+            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
+        )
     model = HuggingFaceModel(
         model,
         tokenizer=tokenizer,
