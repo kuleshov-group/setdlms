@@ -3,7 +3,7 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/gsm8k-block4-bs96-keeptop14-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen2B_tie_redo"
+MODEL_PATH="${RUN_DIR}/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen600M"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 mkdir -p ${OUTPUT_DIR}
@@ -13,7 +13,7 @@ DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
-KV_CACHING=True
+KV_CACHING=true
 TOP_P=1.0
 CKPT_FILE="best-rank0.pt"
 
@@ -29,7 +29,7 @@ accelerate launch scripts/eval/harness_eval.py \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   task.model.ckpt_file=${CKPT_FILE} \
-  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B" \
+  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B-Base" \
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_new_tokens=${L} \

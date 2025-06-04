@@ -11,6 +11,8 @@ import accelerate
 import hydra
 import torch
 from lm_eval.api.model import LM
+from lm_eval.loggers.evaluation_tracker import EvaluationTracker
+from lm_eval.utils import make_table
 from omegaconf import DictConfig
 from tqdm import tqdm
 from transformers import (
@@ -223,13 +225,18 @@ class LMEvalHarnessModel(LM):
 def main(cfg: DictConfig) -> None:
     print_and_save_config(cfg, resolve=True, save_cfg=False)
     set_seed(cfg.seed)
-    # TODO: Do something with results:
-    #  - compute overall accuracy
-    #  - pretty print results table
-    #  - save to json
-    #  -.
-    # results = (
-    hydra.utils.call(cfg.task)
+    results = hydra.utils.call(cfg.task)
+    if results is not None:
+        samples = results.pop("samples")
+        evaluation_tracker = EvaluationTracker(output_path=cfg.output_path)
+        evaluation_tracker.save_results_aggregated(results=results, samples=samples)
+        for task_name, config in results["configs"].items():
+            evaluation_tracker.save_results_samples(
+                task_name=task_name, samples=samples[task_name]
+            )
+        print(make_table(results))
+        if "groups" in results:
+            print(make_table(results, "groups"))
 
 
 if __name__ == "__main__":
