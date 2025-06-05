@@ -388,7 +388,13 @@ class D3PM(Denoiser):
 
             # Noise
             # TODO: alpha_s is off here b/c dt is based on num_timesteps
-            num_noise_indices = ((1 - alpha_s) * xs.shape[-1]).to(torch.int)
+            num_noise_indices = ((1 - alpha_s) * generation_config.block_size).to(
+                torch.int
+            )
+            num_noise_indices = min(
+                num_noise_indices,
+                (denoiser_inputs.xt == self.mask_token_id).sum().item(),
+            )
             if generation_config.confidence_based_noising:
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
                 if self.config.shift_logits:
@@ -493,6 +499,8 @@ class D3PM(Denoiser):
                 + ((block_id + 1) * block_size)
                 + logit_offset,
             ]
+            if self.mask_token_id not in xt:
+                continue
             timesteps = self._sample_generation_timesteps(
                 generation_config, max_length=block_size, device=device
             )
@@ -1026,6 +1034,9 @@ class BD3LM(MDLM):
                 (batch_size, input_ids.shape[1], full_seq_length),
                 device=device,
             )
+            # Token from last block can't attend to the new block
+            if self.config.shift_logits:
+                decoder_attention_mask[:, 0, -self.config.block_size :] = 0.0
             decoder_attention_mask = preprocess_attention_mask(
                 decoder_attention_mask, dtype=torch.float
             )
