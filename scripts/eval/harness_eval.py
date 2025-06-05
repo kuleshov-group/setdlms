@@ -4,7 +4,6 @@ This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 
 import json
 import os
-import re
 from typing import Any, List, Tuple
 
 import accelerate
@@ -19,7 +18,6 @@ from transformers import (
     AutoModelForCausalLM,
     AutoModelForMaskedLM,
     PreTrainedTokenizer,
-    StoppingCriteria,
 )
 
 from datasets import Dataset
@@ -29,23 +27,8 @@ from scripts.utils import (
     register_useful_resolvers,
     set_seed,
 )
+from src.denoiser.diffusion import BD3LM
 from src.utils import fsspec_exists
-
-
-class RegexStoppingCriteria(StoppingCriteria):
-    def __init__(self, tokenizer, pattern):
-        self.tokenizer = tokenizer
-        self.pattern = pattern
-
-    def __call__(
-        self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
-    ) -> bool:
-        if input_ids.numel() == 0:
-            return False
-        matches = re.findall(self.pattern, self.tokenizer.decode(input_ids[0]))
-        if len(matches) > 1:
-            return True
-        return False
 
 
 class LMEvalHarnessModel(LM):
@@ -114,7 +97,10 @@ class LMEvalHarnessModel(LM):
                     trust_remote_code=True,
                     revision=pretrained_model_revision,
                 )
-        self.model = model.to(self.device)
+        # TODO: HACK FOR DEBUGGING
+        new_model = BD3LM(model.config)
+        new_model.load_state_dict(model.state_dict())
+        self.model = new_model.to(self.device)  # model.to(self.device)
         self.model.eval()
         self.tokenizer = tokenizer
         self.gen_kwargs = gen_kwargs
