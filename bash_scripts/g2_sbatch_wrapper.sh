@@ -24,16 +24,18 @@ if [ ! -e "${script_full_path}" ]; then
   echo "Script '$script_full_path' not found."
 fi
 
+WATCH_FOLDER=$(realpath "../watch_folder")
+mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
 NUM_VISIBLE_DEVICES=8
 RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev"
 sbatch \
   --job-name=${script_name:4:-3} \
-  --output="../watch_folder/%x_%j.log" \
+  --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=kuleshov,gpu \
-  --constraint="[a100|a6000|a5000|3090]" \
+  --partition=gpu \
+  --constraint="[a100|a6000]" \
   --time=960:00:00 \
   --mem=64000 \
   --nodes=1 \
