@@ -29,6 +29,7 @@ from scripts.utils import (
     register_useful_resolvers,
     set_seed,
 )
+from src.utils import fsspec_exists
 
 
 class RegexStoppingCriteria(StoppingCriteria):
@@ -94,13 +95,13 @@ class LMEvalHarnessModel(LM):
             self._world_size = 1
         self.device = torch.device(f"{device}")
 
-        try:
+        if fsspec_exists(os.path.join(pretrained_model_name_or_path, "config.yaml")):
             model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=pretrained_model_name_or_path,
                 load_ema_weights=load_ema_weights,
                 ckpt_file=ckpt_file,
             )
-        except FileNotFoundError:
+        else:
             try:
                 model = AutoModelForCausalLM.from_pretrained(
                     pretrained_model_name_or_path,
@@ -171,7 +172,7 @@ class LMEvalHarnessModel(LM):
             sample = self.model.generate(
                 inputs=elem["prefix"][None, ...].to(self.device),
                 disable_pbar=(self.rank != 0),
-                # tokenizer=self.tokenizer,
+                # tokenizer=self.tokenizer,  # Uncomment for debugging
                 **self.gen_kwargs,
             )
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
