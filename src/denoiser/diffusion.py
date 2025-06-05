@@ -323,7 +323,7 @@ class D3PM(Denoiser):
             generation_config.min_t,
             generation_config.num_steps + 1,
             device=device,
-        )
+        )[:-1]
         return timesteps  # type: ignore
 
     def _generate_unconditional(  # TODO add CBG and CFG generation
@@ -1000,6 +1000,9 @@ class BD3LM(MDLM):
                 encoder_position_ids = torch.arange(cache_len, full_seq_length).to(
                     device
                 )[None, :]
+                encoder_attention_mask = preprocess_attention_mask(
+                    encoder_attention_mask, dtype=torch.float
+                )
         else:  # Caching context for the first time / not using kv-cache at all
             if context is not None:
                 context_len = context.shape[1]
@@ -1012,6 +1015,9 @@ class BD3LM(MDLM):
             encoder_attention_mask = self.encoder_static_attention_mask[
                 None, :context_len, :context_len
             ]
+            encoder_attention_mask = preprocess_attention_mask(
+                encoder_attention_mask, dtype=torch.float
+            )
             position_ids = torch.arange(context_len, full_seq_length).to(device)[
                 None, :
             ]
@@ -1019,6 +1025,9 @@ class BD3LM(MDLM):
             decoder_attention_mask = torch.ones(
                 (batch_size, input_ids.shape[1], full_seq_length),
                 device=device,
+            )
+            decoder_attention_mask = preprocess_attention_mask(
+                decoder_attention_mask, dtype=torch.float
             )
         else:
             decoder_attention_mask = None
