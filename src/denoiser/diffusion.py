@@ -324,7 +324,7 @@ class D3PM(Denoiser):
             generation_config.num_steps + 1,
             device=device,
         )
-        return timesteps  # type: ignore
+        return timesteps[:-1]  # type: ignore
 
     def _generate_unconditional(  # TODO add CBG and CFG generation
         self,
@@ -347,7 +347,11 @@ class D3PM(Denoiser):
             ):
                 backbone_output = backbone_output.logits
             log_x_theta = self._forward(backbone_output, denoiser_inputs, **kwargs)
-            if logits_processor is not None and running_generation is not None:
+            if (
+                logits_processor is not None
+                and running_generation is not None
+                and running_generation.numel() > 0
+            ):
                 for token_idx in range(log_x_theta.shape[1]):
                     # TODO: Looping over token positions like this does not allow for
                     #   some processors, e.g. length penalty which could be applied all
@@ -479,6 +483,10 @@ class D3PM(Denoiser):
             inputs_offset = 0
 
         total_NFEs = 0
+        timesteps = self._sample_generation_timesteps(  # Re-use in every block
+            generation_config, max_length=block_size, device=device
+        )
+        dt = (1 - generation_config.min_t) / len(timesteps)
         block_pbar = tqdm(
             range(max_blocks),
             desc="Blocks",
@@ -493,9 +501,6 @@ class D3PM(Denoiser):
                 + ((block_id + 1) * block_size)
                 + logit_offset,
             ]
-            timesteps = self._sample_generation_timesteps(
-                generation_config, max_length=block_size, device=device
-            )
             step_pbar = tqdm(
                 timesteps,
                 desc="T",
@@ -503,13 +508,19 @@ class D3PM(Denoiser):
                 leave=False,
                 disable=disable_pbar,
             )
-            dt = (1 - generation_config.min_t) / len(timesteps)
             cache = None
             context = (
                 accumulated_samples[:, : (block_id * block_size)]
                 if block_id > 0 and not generation_config.use_cache
                 else None
             )
+            # Used for logit processing
+            running_generation = accumulated_samples[
+                :,
+                inputs.shape[-1] + logit_offset : inputs.shape[-1]
+                + (block_id * block_size)
+                + logit_offset,
+            ]
             for t in step_pbar:
                 if cache is None:
                     block_NFEs += 1
@@ -524,15 +535,6 @@ class D3PM(Denoiser):
                     context=context,
                     past_key_values=past_key_values,
                 )
-
-                # Used for logit processing
-                running_generation = accumulated_samples[
-                    :,
-                    inputs.shape[-1] : inputs.shape[-1]
-                    + (block_id * block_size)
-                    + logit_offset,
-                ]
-
                 xs, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t,
@@ -546,6 +548,7 @@ class D3PM(Denoiser):
                     **kwargs,
                 )
                 if self.config.shift_logits:
+                    # (re)'Donate' last idx from previous block
                     xs = torch.cat((xt[:, :1], xs), dim=-1)
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
@@ -572,7 +575,7 @@ class D3PM(Denoiser):
                 is_done = stopping_criteria(
                     input_ids=accumulated_samples[  # type: ignore
                         :,
-                        inputs_offset : inputs_offset
+                        inputs_offset + logit_offset : inputs_offset
                         + ((block_id + 1) * block_size)
                         + logit_offset,
                     ],
@@ -881,9 +884,9 @@ class BD3LM(MDLM):
             )
             # TODO manually pass in position ids
             return DenoiserInput(
-                xt=backbone_input_ids,
+                xt=backbone_input_ids,  # type: ignore
                 x0=input_ids,
-                attention_mask=decoder_attention_mask,
+                attention_mask=decoder_attention_mask,  # type: ignore
                 tokens_mask=attention_mask * (1 - context_mask),
                 t=t,
                 alpha_t=alpha_t,
@@ -941,6 +944,8 @@ class BD3LM(MDLM):
                     Q_LEN=input_ids.shape[1],
                     KV_LEN=input_ids.shape[1] * 2,
                 )
+            else:
+                raise ValueError("Unknown backbone backend")
             return DenoiserInput(
                 xt=xt,
                 x0=input_ids,
@@ -1000,6 +1005,9 @@ class BD3LM(MDLM):
                 encoder_position_ids = torch.arange(cache_len, full_seq_length).to(
                     device
                 )[None, :]
+                encoder_attention_mask = preprocess_attention_mask(
+                    encoder_attention_mask, dtype=torch.float
+                )
         else:  # Caching context for the first time / not using kv-cache at all
             if context is not None:
                 context_len = context.shape[1]
@@ -1012,6 +1020,9 @@ class BD3LM(MDLM):
             encoder_attention_mask = self.encoder_static_attention_mask[
                 None, :context_len, :context_len
             ]
+            encoder_attention_mask = preprocess_attention_mask(
+                encoder_attention_mask, dtype=torch.float
+            )
             position_ids = torch.arange(context_len, full_seq_length).to(device)[
                 None, :
             ]
@@ -1019,6 +1030,9 @@ class BD3LM(MDLM):
             decoder_attention_mask = torch.ones(
                 (batch_size, input_ids.shape[1], full_seq_length),
                 device=device,
+            )
+            decoder_attention_mask = preprocess_attention_mask(
+                decoder_attention_mask, dtype=torch.float
             )
         else:
             decoder_attention_mask = None
