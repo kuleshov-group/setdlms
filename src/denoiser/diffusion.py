@@ -31,9 +31,11 @@ from src.denoiser.base import (
 
 def preprocess_attention_mask(attention_mask, dtype):
     min_dtype = torch.finfo(dtype).min
-    attention_mask = torch.where((attention_mask == 0.0).bool(), min_dtype, 0.0).to(
-        dtype
-    )
+    attention_mask = torch.where(
+        (attention_mask == 0.0).bool(),  # type: ignore
+        min_dtype,
+        0.0,
+    ).to(dtype)
     return attention_mask
 
 
@@ -318,13 +320,12 @@ class D3PM(Denoiser):
                 next_t = timesteps[-1] * u ** (1 / i)
                 timesteps = torch.cat((timesteps, next_t), dim=0)
             return timesteps[1:].to(device)  # type: ignore
-        timesteps = torch.linspace(
+        return torch.linspace(  # type: ignore
             1.0,
             generation_config.min_t,
             generation_config.num_steps + 1,
             device=device,
-        )
-        return timesteps[:-1]  # type: ignore
+        )[:-1]
 
     def _generate_unconditional(  # TODO add CBG and CFG generation
         self,
