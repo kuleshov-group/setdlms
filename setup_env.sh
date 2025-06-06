@@ -25,3 +25,5 @@ export PYTHONPATH="${PWD}:${HF_HOME}/modules"
 # Enforce verbose Hydra error logging
 export HYDRA_FULL_ERROR=1
 # export TMPDIR="${PWD}/.tmp"  # TODO: currently this is causing OSErrors
+
+export NCCL_P2P_LEVEL=NVL
