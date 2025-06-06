@@ -1,4 +1,4 @@
 gsm8k_regex_stopping_criteria:
   _target_: src.custom_transformers.generation.RegexStoppingCriteria
   tokenizer: ${tokenizer}
-  pattern: 'r"\\boxed\{.*?\}"'
+  pattern: '\\boxed\{.*?\}'

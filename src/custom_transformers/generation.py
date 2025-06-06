@@ -38,10 +38,14 @@ class RegexStoppingCriteria(StoppingCriteria):
 
     def __call__(
         self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
-    ) -> bool:
+    ) -> torch.BoolTensor:
         if input_ids.numel() == 0:
-            return False
-        matches = re.findall(self.pattern, self.tokenizer.decode(input_ids[0]))
-        if len(matches) > 0:
-            return True
-        return False
+            return torch.tensor([False], device=input_ids.device, dtype=torch.bool)
+        matches = []
+        if input_ids.ndim > 1:
+            text = self.tokenizer.batch_decode(input_ids)
+        else:
+            text = [self.tokenizer.decode(input_ids)]
+        for i in range(len(text)):
+            matches.append(len(re.findall(self.pattern, text[i])) > 0)
+        return torch.tensor(matches, device=input_ids.device, dtype=torch.bool)
