@@ -3,9 +3,20 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen600M_v2"
-OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
-REVISION=null
+#MODEL_PATH="${RUN_DIR}/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen2B"
+#OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
+#REVISION=null
+
+# New HF
+MODEL_PATH="kuleshov-group/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen2B"
+OUTPUT_DIR="${RUN_DIR}/${MODEL_PATH}/lm_eval_harness_output"
+REVISION="946176208f91301bbfa7feb42db6996cc98074c1" #null
+
+## Old NeurIPS
+#MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-block4-bs96-keep1-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen2B_keeptop_tie_noema_v2"
+#OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
+#REVISION=null
+
 mkdir -p ${OUTPUT_DIR}
 L=256
 BLOCK_SIZE=4
@@ -14,7 +25,6 @@ SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
 KV_CACHING=true
-TOP_P=0.95
 CKPT_FILE="best-rank0.pt"
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}"
@@ -29,7 +39,7 @@ accelerate launch scripts/eval/harness_eval.py \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   task.model.ckpt_file=${CKPT_FILE} \
-  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B-Base" \
+  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-1.7B-Base" \
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_new_tokens=${L} \
@@ -38,7 +48,8 @@ accelerate launch scripts/eval/harness_eval.py \
   generation_config.sampling_strategy=${SAMPLING_STRATEGY} \
   generation_config.first_hitting=${FIRST_HITTING} \
   generation_config.confidence_based_noising=${CONFIDENCE_BASED_NOISING} \
+  generation_config.confidence_threshold=1.1 \
   generation_config.use_cache=${KV_CACHING} \
-  generation/logits_processor@logits_processor_list='[top_p_logits_wrapper]' \
-  logits_processor_list.top_p_logits_wrapper.top_p=${TOP_P} \
+  ~generation/logits_processor@logits_processor_list \
+  gen_kwargs.logits_processor=null \
   generation/stopping_criteria@stopping_criteria_list='[eos_token_criteria,max_length_criteria,gsm8k_regex_stopping_criteria]'

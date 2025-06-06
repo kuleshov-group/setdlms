@@ -16,13 +16,13 @@ WARMUP_DURATION="1000ba" # 0.1, 0.3, 0.5
 BATCH_SIZE=96 # 96, 128, 256
 MAX_DURATION="20000ba" # 20000ba, 10000ba, 5000ba
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
 
-TAG=e2d2_qwen600M_v2
+TAG=e2d2_qwen2B
 RUN_NAME=gsm8k-block${BLOCK_SIZE}-keepbottomenc${KEEP_BOTTOM_N_ENCODER_LAYERS}-keeptopdec${KEEP_TOP_N_DECODER_LAYERS}-${TAG}
 
-MICRO_BATCH_SIZE=1
-NUM_WORKERS=0
+MICRO_BATCH_SIZE=4
+NUM_WORKERS=64
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
