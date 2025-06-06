@@ -41,6 +41,7 @@ class LMEvalHarnessModel(LM):
         load_ema_weights: bool = False,
         ckpt_file: str = "best-rank0.pt",  # best-rank0.pt or latest-rank0.pt
         gen_kwargs: Any | None = None,
+        accelerator: accelerate.Accelerator | None = None,
     ):
         """
         Args:
@@ -60,15 +61,8 @@ class LMEvalHarnessModel(LM):
         self.generated_samples_output_path = (
             f"{generated_samples_output_path}/lm_eval_harness_output"
         )
-        accelerator = accelerate.Accelerator()
-        if accelerator.num_processes > 1:
-            self.accelerator = accelerator
-        else:
-            self.accelerator = None
-
-        model_kwargs = {}
+        self.accelerator = accelerator
         if self.accelerator is not None:
-            model_kwargs.update({"device_map": {"": f"{self.accelerator.device}"}})
             device = self.accelerator.device
             self._rank = self.accelerator.local_process_index
             self._world_size = self.accelerator.num_processes
@@ -155,7 +149,11 @@ class LMEvalHarnessModel(LM):
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
         ):
+            # TODO: DEBUGGING TEST TO SEE IF NEURIPS SNAPSHOT IS REPRODUCIBLE
+            # prefix = elem["prefix"][:-1]
             sample = self.model.generate(
+                # TODO: DEBUGGING TEST TO SEE IF NEURIPS SNAPSHOT IS REPRODUCIBLE
+                # inputs=prefix[None, ...].to(self.device),
                 inputs=elem["prefix"][None, ...].to(self.device),
                 disable_pbar=(self.rank != 0),
                 # tokenizer=self.tokenizer,  # Uncomment for debugging
@@ -210,10 +208,16 @@ class LMEvalHarnessModel(LM):
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
-    print_and_save_config(cfg, resolve=True, save_cfg=False)
+    accelerator = accelerate.Accelerator()
+    accelerator = accelerate.Accelerator() if accelerator.num_processes > 1 else None
+    if accelerator is None or accelerator.local_process_index == 0:
+        print_and_save_config(cfg, resolve=True, save_cfg=False)
     set_seed(cfg.seed)
-    results = hydra.utils.call(cfg.task)
-    if results is not None:
+    model = hydra.utils.instantiate(cfg.task.model, accelerator=accelerator)
+    results = hydra.utils.call(cfg.task, model=model)
+    if results is not None and (
+        accelerator is None or accelerator.local_process_index == 0
+    ):
         samples = results.pop("samples")
         evaluation_tracker = EvaluationTracker(output_path=cfg.output_path)
         evaluation_tracker.save_results_aggregated(results=results, samples=samples)
