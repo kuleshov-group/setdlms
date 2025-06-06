@@ -34,8 +34,8 @@ sbatch \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=gpu \
-  --constraint="[a100|a6000]" \
+  --partition=kuleshov,gpu \
+  --constraint="[h100|a100|a6000|a5000|3090]" \
   --time=960:00:00 \
   --mem=64000 \
   --nodes=1 \
