@@ -28,7 +28,8 @@ WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
 NUM_VISIBLE_DEVICES=8
-RUN_DIR="/mnt/home/$(whoami)/runs/dllm-dev"  # TODO: Point to scratch dir when available
+RUN_DIR="/mnt/lustre/cornell/$(whoami)/runs/dllm-dev"
+mkdir -p ${RUN_DIR}
 sbatch \
   --job-name=${script_name:4:-3} \
   --output="${WATCH_FOLDER}/%x_%j.log" \
