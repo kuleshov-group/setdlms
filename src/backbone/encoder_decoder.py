@@ -1,10 +1,12 @@
 import torch
 from torch import nn
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.processing_utils import Unpack
 from transformers.utils import logging
+
+from src.backbone.custom_modeling_qwen3 import CustomQwen3ForCausalLM
 
 try:
     from torch.nn.attention.flex_attention import BlockMask
@@ -49,14 +51,13 @@ class LLMasEncoderDecoder(nn.Module):
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
             )
-            self.encoder = AutoModelForCausalLM.from_config(encoder_config)
+            self.encoder = CustomQwen3ForCausalLM.from_config(encoder_config)
         else:
-            self.encoder = AutoModelForCausalLM.from_pretrained(
+            self.encoder = CustomQwen3ForCausalLM.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
             )
-        self.encoder.config._attn_implementation = attn_backend
         keep_top_n_decoder_layers = (
             len(self.encoder.model.layers)
             if keep_top_n_decoder_layers == -1
@@ -94,14 +95,13 @@ class LLMasEncoderDecoder(nn.Module):
                     trust_remote_code=True,
                     attn_implementation=attn_backend,
                 )
-                self.decoder = AutoModelForCausalLM(decoder_config)
+                self.decoder = CustomQwen3ForCausalLM(decoder_config)
             else:
-                self.decoder = AutoModelForCausalLM.from_pretrained(
+                self.decoder = CustomQwen3ForCausalLM.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=True,
                     attn_implementation=attn_backend,
                 )
-            self.decoder.config._attn_implementation = attn_backend
             del self.decoder.model.embed_tokens
             decoder_layers_post_surgery = []
             for decoder_layer_idx in self.decoder_layers_to_keep:
