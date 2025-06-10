@@ -154,6 +154,7 @@ def load_model_from_ckpt_dir_path(
     ckpt_file: str = "best-rank0.pt",
     load_ema_weights: bool = False,
     verbose: bool = False,
+    device: torch.device | str = torch.device("cpu"),
     **kwargs,
 ) -> Denoiser:
     """Load a model from a checkpoint path (and file).
@@ -166,6 +167,8 @@ def load_model_from_ckpt_dir_path(
         load_ema_weights (bool): Whether to load the EMA weights. Defaults to False.
         verbose (bool): Whether to print information about the loaded checkpoint,
             e.g., step, metric values. Defaults to False.
+        device (torch.device | str): Device for torch.load(map_location=).
+            Defaults to torch.device("cpu").
 
     Returns:
         Denoiser: The loaded denoiser model.
@@ -183,7 +186,7 @@ def load_model_from_ckpt_dir_path(
         ckpt = torch.load(
             os.path.join(path_to_ckpt_dir, "checkpoints", ckpt_file),
             weights_only=False,
-            map_location="cpu",
+            map_location=device,
         )
     except FileNotFoundError:
         print("Checkpoint not found; reinitializing model from scratch")
