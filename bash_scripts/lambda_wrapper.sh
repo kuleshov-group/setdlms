@@ -3,7 +3,7 @@
 <<comment
 #  Usage:
 cd bash_scripts/
-source lambda_wrapper.sh <SHELL_SCRIPT>
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./lambda_wrapper.sh <SHELL_SCRIPT>
 comment
 
 
