@@ -10,10 +10,13 @@ from transformers import (
     DynamicCache,
 )
 
+from src.backbone.custom_modeling_qwen3 import CustomQwen3ForCausalLM
+
 AUTO_MODEL_CLS = {
     "AutoModel": AutoModel,
     "AutoModelForCausalLM": AutoModelForCausalLM,
     "AutoModelForMaskedLM": AutoModelForMaskedLM,
+    "CustomQwen3ForCausalLM": CustomQwen3ForCausalLM,
 }
 
 
@@ -23,7 +26,10 @@ class AutoModelFromPreTrained(nn.Module):
     def __init__(
         self,
         automodel_cls: Literal[
-            "AutoModel", "AutoModelForCausalLM", "AutoModelForMaskedLM"
+            "AutoModel",
+            "AutoModelForCausalLM",
+            "AutoModelForMaskedLM",
+            "CustomQwen3ForCausalLM",
         ],
         pretrained_model_name_or_path: str,
         trust_remote_code: bool = True,
