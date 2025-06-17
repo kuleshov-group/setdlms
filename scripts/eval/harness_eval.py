@@ -27,8 +27,6 @@ from scripts.utils import (
     register_useful_resolvers,
     set_seed,
 )
-
-# from src.denoiser.diffusion import BD3LM
 from src.utils import fsspec_exists
 
 
@@ -93,10 +91,6 @@ class LMEvalHarnessModel(LM):
                     trust_remote_code=True,
                     revision=pretrained_model_revision,
                 )
-        # # TODO: HACK FOR DEBUGGING
-        # new_model = BD3LM(model.config)
-        # new_model.load_state_dict(model.state_dict())
-        # self.model = new_model.to(self.device)  # model.to(self.device)
         self.model = model.to(self.device)
         self.model.eval()
         self.tokenizer = tokenizer
@@ -142,10 +136,6 @@ class LMEvalHarnessModel(LM):
         ds = Dataset.from_list(ds)
         ds = ds.map(_tokenize)
         ds = ds.with_format("torch")
-        # total_len = [len(x["prefix"]) + max_new_tokens for x in ds]
-        # assert max(total_len) <= self.model.max_length, (
-        #     "Input length(s) exceeds max_length"
-        # )
         res = []
         res_for_json = []
         correct, total = 0, 0
