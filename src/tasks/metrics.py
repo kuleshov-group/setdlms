@@ -15,14 +15,15 @@ class Loss(Metric):
     # Make torchmetrics call update only once
     full_state_update = False
 
-    def __init__(self, dist_sync_on_step=False):
+    def __init__(self, name="loss", update_key="loss", dist_sync_on_step=False):
         super().__init__(dist_sync_on_step=dist_sync_on_step)
-        self.name = "loss"
+        self.name = name
+        self.update_key = update_key
         self.add_state("sum_loss", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total_batches", default=torch.tensor(0), dist_reduce_fx="sum")
 
     def update(self, output: Mapping | Tensor, target: Tensor) -> None:
-        loss = output["loss"]
+        loss = output[self.update_key]
         self.sum_loss += loss
         self.total_batches += 1
 
@@ -34,16 +35,24 @@ class NLL(Metric):
     # Make torchmetrics call update only once
     full_state_update = False
 
-    def __init__(self, dist_sync_on_step=False):
+    def __init__(
+        self,
+        name="nll",
+        update_key="nll",
+        weight_key="tokens_mask",
+        dist_sync_on_step=False,
+    ):
         super().__init__(dist_sync_on_step=dist_sync_on_step)
-        self.name = "nll"
+        self.name = name
+        self.update_key = update_key
+        self.weight_key = weight_key
         self.add_state("mean_nll", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("weight", default=torch.tensor(0), dist_reduce_fx="sum")
 
     # noinspection LongLine
     def update(self, output: Mapping | Tensor, target: Tensor) -> None:
-        value = output["nlls"]
-        weight = output.get("tokens_mask", None)
+        value = output[self.update_key]
+        weight = output.get(self.weight_key, None)
         # TODO hack for logit shifting
         if weight is not None:
             weight = weight[:, -value.shape[1] :]
@@ -68,9 +77,19 @@ class NLL(Metric):
 
 
 class BPD(NLL):
-    def __init__(self, dist_sync_on_step=False):
-        super().__init__(dist_sync_on_step=dist_sync_on_step)
-        self.name = "bpd"
+    def __init__(
+        self,
+        name="bpd",
+        update_key="nll",
+        weight_key="tokens_mask",
+        dist_sync_on_step=False,
+    ):
+        super().__init__(
+            name=name,
+            update_key=update_key,
+            weight_key=weight_key,
+            dist_sync_on_step=dist_sync_on_step,
+        )
 
     def compute(self) -> Tensor:
         """Computes the bits per dimension.
@@ -82,9 +101,19 @@ class BPD(NLL):
 
 
 class Perplexity(NLL):
-    def __init__(self, dist_sync_on_step=False):
-        super().__init__(dist_sync_on_step=dist_sync_on_step)
-        self.name = "ppl"
+    def __init__(
+        self,
+        name="ppl",
+        update_key="nll",
+        weight_key="tokens_mask",
+        dist_sync_on_step=False,
+    ):
+        super().__init__(
+            name=name,
+            update_key=update_key,
+            weight_key=weight_key,
+            dist_sync_on_step=dist_sync_on_step,
+        )
 
     def compute(self) -> Tensor:
         """Computes the Perplexity.
