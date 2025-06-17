@@ -24,7 +24,12 @@ if [ ! -e "${script_full_path}" ]; then
   echo "Script '$script_full_path' not found."
 fi
 
-export NUM_VISIBLE_DEVICES=${SLURM_GPUS_ON_NODE}
+if [ -z "${CUDA_VISIBLE_DEVICES}" ]; then
+  NUM_VISIBLE_DEVICES=${SLURM_GPUS_ON_NODE}
+else
+  NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
+fi
+export NUM_VISIBLE_DEVICES
 RUN_DIR="/share/kuleshov/$(whoami)/runs/dllm-dev"
 export RUN_DIR
 source ${script_full_path}
