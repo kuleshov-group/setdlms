@@ -4,8 +4,9 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional, Union
 
+import attr
 import hydra.utils
 import torch
 from transformers import (
@@ -19,7 +20,6 @@ from transformers import (
 )
 from transformers.cache_utils import Cache
 from transformers.generation.utils import GenerateOutput
-from transformers.modeling_outputs import ModelOutput
 
 # Add the local directory (enables hydra.utils.instantiate for local imports)
 if str(Path(__file__).resolve().parent) not in sys.path:
@@ -54,7 +54,7 @@ class DenoiserInput(OrderedDict):
     t: Optional[torch.FloatTensor] = None  # (B,)
     alpha_t: Optional[torch.FloatTensor] = None  # (B,) | (B, 1) | (B, 1, 1)
     alpha_t_prime: Optional[torch.FloatTensor] = None  # (B,) | (B, 1) | (B, 1, 1)
-    past_key_values: Optional[torch.FloatTensor] = None  # (B, ctx_len, D)
+    past_key_values: Optional[Union[torch.FloatTensor, Cache]] = None  # (B, ctx_len, D)
     # Placeholder in case future experiments require different inputs
     backbone_kwargs: dict[str, Any] = field(default_factory=dict)
 
@@ -65,10 +65,11 @@ class LossAndNllOutput(OrderedDict):
 
     loss: torch.FloatTensor
     nlls: torch.FloatTensor
+    other_loss_terms: dict = field(default_factory=dict)
 
 
-@dataclass
-class DenoiserOutput(ModelOutput):
+@attr.s(auto_attribs=True, init=False)
+class DenoiserOutput(OrderedDict):
     """Output of the denoiser model."""
 
     denoiser_output: torch.FloatTensor
@@ -77,8 +78,28 @@ class DenoiserOutput(ModelOutput):
     past_key_values: Optional[Cache] = None
     loss: Optional[torch.FloatTensor] = None
     nlls: Optional[torch.FloatTensor] = None
-    # Placeholder in case future models produce different outputs
-    output_kwargs: Optional[Dict[str, Any]] = None
+
+    def __init__(
+        self,
+        denoiser_output: torch.FloatTensor,
+        logits: Optional[torch.FloatTensor] = None,
+        tokens_mask: Optional[torch.FloatTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        loss: Optional[torch.FloatTensor] = None,
+        nlls: Optional[torch.FloatTensor] = None,
+        **output_kwargs: Any,
+    ):
+        super().__init__()
+        self["denoiser_output"] = denoiser_output
+        self["logits"] = logits
+        self["tokens_mask"] = tokens_mask
+        self["past_key_values"] = past_key_values
+        self["loss"] = loss
+        self["nlls"] = nlls
+        for k, v in output_kwargs.items():
+            self[k] = v
+        for k, v in self.items():
+            setattr(self, k, v)
 
 
 class DenoiserConfig(PretrainedConfig):
@@ -308,8 +329,10 @@ class Denoiser(ABC, PreTrainedModel):
             )
             loss = loss_and_nll.loss
             nlls = loss_and_nll.nlls
+            other_loss_terms = loss_and_nll.other_loss_terms
         else:
             loss, nlls = None, None
+            other_loss_terms = {}
 
         return DenoiserOutput(
             denoiser_output=denoiser_output,
@@ -318,6 +341,7 @@ class Denoiser(ABC, PreTrainedModel):
             tokens_mask=denoiser_inputs.tokens_mask,
             loss=loss,
             nlls=nlls,
+            **other_loss_terms,
         )
 
     @staticmethod
