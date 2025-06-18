@@ -3,16 +3,16 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-#MODEL_PATH="${RUN_DIR}/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen2B"
-#REVISION=null
+MODEL_PATH="${RUN_DIR}/gsm8k-block4-enc-layers20-dec-layers8-e2d2_qwen600M_enat_from-scratch"
+REVISION=null
 
 ## New HF
 #MODEL_PATH="kuleshov-group/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen2B"
 #REVISION="946176208f91301bbfa7feb42db6996cc98074c1" #null
 
-# Old: NeurIPS
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-block4-bs96-keep1-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen2B_keeptop_tie_noema_v2"
-REVISION=null
+## Old: NeurIPS
+#MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-block4-bs96-keep1-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen2B_keeptop_tie_noema_v2"
+#REVISION=null
 
 EVAL_DATASET="gsm8k_eval"
 BLOCK_SIZE=4
@@ -29,10 +29,10 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   seed=1 \
   batch_size=${BATCH_SIZE} \
   block_size=${BLOCK_SIZE} \
-  task.eval_dataloader.batch_size=6 \
+  task.eval_dataloader.batch_size=8 \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
-  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-1.7B-Base" \
+  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B-Base" \
   output_path=null \
   +collator@task.collator=denoising \
   task.collator.global_batch_size=${BATCH_SIZE} \
