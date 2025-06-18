@@ -10,7 +10,6 @@ from transformers import (
     StoppingCriteriaList,
 )
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.modeling_outputs import ModelOutput
 
 try:
     from torch.nn.attention.flex_attention import (
@@ -338,21 +337,19 @@ class D3PM(Denoiser):
         alpha_t: torch.FloatTensor,
         alpha_s: torch.FloatTensor,
         denoiser_inputs: DenoiserInput | None = None,
-        cache: Dict[str, torch.FloatTensor] | None = None,
-        past_key_values: DynamicCache | None = None,
+        model_output_cache: Dict[str, torch.FloatTensor] | None = None,
+        cache: Dict[str, Any] | None = None,
         running_generation: torch.LongTensor | None = None,
         logits_processor: LogitsProcessorList | None = None,
         **kwargs: Any,
-    ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor]]:
-        if cache is None:  # execute function evaluation
-            backbone_output = self._backbone_forward(
-                denoiser_inputs, past_key_values=past_key_values, **kwargs
-            )
-            if isinstance(backbone_output, ModelOutput) and hasattr(
-                backbone_output, "logits"
-            ):
-                backbone_output = backbone_output.logits
-            log_x_theta = self._forward(backbone_output, denoiser_inputs, **kwargs)
+    ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
+        cache = cache if cache is not None else {}
+        if model_output_cache is None:  # execute function evaluation
+            backbone_output = self._backbone_forward(denoiser_inputs, **cache, **kwargs)
+            backbone_output = {k: v for k, v in backbone_output.items()}
+            logits = backbone_output.pop("logits")
+            cache = cache | backbone_output
+            log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             if (
                 logits_processor is not None
                 and running_generation is not None
@@ -369,8 +366,8 @@ class D3PM(Denoiser):
                 log_x_theta = torch.log_softmax(log_x_theta, dim=-1)  # re-normalize
             x_theta = log_x_theta.exp()
         else:
-            x_theta = cache["x_theta"]
-        cache = {"x_theta": x_theta}
+            x_theta = model_output_cache["x_theta"]
+        model_output_cache = {"x_theta": x_theta}
         prob_check_denom = denoiser_inputs.xt.numel() - self.config.shift_logits
         if generation_config.sampling_strategy == "posterior":
             q_xs = self._compute_posterior(
@@ -433,7 +430,7 @@ class D3PM(Denoiser):
                 f"Sampling strategy {generation_config.sampling_strategy} not"
                 " implemented."
             )
-        return xs, cache
+        return xs, model_output_cache, cache
 
     @torch.no_grad()
     def generate(
@@ -488,13 +485,13 @@ class D3PM(Denoiser):
             inputs = inputs[..., :-1]
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if generation_config.use_cache and inputs.numel() > 0:
-            past_key_values = self.update_past_key_values(
+            cache = self.update_cache(
                 inputs=inputs,
-                past_key_values=DynamicCache(),
+                cache={},
             )
             inputs_offset = inputs.shape[-1]
         else:
-            past_key_values = None
+            cache = None
             inputs_offset = 0
 
         total_NFEs = 0
@@ -528,7 +525,7 @@ class D3PM(Denoiser):
                 leave=False,
                 disable=disable_pbar,
             )
-            cache = None
+            model_output_cache = None
             context = (
                 accumulated_samples[:, : (block_id * block_size)]
                 if block_id > 0 and not generation_config.use_cache
@@ -542,7 +539,7 @@ class D3PM(Denoiser):
                 + logit_offset,
             ]
             for t in step_pbar:
-                if cache is None:
+                if model_output_cache is None:
                     block_NFEs += 1
                     total_NFEs += 1
                 # t is 0-dim tensor, reshape to (1, 1, 1) for broadcasting
@@ -553,16 +550,15 @@ class D3PM(Denoiser):
                 denoiser_inputs = self._prepare_inputs_inference(
                     input_ids=xt,
                     context=context,
-                    past_key_values=past_key_values,
+                    cache=cache,
                 )
-                xs, cache = self._generate_unconditional(
+                xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t,
                     alpha_s=alpha_s,
                     denoiser_inputs=denoiser_inputs,
+                    model_output_cache=model_output_cache,
                     cache=cache,
-                    xt=xt,
-                    past_key_values=past_key_values,
                     running_generation=running_generation,
                     logits_processor=logits_processor,
                     **kwargs,
@@ -579,7 +575,7 @@ class D3PM(Denoiser):
                     not torch.allclose(xs, xt)
                     or not generation_config.use_model_output_cache
                 ):
-                    cache = None
+                    model_output_cache = None
                 xt = xs
                 if (
                     xt == self.mask_token_id
@@ -614,9 +610,9 @@ class D3PM(Denoiser):
                     # Last generated token will be provided as first token in inputs to
                     # next block, and so we do not cache it here
                     xt = xt[..., :-1]
-                past_key_values = self.update_past_key_values(
+                cache = self.update_cache(
                     inputs=xt,
-                    past_key_values=past_key_values,
+                    cache=cache,
                 )
         return accumulated_samples  # type: ignore
 
@@ -991,63 +987,87 @@ class BD3LM(MDLM):
         attention_mask: torch.FloatTensor | None = None,
         context: torch.LongTensor | None = None,
         context_mask: torch.FloatTensor | None = None,
-        past_key_values: DynamicCache | None = None,
-        return_past_key_values: bool = False,
-        **backbone_kwargs: Any,
+        cache: Dict[str, Any] | None = None,
+        return_updated_cache: bool = False,
+        **backbone_kwargs: Dict[str, Any],
     ) -> DenoiserInput:
-        device = input_ids.device
-        batch_size = input_ids.shape[0]
+        device = input_ids.device if input_ids is not None else context.device
+        batch_size = input_ids.shape[0] if input_ids is not None else context.shape[0]
         if self.config.backbone_is_decoder_only:
+            cache = cache if cache is not None else {}
             return super()._prepare_inputs_inference(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 context=context,
                 context_mask=context_mask,
-                past_key_values=past_key_values,
+                cache=cache,
                 **backbone_kwargs,
             )
         # Encoder-decoder inputs
         assert input_ids is not None or context is not None, (
             "Must provide either input_ids or context."
         )
-        if return_past_key_values:  # Indicates this is a cache update step
+        if return_updated_cache:  # Indicates this is a cache update step
             context = input_ids
             input_ids = None
         position_ids, encoder_position_ids = None, None
-        if past_key_values is not None:
-            cache_len = self._get_past_key_values_seq_length(past_key_values)
-            if input_ids is not None:  # Skip enc: nothing new for enc to cache
-                full_seq_length = cache_len + input_ids.shape[1]
+        if cache is not None:
+            past_key_values = cache.pop("past_key_values", DynamicCache())
+            encoder_past_key_values = cache.pop(
+                "encoder_past_key_values", DynamicCache()
+            )
+            encoder_last_hidden_state = cache.pop("encoder_last_hidden_state", None)
+            if input_ids is not None:  # Skip enc: nothing new to cache
+                cache_length = self._get_past_key_values_seq_length(past_key_values)
+                if encoder_last_hidden_state is not None:
+                    full_seq_length = (
+                        cache_length
+                        + encoder_last_hidden_state.shape[1]  # type: ignore
+                        + input_ids.shape[-1]
+                    )
+                else:
+                    full_seq_length = cache_length + input_ids.shape[-1]
                 encoder_attention_mask = None
-                position_ids = torch.arange(cache_len, full_seq_length).to(device)[
-                    None, :
-                ]
-            else:  # Caching new tokens in the enc
-                full_seq_length = cache_len + context.shape[-1]
-                encoder_attention_mask = self.encoder_static_attention_mask[
-                    None, None, cache_len:full_seq_length, :full_seq_length
-                ]  # Make attention mask 4D
-                encoder_position_ids = torch.arange(cache_len, full_seq_length).to(
-                    device
+                position_ids = torch.arange(
+                    cache_length, full_seq_length, device=device
                 )[None, :]
+            else:  # Caching new tokens in the enc
+                encoder_cache_length = self._get_past_key_values_seq_length(
+                    encoder_past_key_values
+                )
+                encoder_full_seq_length = encoder_cache_length + context.shape[-1]
+                encoder_attention_mask = self.encoder_static_attention_mask[
+                    None,
+                    None,
+                    encoder_cache_length:encoder_full_seq_length,
+                    :encoder_full_seq_length,
+                ]  # Make attention mask 4D
+                encoder_position_ids = torch.arange(
+                    encoder_cache_length, encoder_full_seq_length
+                ).to(device)[None, :]
                 encoder_attention_mask = preprocess_attention_mask(
                     encoder_attention_mask, dtype=torch.float
                 )
-        else:  # Caching context for the first time / not using kv-cache at all
+                full_seq_length = -1  # Not used
+        else:  # Not using kv-cache
+            past_key_values = None
+            encoder_past_key_values, encoder_last_hidden_state = None, None
             if context is not None:
                 context_len = context.shape[1]
+                encoder_attention_mask = self.encoder_static_attention_mask[
+                    None, None, :context_len, :context_len
+                ]  # Make attention mask 4D
+                encoder_attention_mask = preprocess_attention_mask(
+                    encoder_attention_mask, dtype=torch.float
+                )
+                encoder_position_ids = torch.arange(context_len).to(device)[None, :]
             else:
                 context_len = 0
+                encoder_attention_mask = None
             if input_ids is not None:
                 full_seq_length = context_len + input_ids.shape[1]
             else:
                 full_seq_length = context_len
-            encoder_attention_mask = self.encoder_static_attention_mask[
-                None, None, :context_len, :context_len
-            ]  # Make attention mask 4D
-            encoder_attention_mask = preprocess_attention_mask(
-                encoder_attention_mask, dtype=torch.float
-            )
             position_ids = torch.arange(context_len, full_seq_length).to(device)[
                 None, :
             ]
@@ -1070,11 +1090,15 @@ class BD3LM(MDLM):
             context_mask=context_mask,
             past_key_values=past_key_values,
             backbone_kwargs={
+                "position_ids": position_ids,
+                "return_updated_cache": return_updated_cache,
                 "encoder_input_ids": context,
                 "encoder_position_ids": encoder_position_ids,
                 "encoder_attention_mask": encoder_attention_mask,
-                "position_ids": position_ids,
-            },
+                "encoder_past_key_values": encoder_past_key_values,
+                "encoder_last_hidden_state": encoder_last_hidden_state,
+            }
+            | backbone_kwargs,
         )
 
     def _compute_loss(
