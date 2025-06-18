@@ -7,7 +7,10 @@ from transformers import (
     AutoModel,
     AutoModelForCausalLM,
     AutoModelForMaskedLM,
-    DynamicCache,
+)
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
 )
 
 from src.backbone.custom_modeling_qwen3 import CustomQwen3ForCausalLM
@@ -59,8 +62,10 @@ class AutoModelFromPreTrained(nn.Module):
         self.model.model.layers = self.model.model.layers[:keep_bottom_n_layers]
 
     def forward(
-        self, input_ids: torch.LongTensor, return_past_key_values=False, **kwargs
-    ) -> torch.FloatTensor | DynamicCache:
-        if return_past_key_values:
-            return self.model(input_ids, **kwargs).past_key_values
+        self, input_ids: torch.LongTensor, return_updated_cache=False, **kwargs
+    ) -> CausalLMOutputWithPast | BaseModelOutputWithPast:
+        if return_updated_cache:
+            return BaseModelOutputWithPast(
+                past_key_values=self.model(input_ids, **kwargs).past_key_values
+            )
         return self.model(input_ids, **kwargs)
