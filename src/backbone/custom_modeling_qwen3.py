@@ -11,13 +11,25 @@ from transformers.models.qwen3.modeling_qwen3 import (
     Qwen3DecoderLayer,
     Qwen3ForCausalLM,
     Qwen3Model,
-    apply_rotary_pos_emb,
     eager_attention_forward,
+    rotate_half,
 )
 from transformers.processing_utils import Unpack
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
+
+
+def custom_apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1, q_start_idx=0):
+    """Applies Rotary Position Embedding to the query and key tensors."""
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    # TODO check cos, sin shapes
+    q_embed = (q * cos[..., q_start_idx:, :]) + (
+        rotate_half(q) * sin[..., q_start_idx:, :]
+    )
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
 
 class CustomQwen3Attention(Qwen3Attention):
@@ -33,13 +45,16 @@ class CustomQwen3Attention(Qwen3Attention):
         attention_mask: Optional[torch.Tensor],
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        q_start_idx: int = 0,  # > 0: decoder pass w/encoder inputs in hidden_states
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
+        query_input_shape = hidden_states[:, q_start_idx:, :].shape[:-1]
+        query_hidden_shape = (*query_input_shape, -1, self.head_dim)
 
         query_states = self.q_norm(
-            self.q_proj(hidden_states).view(hidden_shape)
+            self.q_proj(hidden_states[:, q_start_idx:, ...]).view(query_hidden_shape)
         ).transpose(1, 2)
         key_states = self.k_norm(
             self.k_proj(hidden_states).view(hidden_shape)
@@ -47,8 +62,8 @@ class CustomQwen3Attention(Qwen3Attention):
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin
+        query_states, key_states = custom_apply_rotary_pos_emb(
+            query_states, key_states, cos, sin, q_start_idx=q_start_idx
         )
 
         if past_key_value is not None:
@@ -60,6 +75,7 @@ class CustomQwen3Attention(Qwen3Attention):
             )
 
         # NOTE: downcast for flex-attention compatibility
+        # TODO: Maybe upcast qk to v dtype instead?
         query_states, key_states = (
             query_states.to(value_states.dtype),
             key_states.to(value_states.dtype),
@@ -82,6 +98,7 @@ class CustomQwen3Attention(Qwen3Attention):
                     self.config._attn_implementation
                 ]
 
+        # TODO: Ensure we're using flash_attn even though len(q) != len(k)
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
@@ -94,7 +111,7 @@ class CustomQwen3Attention(Qwen3Attention):
             **kwargs,
         )
 
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = attn_output.reshape(*query_input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
@@ -103,6 +120,52 @@ class CustomQwen3DecoderLayer(Qwen3DecoderLayer):
     def __init__(self, config: Qwen3Config, layer_idx: int):
         super().__init__(config, layer_idx=layer_idx)
         self.self_attn = CustomQwen3Attention(config=config, layer_idx=layer_idx)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        q_start_idx: int = 0,
+        **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> Tuple[
+        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
+    ]:
+        residual = hidden_states[:, q_start_idx:, ...]
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, self_attn_weights = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            q_start_idx=q_start_idx,
+            **kwargs,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        return outputs
 
 
 class CustomQwen3Model(Qwen3Model):
@@ -119,11 +182,7 @@ class CustomQwen3Model(Qwen3Model):
 
 
 class CustomQwen3ForCausalLM(Qwen3ForCausalLM):
-    _tied_weights_keys = ["lm_head.weight"]
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-
-    def __init__(self, config):
+    def __init__(self, config: Qwen3Config):
         super().__init__(config)
         # Initialize a new model with custom layers
         self.model = CustomQwen3Model(config)
