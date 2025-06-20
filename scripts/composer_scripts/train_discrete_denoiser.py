@@ -45,6 +45,7 @@ def main(cfg: DictConfig) -> None:
         model,
         tokenizer=tokenizer,
         metrics=list(hydra.utils.instantiate(cfg.metrics).values()),
+        eval_metrics=list(hydra.utils.instantiate(cfg.eval_metrics).values()),
     )
     log.info(
         f"Num. parameters: {format_number(count_parameters(model, trainable=False))}"
