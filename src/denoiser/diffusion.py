@@ -149,8 +149,8 @@ class D3PM(Denoiser):
 
     config_class = D3PMConfig
 
-    def __init__(self, config: D3PMConfig):
-        super().__init__(config)
+    def __init__(self, config: D3PMConfig, **kwargs):
+        super().__init__(config, **kwargs)
         self.T = config.T
         self.diffusion_type = config.diffusion_type
 
@@ -633,8 +633,8 @@ class MDLM(D3PM):
 
     config_class = MDLMConfig
 
-    def __init__(self, config: MDLMConfig):
-        super().__init__(config)
+    def __init__(self, config: MDLMConfig, **kwargs):
+        super().__init__(config, **kwargs)
         self.neg_infinity = -1e12
 
     def _forward(
@@ -677,19 +677,19 @@ class MDLM(D3PM):
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
         ).squeeze(-1)
-
-        loss = (
-            log_p_theta * denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
+        nlls = (
+            log_p_theta
+            * denoiser_inputs.alpha_t_prime
+            / (1 - denoiser_inputs.alpha_t)
+            * denoiser_inputs.tokens_mask
         )
-        if not self.training:
-            denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask * (
-                denoiser_inputs.x0 != self.pad_token_id
-            )
-        nlls = loss * denoiser_inputs.tokens_mask
-        count = denoiser_inputs.tokens_mask.sum()
-        batch_nll = nlls.sum()
-        token_nll = batch_nll / count
-        return LossAndNllOutput(loss=token_nll, nlls=nlls)
+        if self.training:
+            batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
+        else:
+            batch_nll = nlls.sum(dim=-1)
+        count = denoiser_inputs.tokens_mask.sum(dim=-1)
+        token_nll = (batch_nll / count).mean()
+        return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
 
 
 class BD3LMConfig(MDLMConfig):
@@ -721,8 +721,8 @@ class BD3LM(MDLM):
 
     config_class = BD3LMConfig
 
-    def __init__(self, config: BD3LMConfig):
-        super().__init__(config)
+    def __init__(self, config: BD3LMConfig, **kwargs):
+        super().__init__(config, **kwargs)
         self._create_static_mask()
 
     # noinspection PyUnusedLocal
@@ -888,6 +888,45 @@ class BD3LM(MDLM):
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
         xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, context_mask=context_mask)
+        # TODO: Ensure each block has at least 1 masked token?
+        if self.training:
+            blocks_without_masks = (
+                ((xt == self.mask_token_id) * (1 - context_mask)).reshape(
+                    -1,
+                    xt.shape[1] // self.config.block_size,
+                    self.config.block_size,
+                )
+                + context_mask.reshape(
+                    -1,
+                    xt.shape[1] // self.config.block_size,
+                    self.config.block_size,
+                )
+            ).sum(dim=-1) == 0
+            if blocks_without_masks.sum() > 0.0:
+                num_remasks_per_block = torch.randint(
+                    0,
+                    self.config.block_size,
+                    blocks_without_masks.shape,
+                    device=xt.device,
+                )
+                n_blocks = xt.shape[1] // self.config.block_size
+                rand = torch.rand(xt.shape[0], xt.shape[1], device=xt.device)
+                perm_indices = torch.argsort(
+                    rand.view(xt.shape[0], n_blocks, self.config.block_size),
+                    stable=True,
+                    dim=-1,
+                )
+                remask_indices = perm_indices <= num_remasks_per_block[..., None]
+                xt = torch.where(
+                    remask_indices.view(xt.shape[0], xt.shape[1])
+                    * blocks_without_masks.repeat_interleave(
+                        self.config.block_size, dim=1
+                    ),
+                    self.mask_token_id,
+                    xt,
+                )
+                if self.config.keep_clean_bos:
+                    xt[..., 0] = input_ids[..., 0]
 
         if self.config.backbone_is_decoder_only:
             # pad encoder attention mask on the left along the last dimension
