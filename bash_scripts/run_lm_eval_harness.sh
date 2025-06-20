@@ -3,7 +3,7 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/gsm8k_block4_lr1e-4_enc-layers20_dec-layers8_e2d2_qwen2B_enat-style"
+MODEL_PATH="${RUN_DIR}/gsm8k_block1_lr8e-3_bsz128_hidden-dim256_enc-layers4_TOPdec-layers6_e2d2_debug-eval-overfit_reinit-encoder_reinit-decoder"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 
@@ -19,13 +19,13 @@ REVISION=null
 
 mkdir -p ${OUTPUT_DIR}
 L=256
-BLOCK_SIZE=4
+BLOCK_SIZE=1
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
 KV_CACHING=true
-CKPT_FILE="best-rank0.pt"
+CKPT_FILE="latest-rank0.pt"
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}"
 mkdir -p ${OUTPUT_PATH}
@@ -40,7 +40,7 @@ python scripts/eval/harness_eval.py \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   task.model.ckpt_file=${CKPT_FILE} \
-  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-1.7B-Base" \
+  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B-Base" \
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_new_tokens=${L} \

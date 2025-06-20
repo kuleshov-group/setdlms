@@ -5,15 +5,28 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Hyperparameters
-LR=1e-5 # 1e-5, 1e-4, 1e-3
+LR=1e-4 # 1e-5, 1e-4, 1e-3
 WARMUP_DURATION="1000ba" # 0.1, 0.3, 0.5
-BATCH_SIZE=96 # 96, 128, 256
+BATCH_SIZE=128 # 96, 128, 256
 MAX_DURATION="20000ba" # 20000ba, 10000ba, 5000ba
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
-TAG=ar-block1-decode_qwen600M_v2
-RUN_NAME=gsm8k-${TAG}
 
-MICRO_BATCH_SIZE=8
+REINIT_MODEL=true
+HIDDEN_SIZE=768
+N_LAYERS=28
+TOP_LAYERS=false
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
+TAG=ar_qwen600M_v2
+if [ "${TOP_LAYERS}" == "true" ]; then
+  LAYERS="TOPlayers${N_LAYERS}"
+else
+  LAYERS="layers${N_LAYERS}"
+fi
+RUN_NAME=gsm8k_lr${LR}_bsz${BATCH_SIZE}_layers${LAYERS}_${TAG}
+if [ "${REINIT_MODEL}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_reinit"
+fi
+
+MICRO_BATCH_SIZE=4
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -30,6 +43,10 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model=ar \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.length=768 \
+  model.config.backbone_config.reinit_model=${REINIT_MODEL} \
+  model.config.backbone_config.num_layers=${N_LAYERS} \
+  model.config.backbone_config.keep_top_layers=${TOP_LAYERS} \
+  +model.config.backbone_config.hidden_size=${HIDDEN_SIZE} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
   ~composer.trainer.compile_config \
