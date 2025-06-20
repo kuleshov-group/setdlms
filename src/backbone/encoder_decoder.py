@@ -65,6 +65,9 @@ class LLMasEncoderDecoder(nn.Module):
         use_encoder_causal_mask: bool = False,
         num_encoder_layers: int = -1,
         num_decoder_layers: int = -1,
+        keep_top_encoder_layers: bool = False,
+        keep_top_decoder_layers: bool = False,
+        **llm_init_kwargs,
     ):
         assert not (tie_encoder_decoder_weights and reinit_decoder), (
             "Cannot tie encoder-decoder weights and reinitialize decoder."
@@ -83,6 +86,7 @@ class LLMasEncoderDecoder(nn.Module):
                 trust_remote_code=True,
                 num_hidden_layers=num_encoder_layers,
                 attn_implementation=attn_backend,
+                **llm_init_kwargs,
             )
             self.encoder = CustomQwen3ForCausalLM(encoder_config)
         else:
@@ -90,6 +94,7 @@ class LLMasEncoderDecoder(nn.Module):
                 pretrained_model_name_or_path,
                 trust_remote_code=True,
                 attn_implementation=attn_backend,
+                **llm_init_kwargs,
             )
             assert num_encoder_layers <= len(self.encoder.model.layers), (
                 f"Cannot keep {num_encoder_layers} layers. "
@@ -100,8 +105,14 @@ class LLMasEncoderDecoder(nn.Module):
                 if num_encoder_layers == -1
                 else num_encoder_layers
             )
-            # Keep **bottom** layers
-            self.encoder.model.layers = self.encoder.model.layers[:num_encoder_layers]
+            if keep_top_encoder_layers:
+                self.encoder.model.layers = self.encoder.model.layers[
+                    -num_encoder_layers:
+                ]
+            else:
+                self.encoder.model.layers = self.encoder.model.layers[
+                    :num_encoder_layers
+                ]
 
         if freeze_encoder:
             for name, param in self.encoder.named_parameters():
@@ -120,7 +131,9 @@ class LLMasEncoderDecoder(nn.Module):
                 f"Pre-trained model only has {len(self.decoder.model.layers)} layers."
             )
             # Keep **top** layers when tying weights
-            self.decoder.model.layers = self.decoder.model.layers[-num_decoder_layers:]
+            self.decoder_layer_idxs = list(range(len(self.encoder.model.layers)))[
+                -num_decoder_layers:
+            ]
 
         else:
             if reinit_decoder:
@@ -130,6 +143,7 @@ class LLMasEncoderDecoder(nn.Module):
                     trust_remote_code=True,
                     num_hidden_layers=num_decoder_layers,
                     attn_implementation=attn_backend,
+                    **llm_init_kwargs,
                 )
                 self.decoder = CustomQwen3ForCausalLM(decoder_config)
             else:
@@ -137,15 +151,20 @@ class LLMasEncoderDecoder(nn.Module):
                     pretrained_model_name_or_path,
                     trust_remote_code=True,
                     attn_implementation=attn_backend,
+                    **llm_init_kwargs,
                 )
                 assert num_decoder_layers <= len(self.decoder.model.layers), (
                     f"Cannot keep {num_decoder_layers} layers. "
                     f"Pre-trained model only has {len(self.decoder.layers)} layers."
                 )
-                # Keep **bottom** layers when un-tying weights
-                self.decoder.model.layers = self.decoder.model.layers[
-                    :num_decoder_layers
-                ]
+                if keep_top_decoder_layers:
+                    self.decoder.model.layers = self.decoder.model.layers[
+                        -num_decoder_layers:
+                    ]
+                else:
+                    self.decoder.model.layers = self.decoder.model.layers[
+                        :num_decoder_layers
+                    ]
             del self.decoder.model.embed_tokens
             # if lm head is weight-tied to embedding, point decoder lm head to encoder
             # (instead of initializing a separate lm head)
@@ -271,6 +290,11 @@ class LLMasEncoderDecoder(nn.Module):
             )
         for decoder_layer in self.decoder.model.layers:
             layer_idx = decoder_layer.self_attn.layer_idx
+            if (
+                self.tie_encoder_decoder_weights
+                and layer_idx not in self.decoder_layer_idxs
+            ):
+                continue
             # past_key_values gets updated in-place.
             # Record previous length to re-truncate after each layer forward
             if past_key_values is not None and len(past_key_values) > layer_idx:
