@@ -56,8 +56,9 @@ class AR(Denoiser):
     def __init__(
         self,
         config: ARConfig,
+        **kwargs,
     ):
-        super().__init__(config)
+        super().__init__(config, **kwargs)
 
     def _prepare_inputs(
         self,
@@ -97,10 +98,10 @@ class AR(Denoiser):
         loss = -torch.gather(model_output, -1, denoiser_inputs.x0).squeeze(-1)
 
         nlls = loss * denoiser_inputs.tokens_mask
-        count = denoiser_inputs.tokens_mask.sum()
+        count = denoiser_inputs.tokens_mask.sum(dim=-1)
 
-        batch_nll = nlls.sum()
-        token_nll = batch_nll / count
+        batch_nll = nlls.sum(dim=-1)
+        token_nll = (batch_nll / count).mean()
 
         return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
 
@@ -120,9 +121,10 @@ class AR(Denoiser):
     ) -> GenerateOutput | torch.LongTensor:
         outputs = self.backbone.model.generate(
             inputs=inputs,
+            attention_mask=torch.ones_like(inputs),
             generation_config=generation_config,
             logits_processor=logits_processor,
-            stopping_criteria=stopping_criteria,
+            # stopping_criteria=stopping_criteria,
             max_length=max_length,
             max_new_tokens=max_new_tokens,
             **kwargs,
