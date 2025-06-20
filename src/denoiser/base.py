@@ -148,6 +148,7 @@ class Denoiser(ABC, PreTrainedModel):
     def __init__(
         self,
         config: DenoiserConfig,
+        **kwargs,
     ):
         """
         Initialize the Denoiser with a configuration and optional dataset type.
