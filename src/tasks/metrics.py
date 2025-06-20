@@ -38,7 +38,7 @@ class NLL(Metric):
     def __init__(
         self,
         name="nll",
-        update_key="nll",
+        update_key="nlls",
         weight_key="tokens_mask",
         dist_sync_on_step=False,
     ):
@@ -80,7 +80,7 @@ class BPD(NLL):
     def __init__(
         self,
         name="bpd",
-        update_key="nll",
+        update_key="nlls",
         weight_key="tokens_mask",
         dist_sync_on_step=False,
     ):
@@ -104,7 +104,7 @@ class Perplexity(NLL):
     def __init__(
         self,
         name="ppl",
-        update_key="nll",
+        update_key="nlls",
         weight_key="tokens_mask",
         dist_sync_on_step=False,
     ):
