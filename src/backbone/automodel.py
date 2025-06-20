@@ -36,30 +36,33 @@ class AutoModelFromPreTrained(nn.Module):
         ],
         pretrained_model_name_or_path: str,
         trust_remote_code: bool = True,
-        keep_bottom_n_layers: int = -1,
+        num_layers: int = -1,
+        keep_top_layers: bool = False,
         reinit_model: bool = False,
-        **kwargs,
+        **automodel_init_kwargs,
     ):
         super().__init__()
         if reinit_model:
             auto_config = AutoConfig.from_pretrained(
                 pretrained_model_name_or_path,
+                num_hidden_layers=num_layers,
                 trust_remote_code=trust_remote_code,
-                **kwargs,
+                **automodel_init_kwargs,
             )
             self.model = AUTO_MODEL_CLS[automodel_cls].from_config(auto_config)
         else:
             self.model = AUTO_MODEL_CLS[automodel_cls].from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=trust_remote_code,
-                **kwargs,
+                **automodel_init_kwargs,
             )
-        keep_bottom_n_layers = (
-            len(self.model.model.layers)
-            if keep_bottom_n_layers == -1
-            else keep_bottom_n_layers
-        )
-        self.model.model.layers = self.model.model.layers[:keep_bottom_n_layers]
+            num_layers = (
+                len(self.model.model.layers) if num_layers == -1 else num_layers
+            )
+            if keep_top_layers:
+                self.model.model.layers = self.model.model.layers[-num_layers:]
+            else:
+                self.model.model.layers = self.model.model.layers[:num_layers]
 
     def forward(
         self, input_ids: torch.LongTensor, return_updated_cache=False, **kwargs
