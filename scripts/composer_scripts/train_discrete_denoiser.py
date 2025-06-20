@@ -66,12 +66,10 @@ def main(cfg: DictConfig) -> None:
         world_size=dist.get_world_size(),
     )
     eval_collator = hydra.utils.instantiate(
-        cfg.collator,
+        cfg.eval_collator,
         tokenizer=tokenizer,
         rank=dist.get_global_rank(),
         world_size=dist.get_world_size(),
-        # Disable; this would make reproducibility per_device_batch_size dependent
-        antithetic_sampling=False,
     )
 
     # Train dataloader

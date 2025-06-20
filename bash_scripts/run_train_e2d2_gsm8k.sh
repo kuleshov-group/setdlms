@@ -5,11 +5,13 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=4
-HIDDEN_SIZE=256
-N_ENCODER_LAYERS=8
+BLOCK_SIZE=8
+EVAL_BLOCK_SIZE=4
+HIDDEN_SIZE=1024
+INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
+N_ENCODER_LAYERS=16
 ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=4
+N_DECODER_LAYERS=8
 DECODER_TOP_LAYERS=false
 REINIT_ENCODER=true
 REINIT_DECODER=true
@@ -18,25 +20,25 @@ LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
-LR=2e-3 # 1e-5, 1e-4, 1e-3
+LR=1e-3 # 1e-5, 1e-4, 1e-3
 WARMUP_DURATION="100ba" # 0.1, 0.3, 0.5
-BATCH_SIZE=32 # 96, 128, 256
-MAX_DURATION="12000ba"
+BATCH_SIZE=16 # 96, 128, 256
+MAX_DURATION="24000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
 TAG=e2d2_arch-search
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
-  ENC_LAYERS="TOPenc-layers${N_ENCODER_LAYERS}"
+  ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
-  ENC_LAYERS="enc-layers${N_ENCODER_LAYERS}"
+  ENC_LAYERS="enc${N_ENCODER_LAYERS}"
 fi
 if [ "${DECODER_TOP_LAYERS}" == "true" ]; then
-  DEC_LAYERS="TOPdec-layers${N_DECODER_LAYERS}"
+  DEC_LAYERS="TOPdec${N_DECODER_LAYERS}"
 else
-  DEC_LAYERS="dec-layers${N_DECODER_LAYERS}"
+  DEC_LAYERS="dec${N_DECODER_LAYERS}"
 fi
-RUN_NAME=gsm8k_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warmup${WARMUP_DURATION}_max-dur${MAX_DURATION}_hidden-dim${HIDDEN_SIZE}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
+RUN_NAME=gsm8k_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
 fi
@@ -80,15 +82,16 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.keep_top_decoder_layers=${DECODER_TOP_LAYERS} \
   model.config.backbone_config.keep_top_encoder_layers=${ENCODER_TOP_LAYERS} \
   +model.config.backbone_config.hidden_size=${HIDDEN_SIZE} \
-  +model.config.backbone_config.intermediate_size=$(( 4 * HIDDEN_SIZE )) \
+  +model.config.backbone_config.intermediate_size=${INTERMEDIATE_SIZE} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
   ~composer.trainer.compile_config \
   ~composer.trainer.parallelism_config \
   block_size=${BLOCK_SIZE} \
+  eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="1000ep" \
+  composer.trainer.save_interval="5ep" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true

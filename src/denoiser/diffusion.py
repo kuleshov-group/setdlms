@@ -705,12 +705,16 @@ class BD3LMConfig(MDLMConfig):
     def __init__(
         self,
         block_size: int | None = None,
+        eval_block_size: int | None = None,
         attn_backend: str = "sdpa",
         backbone_is_decoder_only: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.block_size = block_size
+        self.eval_block_size = (
+            eval_block_size if eval_block_size is not None else block_size
+        )
         self.attn_backend = attn_backend
         # Determines whether inputs / masks are concatenated or separate for enc-dec
         self.backbone_is_decoder_only = backbone_is_decoder_only
@@ -825,7 +829,9 @@ class BD3LM(MDLM):
                 h=None,
                 q_idx=torch.arange(self.config.length * 2)[:, None],
                 kv_idx=torch.arange(self.config.length * 2)[None, :],
-                block_size=self.config.block_size,
+                block_size=self.config.block_size
+                if self.training
+                else self.config.eval_block_size,
                 seq_length=self.config.length,
             )
             if self.config.attn_backend == "flex_attention":
@@ -841,14 +847,18 @@ class BD3LM(MDLM):
                 h=None,
                 q_idx=torch.arange(self.config.length)[:, None],
                 kv_idx=torch.arange(self.config.length)[None, :],
-                block_size=self.config.block_size,
+                block_size=self.config.block_size
+                if self.training
+                else self.config.eval_block_size,
             )
             decoder_static_mask = self._decoder_block_mask(
                 b=None,
                 h=None,
                 q_idx=torch.arange(self.config.length)[:, None],
                 kv_idx=torch.arange(self.config.length * 2)[None, :],
-                block_size=self.config.block_size,
+                block_size=self.config.block_size
+                if self.training
+                else self.config.eval_block_size,
                 seq_length=self.config.length,
             )
             self.register_buffer(
@@ -880,9 +890,16 @@ class BD3LM(MDLM):
         if t is None:
             t = torch.rand(
                 input_ids.shape[0],
-                input_ids.shape[1] // self.config.block_size,
+                input_ids.shape[1] // self.config.block_size
+                if self.training
+                else self.config.eval_block_size,
                 device=input_ids.device,
-            ).repeat_interleave(self.config.block_size, dim=-1)
+            ).repeat_interleave(
+                self.config.block_size
+                if self.training
+                else self.config.eval_block_size,
+                dim=-1,
+            )
         alpha_t, alpha_t_prime = self.noise_schedule(t)
         while alpha_t.ndim < 2:
             alpha_t = alpha_t[..., None]
@@ -978,7 +995,10 @@ class BD3LM(MDLM):
                 dec_padding_mask = create_attn_mask(attention_mask.repeat(1, 2).bool())
                 enc_masks = [
                     partial(
-                        self._encoder_block_mask, block_size=self.config.block_size
+                        self._encoder_block_mask,
+                        block_size=self.config.block_size
+                        if self.training
+                        else self.config.eval_block_size,
                     ),
                     padding_mask,
                 ]
@@ -992,7 +1012,9 @@ class BD3LM(MDLM):
                 dec_masks = [
                     partial(
                         self._decoder_block_mask,
-                        block_size=self.config.block_size,
+                        block_size=self.config.block_size
+                        if self.training
+                        else self.config.eval_block_size,
                         seq_length=input_ids.shape[1],
                     ),
                     dec_padding_mask,
@@ -1117,7 +1139,7 @@ class BD3LM(MDLM):
             )  # Make attention mask 4D
             # Token from last block can't attend to the new block
             if self.config.shift_logits:
-                decoder_attention_mask[:, 0, -self.config.block_size :] = 0.0
+                decoder_attention_mask[:, 0, -self.config.eval_block_size :] = 0.0
             decoder_attention_mask = preprocess_attention_mask(
                 decoder_attention_mask, dtype=torch.float
             )
