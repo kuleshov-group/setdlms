@@ -3,19 +3,9 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/gsm8k_block1_lr8e-3_bsz128_hidden-dim256_enc-layers4_TOPdec-layers6_e2d2_debug-eval-overfit_reinit-encoder_reinit-decoder"
+MODEL_PATH="${RUN_DIR}/gsm8k_block4_lr2e-4_bsz256_hidden-dim256_enc-layers8_dec-layers4_e2d2_arch-search_reinit-encoder_reinit-decoder"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
-
-## New HF
-#MODEL_PATH="kuleshov-group/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen2B"
-#OUTPUT_DIR="${RUN_DIR}/${MODEL_PATH}/lm_eval_harness_output"
-#REVISION="946176208f91301bbfa7feb42db6996cc98074c1" #null
-#
-## Old NeurIPS
-#MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-block4-bs96-keep1-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen2B_keeptop_tie_noema_v2"
-#OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
-#REVISION=null
 
 mkdir -p ${OUTPUT_DIR}
 L=256
@@ -30,8 +20,7 @@ CKPT_FILE="latest-rank0.pt"
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}"
 mkdir -p ${OUTPUT_PATH}
 
-#accelerate launch scripts/eval/harness_eval.py \
-python scripts/eval/harness_eval.py \
+accelerate launch scripts/eval/harness_eval.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \
   hydra/job_logging=disabled \

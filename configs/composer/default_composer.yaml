@@ -11,7 +11,7 @@ defaults:
 #      - memory_monitor
 #      - optimizer_monitor
       - runtime_estimator
-      - save_best_checkpointing
+#      - save_best_checkpointing
       - speed_monitor
 #      - log_sampled_timestep
   - loggers: wandb

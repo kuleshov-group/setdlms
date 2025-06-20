@@ -5,12 +5,12 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=1
+BLOCK_SIZE=4
 HIDDEN_SIZE=256
-N_ENCODER_LAYERS=4
+N_ENCODER_LAYERS=8
 ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=6
-DECODER_TOP_LAYERS=true
+N_DECODER_LAYERS=4
+DECODER_TOP_LAYERS=false
 REINIT_ENCODER=true
 REINIT_DECODER=true
 TIE_WEIGHTS=false
@@ -18,14 +18,14 @@ LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
-LR=8e-3 # 1e-5, 1e-4, 1e-3
-WARMUP_DURATION="1000ba" # 0.1, 0.3, 0.5
-BATCH_SIZE=128 # 96, 128, 256
-MAX_DURATION="20000ba" # 20000ba, 10000ba, 5000ba
+LR=2e-3 # 1e-5, 1e-4, 1e-3
+WARMUP_DURATION="100ba" # 0.1, 0.3, 0.5
+BATCH_SIZE=32 # 96, 128, 256
+MAX_DURATION="12000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=e2d2_debug-eval-overfit
+TAG=e2d2_arch-search
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc-layers${N_ENCODER_LAYERS}"
 else
@@ -36,7 +36,7 @@ if [ "${DECODER_TOP_LAYERS}" == "true" ]; then
 else
   DEC_LAYERS="dec-layers${N_DECODER_LAYERS}"
 fi
-RUN_NAME=gsm8k_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_hidden-dim${HIDDEN_SIZE}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
+RUN_NAME=gsm8k_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warmup${WARMUP_DURATION}_max-dur${MAX_DURATION}_hidden-dim${HIDDEN_SIZE}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
 fi
@@ -46,22 +46,22 @@ fi
 if [ "${ENCODER_CAUSAL_MASK}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_encoder-causal-mask"
 fi
-if [ "${REINIT_ENCODER}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_reinit-encoder"
-fi
-if [ "${REINIT_DECODER}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_reinit-decoder"
-fi
-MICRO_BATCH_SIZE=16
+#if [ "${REINIT_ENCODER}" == "true" ]; then
+#  RUN_NAME="${RUN_NAME}_reinit-encoder"
+#fi
+#if [ "${REINIT_DECODER}" == "true" ]; then
+#  RUN_NAME="${RUN_NAME}_reinit-decoder"
+#fi
+MICRO_BATCH_SIZE=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
-  dataset@train_dataset=gsm8k_eval \
+  dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="50ep" \
+  composer.trainer.eval_interval="1ep" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=cosine_annealing_with_warmup \
@@ -88,7 +88,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   block_size=${BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="50ep" \
+  composer.trainer.save_interval="1000ep" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
