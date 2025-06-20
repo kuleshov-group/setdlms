@@ -117,6 +117,7 @@ class AR(Denoiser):
         batch_size: int | None = None,
         device: str | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
+        disable_pbar: bool | None = None,  # not used; compatability w/other denoisers
         **kwargs,
     ) -> GenerateOutput | torch.LongTensor:
         outputs = self.backbone.model.generate(
@@ -124,7 +125,7 @@ class AR(Denoiser):
             attention_mask=torch.ones_like(inputs),
             generation_config=generation_config,
             logits_processor=logits_processor,
-            # stopping_criteria=stopping_criteria,
+            # stopping_criteria=stopping_criteria,  # TODO: debug: causes EOS right away
             max_length=max_length,
             max_new_tokens=max_new_tokens,
             **kwargs,
