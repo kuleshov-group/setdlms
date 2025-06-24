@@ -3,21 +3,24 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/gsm8k_block4_lr2e-4_bsz256_hidden-dim256_enc-layers8_dec-layers4_e2d2_arch-search_reinit-encoder_reinit-decoder"
+QWEN_MODEL="Qwen/Qwen3-1.7B-Base"
+
+MODEL_PATH="${RUN_DIR}/gsm8k_FT-2B_block2_evalblock2_lr1e-5_bsz4_warm100ba_alphaf0.0_max-dur8000ba_layers28_bd3lm_arch-search-debug"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 
 mkdir -p ${OUTPUT_DIR}
 L=256
-BLOCK_SIZE=1
+BLOCK_SIZE=2
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
+T=2
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
 KV_CACHING=true
-CKPT_FILE="latest-rank0.pt"
+CKPT_FILE="best-rank0.pt"
 
-OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}"
+OUTPUT_PATH="${OUTPUT_DIR}/L${L}_block_size${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hitting${FIRST_HITTING}-confidence_based_noising${CONFIDENCE_BASED_NOISING}"
 mkdir -p ${OUTPUT_PATH}
 
 accelerate launch scripts/eval/harness_eval.py \
@@ -29,13 +32,14 @@ accelerate launch scripts/eval/harness_eval.py \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   task.model.ckpt_file=${CKPT_FILE} \
-  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B-Base" \
+  tokenizer.pretrained_model_name_or_path=${QWEN_MODEL} \
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_new_tokens=${L} \
   block_size=${BLOCK_SIZE} \
   generation_config.do_sample=${DO_SAMPLE} \
   generation_config.sampling_strategy=${SAMPLING_STRATEGY} \
+  generation_config.num_steps=${T} \
   generation_config.first_hitting=${FIRST_HITTING} \
   generation_config.confidence_based_noising=${CONFIDENCE_BASED_NOISING} \
   generation_config.confidence_threshold=1.1 \
