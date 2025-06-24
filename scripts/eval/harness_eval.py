@@ -23,6 +23,7 @@ from transformers import (
 from datasets import Dataset
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
+    maybe_add_missing_special_tokens,
     print_and_save_config,
     register_useful_resolvers,
     set_seed,
@@ -93,7 +94,7 @@ class LMEvalHarnessModel(LM):
                 )
         self.model = model.to(self.device)
         self.model.eval()
-        self.tokenizer = tokenizer
+        self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
         self.gen_kwargs = gen_kwargs
 
     @property
@@ -114,7 +115,7 @@ class LMEvalHarnessModel(LM):
         def _tokenize(
             e,
             prefix_text: str | None = (
-                "<|endoftext|>Please reason step by step, and put your "
+                f"{self.tokenizer.bos_token}Please reason step by step, and put your "
                 + "final answer within $\\boxed{}$. "
             ),
         ):
@@ -122,7 +123,7 @@ class LMEvalHarnessModel(LM):
             # TODO: Hacks to make data look like training set
             ctx = ctx.replace("Question: ", "")
             # ctx = ctx.replace("\nAnswer:", "<|endoftext|>Answer: ")
-            ctx = ctx.replace("\nAnswer:", "<|endoftext|>Answer: ")
+            ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}Answer: ")
             n_spaces = len(ctx) - len(ctx)
             if n_spaces > 0:
                 ctx = ctx[:-n_spaces]
@@ -217,6 +218,7 @@ def main(cfg: DictConfig) -> None:
             )
         print(make_table(results))
         if "groups" in results:
+            print_and_save_config(cfg, resolve=True, save_cfg=False)
             print(make_table(results, "groups"))
 
 
