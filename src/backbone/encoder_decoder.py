@@ -193,6 +193,7 @@ class LLMasEncoderDecoder(nn.Module):
         encoder_cache_position: torch.LongTensor | None = None,
         encoder_past_key_values: DynamicCache | None = None,
         # Additional args
+        fix_cache_length: bool = True,  # Not used; compatibility with other backbones
         return_updated_cache: bool = False,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> DecoderCausalLMOutputWithPast | EncoderBaseModelOutputWithPast:
@@ -288,6 +289,16 @@ class LLMasEncoderDecoder(nn.Module):
             decoder_position_embeddings = self.decoder.model.rotary_emb(
                 decoder_hidden_states, position_ids
             )
+
+        # TODO: Added this back, test that it doesn't break anything! (train and eval)
+        # noinspection PyProtectedMember
+        attention_mask = self.decoder.model._update_causal_mask(
+            attention_mask=attention_mask,
+            input_tensor=decoder_hidden_states,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            output_attentions=False,
+        )
         for decoder_layer in self.decoder.model.layers:
             layer_idx = decoder_layer.self_attn.layer_idx
             if (
