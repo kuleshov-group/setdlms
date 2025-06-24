@@ -7,19 +7,22 @@ from transformers import (
     AutoModel,
     AutoModelForCausalLM,
     AutoModelForMaskedLM,
+    DynamicCache,
 )
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
 
-from src.backbone.custom_modeling_qwen3 import CustomQwen3ForCausalLM
+try:
+    from torch.nn.attention.flex_attention import BlockMask
+except ImportError:
+    BlockMask = None
 
 AUTO_MODEL_CLS = {
     "AutoModel": AutoModel,
     "AutoModelForCausalLM": AutoModelForCausalLM,
     "AutoModelForMaskedLM": AutoModelForMaskedLM,
-    "CustomQwen3ForCausalLM": CustomQwen3ForCausalLM,
 }
 
 
@@ -32,16 +35,17 @@ class AutoModelFromPreTrained(nn.Module):
             "AutoModel",
             "AutoModelForCausalLM",
             "AutoModelForMaskedLM",
-            "CustomQwen3ForCausalLM",
         ],
         pretrained_model_name_or_path: str,
         trust_remote_code: bool = True,
         num_layers: int = -1,
         keep_top_layers: bool = False,
         reinit_model: bool = False,
+        use_causal_mask: bool = False,
         **automodel_init_kwargs,
     ):
         super().__init__()
+        self.use_causal_mask = use_causal_mask
         if reinit_model:
             auto_config = AutoConfig.from_pretrained(
                 pretrained_model_name_or_path,
@@ -65,10 +69,45 @@ class AutoModelFromPreTrained(nn.Module):
                 self.model.model.layers = self.model.model.layers[:num_layers]
 
     def forward(
-        self, input_ids: torch.LongTensor, return_updated_cache=False, **kwargs
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.FloatTensor | BlockMask | None = None,
+        position_ids: torch.LongTensor | None = None,
+        cache_position: torch.LongTensor | None = None,
+        past_key_values: DynamicCache | None = None,
+        fix_cache_length: bool = False,  # False for AR, True for diffusion models
+        return_updated_cache=False,
+        **kwargs,
     ) -> CausalLMOutputWithPast | BaseModelOutputWithPast:
+        prev_cache_len = None
+        if past_key_values is not None and fix_cache_length:
+            prev_cache_len = [
+                past_key_values[i][0].shape[-2]  # type: ignore
+                for i in range(len(past_key_values))
+            ]
+        if self.use_causal_mask:
+            attention_mask = None  # None --> enforces use of causal mask
+        model_output = self.model(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            **kwargs,
+        )
         if return_updated_cache:
-            return BaseModelOutputWithPast(
-                past_key_values=self.model(input_ids, **kwargs).past_key_values
-            )
-        return self.model(input_ids, **kwargs)
+            return BaseModelOutputWithPast(past_key_values=model_output.past_key_values)
+        if (
+            prev_cache_len is not None
+            and model_output.get("past_key_values", None) is not None
+        ):
+            # DynamicCache extends along sequence dimension by default;
+            # truncate back to original cache len
+            for i, cache_len in enumerate(prev_cache_len):
+                model_output.past_key_values.key_cache[i] = (
+                    model_output.past_key_values.key_cache[i][..., :cache_len, :]
+                )
+                model_output.past_key_values.value_cache[i] = (
+                    model_output.past_key_values.value_cache[i][..., :cache_len, :]
+                )
+        return model_output

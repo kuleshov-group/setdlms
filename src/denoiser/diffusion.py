@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Dict, Literal, Tuple
+from typing import Any, Dict, Literal, Tuple, Union
 
 import torch
 from tqdm.auto import tqdm
@@ -27,16 +27,6 @@ from src.denoiser.base import (
     DenoiserInput,
     LossAndNllOutput,
 )
-
-
-def preprocess_attention_mask(attention_mask, dtype):
-    min_dtype = torch.finfo(dtype).min
-    attention_mask = torch.where(
-        (attention_mask == 0.0).bool(),  # type: ignore
-        min_dtype,
-        0.0,
-    ).to(dtype)
-    return attention_mask
 
 
 def create_attn_mask(attn_mask):
@@ -108,7 +98,8 @@ class DiffusionGenerationConfig(GenerationConfig):
         self.block_size = block_size if block_size is not None else self.max_new_tokens
         self.first_hitting = first_hitting
         if self.first_hitting:
-            self.num_steps = self.block_size  # TODO: min(num_steps, self.block_size)?
+            # TODO: log.warn that this is being overridden
+            self.num_steps = min(num_steps, self.block_size)
         self.sampling_strategy = sampling_strategy
         self.confidence_based_noising = confidence_based_noising
         self.confidence_threshold = confidence_threshold
@@ -345,7 +336,12 @@ class D3PM(Denoiser):
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
         if model_output_cache is None:  # execute function evaluation
-            backbone_output = self._backbone_forward(denoiser_inputs, **cache, **kwargs)
+            backbone_output = self._backbone_forward(
+                denoiser_inputs,
+                fix_cache_length=True,  # Do not let kv cache grow on each forward call
+                **cache,
+                **kwargs,
+            )
             backbone_output = {k: v for k, v in backbone_output.items()}
             logits = backbone_output.pop("logits")
             cache = cache | backbone_output
@@ -547,7 +543,7 @@ class D3PM(Denoiser):
                 alpha_s, _ = self.noise_schedule(t - dt)
                 alpha_t = alpha_t[None, None, None]
                 alpha_s = alpha_s[None, None, None]
-                denoiser_inputs = self._prepare_inputs_inference(
+                denoiser_inputs, cache = self._prepare_inputs_inference(
                     input_ids=xt,
                     context=context,
                     cache=cache,
@@ -689,7 +685,13 @@ class MDLM(D3PM):
             batch_nll = nlls.sum(dim=-1)
         count = denoiser_inputs.tokens_mask.sum(dim=-1)
         token_nll = (batch_nll / count).mean()
-        return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
+        return LossAndNllOutput(
+            loss=token_nll,  # type: ignore
+            nlls=nlls,
+            other_loss_terms={
+                "masked_tokens": (denoiser_inputs.xt == self.mask_token_id).int()
+            },
+        )
 
 
 class BD3LMConfig(MDLMConfig):
@@ -905,28 +907,20 @@ class BD3LM(MDLM):
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
         xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, context_mask=context_mask)
-        # TODO: Ensure each block has at least 1 masked token?
+        # Ensure each block has at least 1 masked token
         if self.training:
+            n_blocks = xt.shape[1] // self.config.block_size
             blocks_without_masks = (
-                ((xt == self.mask_token_id) * (1 - context_mask)).reshape(
-                    -1,
-                    xt.shape[1] // self.config.block_size,
-                    self.config.block_size,
-                )
-                + context_mask.reshape(
-                    -1,
-                    xt.shape[1] // self.config.block_size,
-                    self.config.block_size,
-                )
-            ).sum(dim=-1) == 0
-            if blocks_without_masks.sum() > 0.0:
+                # If context overlaps w/block, ignore it
+                (xt == self.mask_token_id) + context_mask
+            ).reshape(-1, n_blocks, self.config.block_size).sum(dim=-1) == 0
+            if blocks_without_masks.sum() > 0:
                 num_remasks_per_block = torch.randint(
                     0,
                     self.config.block_size,
                     blocks_without_masks.shape,
                     device=xt.device,
                 )
-                n_blocks = xt.shape[1] // self.config.block_size
                 rand = torch.rand(xt.shape[0], xt.shape[1], device=xt.device)
                 perm_indices = torch.argsort(
                     rand.view(xt.shape[0], n_blocks, self.config.block_size),
@@ -946,20 +940,19 @@ class BD3LM(MDLM):
                     xt[..., 0] = input_ids[..., 0]
 
         if self.config.backbone_is_decoder_only:
-            # pad encoder attention mask on the left along the last dimension
+            # TODO: Enable flex-attention for decoder only backbones
             decoder_attention_mask = (
                 self.static_attention_mask[None, ...]
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask.repeat(1, 2)[..., None]
             )[:, None, ...]  # Make attention mask 4D
-            decoder_attention_mask = preprocess_attention_mask(
+            decoder_attention_mask = self._preprocess_attention_mask(
                 decoder_attention_mask, dtype=torch.float
             )
             backbone_input_ids = torch.cat((input_ids, xt), dim=-1)
             position_ids = (
                 torch.arange(input_ids.shape[1]).repeat(2).to(input_ids.device)[None, :]
             )
-            # TODO manually pass in position ids
             return DenoiserInput(
                 xt=backbone_input_ids,  # type: ignore
                 x0=input_ids,
@@ -969,6 +962,7 @@ class BD3LM(MDLM):
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
                 backbone_kwargs={
+                    "cache_position": position_ids[0],
                     "position_ids": position_ids,
                 },
             )
@@ -984,10 +978,10 @@ class BD3LM(MDLM):
                     & attention_mask[:, None, :]
                     & attention_mask[..., None]
                 )[:, None, ...]  # Make attention mask 4D
-                encoder_attention_mask = preprocess_attention_mask(
+                encoder_attention_mask = self._preprocess_attention_mask(
                     encoder_attention_mask, dtype=torch.float
                 )
-                decoder_attention_mask = preprocess_attention_mask(
+                decoder_attention_mask = self._preprocess_attention_mask(
                     decoder_attention_mask, dtype=torch.float
                 )
             elif self.config.attn_backend == "flex_attention":
@@ -1051,23 +1045,45 @@ class BD3LM(MDLM):
         cache: Dict[str, Any] | None = None,
         return_updated_cache: bool = False,
         **backbone_kwargs: Dict[str, Any],
-    ) -> DenoiserInput:
+    ) -> Tuple[DenoiserInput, Union[Dict[str, Any], None]]:
         device = input_ids.device if input_ids is not None else context.device
         batch_size = input_ids.shape[0] if input_ids is not None else context.shape[0]
-        if self.config.backbone_is_decoder_only:
-            cache = cache if cache is not None else {}
-            return super()._prepare_inputs_inference(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                context=context,
-                context_mask=context_mask,
-                cache=cache,
-                **backbone_kwargs,
-            )
-        # Encoder-decoder inputs
         assert input_ids is not None or context is not None, (
             "Must provide either input_ids or context."
         )
+        if self.config.backbone_is_decoder_only:
+            cache = cache if cache is not None else {}
+            past_key_values = cache.pop("past_key_values", DynamicCache())
+            if context is not None:
+                if input_ids is not None:
+                    input_ids = torch.cat([context, input_ids], dim=-1)
+                else:
+                    input_ids = context
+            cache_length = self._get_past_key_values_seq_length(past_key_values)
+            full_seq_length = cache_length + input_ids.shape[-1]
+            decoder_attention_mask = self.static_attention_mask[
+                None,
+                None,
+                cache_length:full_seq_length,
+                :full_seq_length,
+            ]  # Make attention mask 4D
+            decoder_attention_mask = self._preprocess_attention_mask(
+                decoder_attention_mask, dtype=torch.float
+            )
+            position_ids = torch.arange(cache_length, full_seq_length).to(device)[
+                None, :
+            ]
+            return DenoiserInput(
+                xt=input_ids,
+                attention_mask=decoder_attention_mask,
+                context_mask=context_mask,
+                past_key_values=past_key_values,
+                backbone_kwargs={
+                    "position_ids": position_ids,
+                }
+                | backbone_kwargs,
+            ), cache
+        # Encoder-decoder inputs
         if return_updated_cache:  # Indicates this is a cache update step
             context = input_ids
             input_ids = None
@@ -1106,7 +1122,7 @@ class BD3LM(MDLM):
                 encoder_position_ids = torch.arange(
                     encoder_cache_length, encoder_full_seq_length
                 ).to(device)[None, :]
-                encoder_attention_mask = preprocess_attention_mask(
+                encoder_attention_mask = self._preprocess_attention_mask(
                     encoder_attention_mask, dtype=torch.float
                 )
                 full_seq_length = -1  # Not used
@@ -1118,7 +1134,7 @@ class BD3LM(MDLM):
                 encoder_attention_mask = self.encoder_static_attention_mask[
                     None, None, :context_len, :context_len
                 ]  # Make attention mask 4D
-                encoder_attention_mask = preprocess_attention_mask(
+                encoder_attention_mask = self._preprocess_attention_mask(
                     encoder_attention_mask, dtype=torch.float
                 )
                 encoder_position_ids = torch.arange(context_len).to(device)[None, :]
@@ -1140,7 +1156,7 @@ class BD3LM(MDLM):
             # Token from last block can't attend to the new block
             if self.config.shift_logits:
                 decoder_attention_mask[:, 0, -self.config.eval_block_size :] = 0.0
-            decoder_attention_mask = preprocess_attention_mask(
+            decoder_attention_mask = self._preprocess_attention_mask(
                 decoder_attention_mask, dtype=torch.float
             )
         else:
@@ -1152,7 +1168,6 @@ class BD3LM(MDLM):
             past_key_values=past_key_values,
             backbone_kwargs={
                 "position_ids": position_ids,
-                "return_updated_cache": return_updated_cache,
                 "encoder_input_ids": context,
                 "encoder_position_ids": encoder_position_ids,
                 "encoder_attention_mask": encoder_attention_mask,
@@ -1160,7 +1175,7 @@ class BD3LM(MDLM):
                 "encoder_last_hidden_state": encoder_last_hidden_state,
             }
             | backbone_kwargs,
-        )
+        ), cache  # TODO: potentially returning cache None, violates return type
 
     def _compute_loss(
         self,
