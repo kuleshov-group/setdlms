@@ -24,7 +24,6 @@ def custom_apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1, q_start_idx=0):
     """Applies Rotary Position Embedding to the query and key tensors."""
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
-    # TODO check cos, sin shapes
     q_embed = (q * cos[..., q_start_idx:, :]) + (
         rotate_half(q) * sin[..., q_start_idx:, :]
     )

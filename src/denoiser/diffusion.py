@@ -1191,7 +1191,3 @@ class BD3LM(MDLM):
             denoiser_inputs=denoiser_inputs,
             **kwargs,
         )
-
-
-# TODO
-# class UDLM(D3PM):

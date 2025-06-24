@@ -68,7 +68,7 @@ class DenoisingCollator:
         self.global_batch_size = global_batch_size
         self.max_length = max_length
         self.block_size = block_size
-        # # TODO: Confirm that this works on multi-node
+        # TODO: Confirm that this works on multi-node
         self._rank = rank
         self._world_size = world_size
 

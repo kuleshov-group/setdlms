@@ -151,7 +151,6 @@ def main(cfg: DictConfig) -> None:
         eval_dataloader=eval_dataloader,
         optimizers=optimizer,
         schedulers=lr_scheduler,
-        # TODO: since not using .values() view, need way to access algo.ema.ema_model
         algorithms=list(algorithms.values()),
         loggers=logger,
         callbacks=list(callbacks.values()),
