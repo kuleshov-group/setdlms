@@ -8,5 +8,5 @@ config:
   block_size: ${block_size}
   eval_block_size: ${block_size}
   attn_backend: "sdpa" # "flex_attention"
-  backbone_is_decoder_only: false
-  shift_logits: true
+  backbone_is_decoder_only: true  # true for BD3LM, false for E2D2
+  shift_logits: false
