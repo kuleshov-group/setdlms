@@ -5,30 +5,30 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=2
-EVAL_BLOCK_SIZE=2
-#HIDDEN_SIZE=2048
-#INTERMEDIATE_SIZE=6144 #$(( 4 * HIDDEN_SIZE ))
+BLOCK_SIZE=4
+EVAL_BLOCK_SIZE=4
+#HIDDEN_SIZE=512
+#INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
 N_ENCODER_LAYERS=28
 ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=20
-DECODER_TOP_LAYERS=true
-REINIT_ENCODER=false
-REINIT_DECODER=false
+N_DECODER_LAYERS=12
+DECODER_TOP_LAYERS=false
+REINIT_ENCODER=flase
+REINIT_DECODER=flase
 TIE_WEIGHTS=false
 LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
-LR=2e-5 # 1e-5, 1e-4, 1e-3
+LR=1e-5 # 1e-5, 1e-4, 1e-3
 WARMUP_DURATION="100ba" # 0.1, 0.3, 0.5
 ALPHA_F=0.0
-BATCH_SIZE=4 # 96, 128, 256
-MAX_DURATION="4000ba"
+BATCH_SIZE=8 # 96, 128, 256
+MAX_DURATION="30000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=e2d2_arch-search-mask
+TAG=e2d2_tput-sdpa_compile
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -40,7 +40,7 @@ else
   DEC_LAYERS="dec${N_DECODER_LAYERS}"
 fi
 #RUN_NAME=gsm8k_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
-RUN_NAME=gsm8k_FT-2B_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
+RUN_NAME=gsm8k_FT2B_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
 fi
@@ -56,7 +56,7 @@ fi
 #if [ "${REINIT_DECODER}" == "true" ]; then
 #  RUN_NAME="${RUN_NAME}_reinit-decoder"
 #fi
-MICRO_BATCH_SIZE=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
+MICRO_BATCH_SIZE=1 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 #  +model.config.backbone_config.hidden_size=${HIDDEN_SIZE} \
 #  +model.config.backbone_config.intermediate_size=${INTERMEDIATE_SIZE} \
@@ -74,8 +74,9 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer/lr_scheduler=cosine_annealing_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   composer.lr_scheduler.alpha_f=${ALPHA_F} \
-  training.compile_backbone=false \
   model=e2d2 \
+  model.config.attn_backend="sdpa" \
+  training.compile_backbone=true \
   model.config.length=768 \
   model.config.shift_logits=${LOGIT_SHIFT} \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
@@ -95,7 +96,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="1ep" \
+  composer.trainer.save_interval="100ep" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true

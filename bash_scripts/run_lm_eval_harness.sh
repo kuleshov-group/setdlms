@@ -5,7 +5,7 @@ source setup_env.sh
 
 QWEN_MODEL="Qwen/Qwen3-1.7B-Base"
 
-MODEL_PATH="${RUN_DIR}/gsm8k_FT-2B_block2_evalblock2_lr1e-5_bsz4_warm100ba_alphaf0.0_max-dur8000ba_layers28_bd3lm_arch-search-debug"
+MODEL_PATH="${RUN_DIR}/gsm8k_FT-2B_block2_evalblock2_lr1e-5_bsz4_warm100ba_alphaf0.0_max-dur8000ba_enc28_TOPdec14_e2d2_arch-search"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 

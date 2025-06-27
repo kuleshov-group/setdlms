@@ -5,8 +5,8 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=2
-EVAL_BLOCK_SIZE=2
+BLOCK_SIZE=4
+EVAL_BLOCK_SIZE=4
 N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=false
@@ -21,7 +21,7 @@ MAX_DURATION="8000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=bd3lm_arch-search-debug-v2
+TAG=bd3lm_arch-search
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -69,5 +69,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="1ep" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  composer.loggers=null
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
