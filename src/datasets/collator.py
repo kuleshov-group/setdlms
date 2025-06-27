@@ -61,6 +61,7 @@ class DenoisingCollator:
                 pad_to_multiple_of=pad_to_multiple_of,
                 return_tensors=return_tensors,
             )
+        self.padding_side = tokenizer.padding_side
         self.predict_padding = predict_padding
         self.restricted_t_range = restricted_t_range
         self.sampling_eps = sampling_eps
@@ -112,11 +113,14 @@ class DenoisingCollator:
         )
         if all([c is not None for c in context_mask]):
             context_mask = torch.nn.utils.rnn.pad_sequence(
-                context_mask,
-                batch_first=True,  # type: ignore
-            )[..., : self.max_length]  # noqa: type
+                context_mask,  # type: ignore
+                batch_first=True,
+            )[..., : self.max_length]
             context_mask = torch.nn.functional.pad(
-                context_mask, (0, self.max_length - context_mask.shape[-1])
+                context_mask,
+                (0, self.max_length - context_mask.shape[-1])
+                if self.padding_side == "right"
+                else (self.max_length - context_mask.shape[-1], 0),
             )
             batch.update({"context_mask": context_mask})
         batch.update({"t": t})
