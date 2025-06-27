@@ -6,3 +6,4 @@ trust_remote_code: true
 num_layers: -1
 keep_top_layers: false
 reinit_model: false
+attn_backend: ${model.config.attn_backend}
