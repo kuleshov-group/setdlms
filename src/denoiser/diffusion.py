@@ -37,6 +37,9 @@ def create_attn_mask(attn_mask):
     return padding
 
 
+create_block_mask_compiled = torch.compile(create_block_mask)
+
+
 class DiffusionGenerationConfig(GenerationConfig):
     def __init__(
         self,
@@ -708,7 +711,6 @@ class BD3LMConfig(MDLMConfig):
         self,
         block_size: int | None = None,
         eval_block_size: int | None = None,
-        attn_backend: str = "sdpa",
         backbone_is_decoder_only: bool = True,
         **kwargs,
     ):
@@ -717,7 +719,6 @@ class BD3LMConfig(MDLMConfig):
         self.eval_block_size = (
             eval_block_size if eval_block_size is not None else block_size
         )
-        self.attn_backend = attn_backend
         # Determines whether inputs / masks are concatenated or separate for enc-dec
         self.backbone_is_decoder_only = backbone_is_decoder_only
 
@@ -787,12 +788,11 @@ class BD3LM(MDLM):
             Encoder block-causal attention mask.
         """
 
-        del b, h
-
         # Compute block indices
         block_q = q_idx // block_size
         block_kv = kv_idx // block_size
 
+        # ** Block-Causal Mask **
         return block_q >= block_kv
 
     # noinspection PyUnusedLocal
@@ -805,8 +805,6 @@ class BD3LM(MDLM):
         block_size: int | None = None,
         seq_length: int | None = None,
     ) -> torch.Tensor:
-        del b, h
-
         # Indicate whether token belongs to xt or x0:
         xt_flag_kv = (kv_idx >= seq_length).bool()
 
@@ -996,9 +994,9 @@ class BD3LM(MDLM):
                     ),
                     padding_mask,
                 ]
-                encoder_attention_mask = create_block_mask(
+                encoder_attention_mask = create_block_mask_compiled(
                     and_masks(*enc_masks),
-                    B=None,
+                    B=input_ids.shape[0],
                     H=None,
                     Q_LEN=input_ids.shape[1],
                     KV_LEN=input_ids.shape[1],
@@ -1013,9 +1011,9 @@ class BD3LM(MDLM):
                     ),
                     dec_padding_mask,
                 ]
-                decoder_attention_mask = create_block_mask(
+                decoder_attention_mask = create_block_mask_compiled(
                     and_masks(*dec_masks),
-                    B=None,
+                    B=input_ids.shape[0],
                     H=None,
                     Q_LEN=input_ids.shape[1],
                     KV_LEN=input_ids.shape[1] * 2,
