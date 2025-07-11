@@ -14,6 +14,8 @@ from transformers.modeling_outputs import (
     CausalLMOutputWithPast,
 )
 
+from src.backbone.custom_modeling_qwen3 import CustomQwen3ForCausalLM
+
 try:
     from torch.nn.attention.flex_attention import BlockMask
 except ImportError:
@@ -53,7 +55,8 @@ class AutoModelFromPreTrained(nn.Module):
                 trust_remote_code=trust_remote_code,
                 **automodel_init_kwargs,
             )
-            self.model = AUTO_MODEL_CLS[automodel_cls].from_config(auto_config)
+            self.model = CustomQwen3ForCausalLM(auto_config)
+            # self.model = AUTO_MODEL_CLS[automodel_cls].from_config(auto_config)
         else:
             self.model = AUTO_MODEL_CLS[automodel_cls].from_pretrained(
                 pretrained_model_name_or_path,
