@@ -6,9 +6,10 @@ from transformers import PreTrainedTokenizer
 
 from datasets import load_dataset
 
-_QUESTION_PREFIX = (
-    "Please reason step by step, and put your final answer within $\\boxed{}$. "
-)
+# _QUESTION_PREFIX = (
+#     "Please reason step by step, and put your final answer within $\\boxed{}$. "
+# )
+_QUESTION_PREFIX = "Please reason step by step, and put your final answer within $\\boxed{}$.\nQuestion: "  # noqa: E501
 _SUMMARY_PREFIX = "Please summarize the following text: "
 _TRANSLATION_PREFIX = "Translate the following text from {source} to {target}: "
 
@@ -24,7 +25,8 @@ class GSM8KDataset(Dataset):
         padding: bool = False,
         add_special_tokens: bool = True,
         source_prompt_text: str | None = _QUESTION_PREFIX,
-        target_prompt_text: str | None = "Answer: ",
+        target_prompt_text: str | None = "\nAnswer: ",
+        # target_prompt_text: str | None = "Answer: ",
         source_key: str = "question",
         target_key: str = "answer",
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
@@ -74,9 +76,127 @@ class GSM8KDataset(Dataset):
         )
         if self.add_special_tokens:
             example[self.source_key] = (
-                self.tokenizer.bos_token
-                + example[self.source_key]
-                + self.tokenizer.eos_token
+                self.tokenizer.bos_token + example[self.source_key]
+                # + self.tokenizer.eos_token
+            )
+            example[self.target_key] = (
+                example[self.target_key] + self.tokenizer.eos_token
+            )
+
+        qa_tokenized = self.tokenizer.batch_encode_plus(
+            [example[self.source_key], example[self.target_key]],
+            max_length=self.max_length // 2,
+            padding=self.padding,
+            add_special_tokens=False,  # (potentially) added manually, above
+            truncation=True,
+        )
+
+        input_ids = torch.cat(
+            [torch.LongTensor(t) for t in qa_tokenized["input_ids"]], dim=-1
+        )
+        attention_mask = torch.cat(
+            [torch.LongTensor(a) for a in qa_tokenized["attention_mask"]], dim=-1
+        )
+        context_mask = torch.cat(
+            (
+                torch.LongTensor(qa_tokenized["attention_mask"][0]),
+                torch.zeros_like(torch.LongTensor(qa_tokenized["input_ids"][1])),
+            ),
+            dim=-1,
+        )
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "context_mask": context_mask,
+        }
+
+
+class GSM8KAugDataset(Dataset):
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        split: Literal["train", "validation", "test"],
+        max_length: int,
+        dataset_path: str = "whynlp/gsm8k-aug-nl",
+        padding: bool = False,
+        add_special_tokens: bool = True,
+        # source_prompt_text: str | None = "Question: ",
+        source_prompt_text: str | None = _QUESTION_PREFIX,
+        # target_prompt_text: str | None = "Answer: ",
+        target_prompt_text: str | None = "\nAnswer: ",
+        source_key: str = "question",
+        steps_key: str = "steps",
+        target_key: str = "answer",
+        # Unused tokenizer arg (compat. with other dataset loading functions/classes)
+        **_: Dict[str, Any],
+    ):
+        self.tokenizer = tokenizer
+        self.dataset = load_dataset(dataset_path, split=split, trust_remote_code=True)
+        self.max_length = max_length
+        self.padding = padding
+        self.add_special_tokens = add_special_tokens
+        self.source_prompt_text = source_prompt_text
+        self.target_prompt_text = target_prompt_text
+        self.source_key = source_key
+        self.steps_key = steps_key
+        self.target_key = target_key
+
+    def __len__(self):
+        return len(self.dataset)
+
+    @staticmethod
+    def _postprocess_box_answer(
+        answer: str, prefix: str = "\n$\\boxed{", suffix: str = "}$"
+    ):
+        """
+        Post-processes the answer for the desired format.
+        Args:
+            answer (str): The answer string to be post-processed.
+        Returns:
+            str: The post-processed answer string.
+        """
+        answer = prefix + answer + suffix
+        return answer
+
+    @staticmethod
+    def _postprocess_answer(answer: str, prefix: str = "\n#### "):
+        """
+        Post-processes the answer for the desired format.
+        Args:
+            answer (str): The answer string to be post-processed.
+        Returns:
+            str: The post-processed answer string.
+        """
+        answer = prefix + answer
+        return answer
+
+    @staticmethod
+    def _process_step(line: str) -> str:
+        stripped_line = line.rstrip()
+        if not stripped_line.endswith("."):
+            return stripped_line + "."
+        return stripped_line
+
+    def __getitem__(self, idx):
+        example = self.dataset[idx]
+        if self.source_prompt_text is not None:
+            example[self.source_key] = (
+                self.source_prompt_text + example[self.source_key]
+            )
+        if self.target_prompt_text is not None:
+            example[self.steps_key] = self.target_prompt_text + "\n".join(
+                [self._process_step(s) for s in example[self.steps_key]]
+            )
+        # Combine steps + final answer
+        example[self.target_key] = example[
+            self.steps_key
+        ] + self._postprocess_box_answer(
+            example[self.target_key]
+        )  # self._postprocess_answer(example[self.target_key])
+        if self.add_special_tokens:
+            example[self.source_key] = (
+                self.tokenizer.bos_token + example[self.source_key]
+                # + self.tokenizer.eos_token
             )
             example[self.target_key] = (
                 example[self.target_key] + self.tokenizer.eos_token
@@ -307,8 +427,8 @@ class WMTDataset(Dataset):
         subset: str = "de-en",
         padding: bool = False,
         add_special_tokens: bool = True,
-        source_prompt_text: str | None = _TRANSLATION_PREFIX,
-        target_prompt_text: str | None = "Translation: ",
+        source_prompt_text: str | None = None,  # _TRANSLATION_PREFIX,
+        target_prompt_text: str | None = None,  # "Translation: ",
         separate_input_output: bool = False,
         source_key: str = "translation",
         target_key: str = "translation",
@@ -324,9 +444,13 @@ class WMTDataset(Dataset):
         self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
-        self.source_prompt_text = source_prompt_text.format(
-            source=self._LANGUAGE[subset.split("-")[0]],
-            target=self._LANGUAGE[subset.split("-")[1]],
+        self.source_prompt_text = (
+            source_prompt_text.format(
+                source=self._LANGUAGE[subset.split("-")[0]],
+                target=self._LANGUAGE[subset.split("-")[1]],
+            )
+            if source_prompt_text is not None
+            else None
         )
         self.target_prompt_text = target_prompt_text
         self.separate_input_output = separate_input_output
