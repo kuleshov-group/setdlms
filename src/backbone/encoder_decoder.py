@@ -197,7 +197,7 @@ class LLMasEncoderDecoder(nn.Module):
         return_updated_cache: bool = False,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> DecoderCausalLMOutputWithPast | EncoderBaseModelOutputWithPast:
-        # During training/eval encoder_last_hidden_state = None.
+        # During training/eval encoder_last_hidden_state is None.
         # During generation encoder_last_hidden_state can be not None.
         new_seen_tokens = (
             0
@@ -219,7 +219,7 @@ class LLMasEncoderDecoder(nn.Module):
                 cache_position=encoder_cache_position,
             )
             if return_updated_cache:
-                # encoder_output.past_key_values now caches latest encoder input
+                # encoder_output.past_key_values now contains latest encoder input
                 return EncoderBaseModelOutputWithPast(
                     encoder_last_hidden_state=encoder_output.last_hidden_state,
                     encoder_past_key_values=encoder_output.past_key_values,
@@ -290,15 +290,15 @@ class LLMasEncoderDecoder(nn.Module):
                 decoder_hidden_states, position_ids
             )
 
-        # TODO: Added this back, test that it doesn't break anything! (train and eval)
-        # noinspection PyProtectedMember
-        attention_mask = self.decoder.model._update_causal_mask(
-            attention_mask=attention_mask,
-            input_tensor=decoder_hidden_states,
-            cache_position=cache_position,
-            past_key_values=past_key_values,
-            output_attentions=False,
-        )
+        if hasattr(self.decoder.model, "_update_causal_mask"):  # bc on transformers
+            # noinspection PyProtectedMember
+            attention_mask = self.decoder.model._update_causal_mask(
+                attention_mask=attention_mask,
+                input_tensor=decoder_hidden_states,
+                cache_position=cache_position,
+                past_key_values=past_key_values,
+                output_attentions=False,
+            )
         for decoder_layer in self.decoder.model.layers:
             layer_idx = decoder_layer.self_attn.layer_idx
             if (
