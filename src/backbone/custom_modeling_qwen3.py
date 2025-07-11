@@ -97,7 +97,6 @@ class CustomQwen3Attention(Qwen3Attention):
                     self.config._attn_implementation
                 ]
 
-        # TODO: Ensure we're using flash_attn even though len(q) != len(k)
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
