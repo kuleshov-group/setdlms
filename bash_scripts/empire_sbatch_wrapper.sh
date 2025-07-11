@@ -28,8 +28,10 @@ WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
 NUM_VISIBLE_DEVICES=8
-RUN_DIR="/mnt/lustre/cornell/$(whoami)/runs/dllm-dev"
+RUN_DIR="/mnt/lustre/cornell/${USERNAME}/runs/dllm-dev"
+DATA_DIR="/mnt/lustre/cornell/${USERNAME}/data"
 mkdir -p ${RUN_DIR}
+mkdir -p ${DATA_DIR}
 sbatch \
   --job-name=${script_name:4:-3} \
   --output="${WATCH_FOLDER}/%x_%j.log" \
@@ -37,7 +39,7 @@ sbatch \
   --get-user-env \
   --partition=cornell \
   --account=cornell \
-  --time=960:00:00 \
+  --time=100:00:00 \
   --mem=64000 \
   --nodes=1 \
   --ntasks-per-node=${NUM_VISIBLE_DEVICES} \
@@ -45,5 +47,5 @@ sbatch \
   --mail-user=${USERNAME}@cornell.edu \
   --mail-type=END \
   --requeue \
-  --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR}" \
+  --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
   ${script_full_path}
