@@ -123,7 +123,7 @@ class LMEvalHarnessModel(LM):
             # TODO: Hacks to make data look like training set
             ctx = ctx.replace("Question: ", "")
             # ctx = ctx.replace("\nAnswer:", "<|endoftext|>Answer: ")
-            ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}Answer: ")
+            # ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}\nAnswer: ")
             n_spaces = len(ctx) - len(ctx)
             if n_spaces > 0:
                 ctx = ctx[:-n_spaces]

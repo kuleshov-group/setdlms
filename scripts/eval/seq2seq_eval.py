@@ -110,13 +110,14 @@ def main(cfg: DictConfig) -> None:
     ):
         input_ids = elem["input_ids"].to(device)  # type: ignore
         input_ids = input_ids[:, 1:]  # remove bos
-        prompt_ids = (
-            torch.tensor(tokenizer.encode(dataset.target_prompt_text.strip()))
-            .to(input_ids.dtype)
-            .to(input_ids.device)
-            .unsqueeze(0)
-        )
-        input_ids = torch.cat((input_ids, prompt_ids), dim=-1)
+        if dataset.target_prompt_text is not None:
+            prompt_ids = (
+                torch.tensor(tokenizer.encode(dataset.target_prompt_text.strip()))
+                .to(input_ids.dtype)
+                .to(input_ids.device)
+                .unsqueeze(0)
+            )
+            input_ids = torch.cat((input_ids, prompt_ids), dim=-1)
         # Generate samples
         with torch.no_grad():
             outputs = model.generate(
@@ -133,8 +134,12 @@ def main(cfg: DictConfig) -> None:
         if stop_tokens is not None:
             for st in stop_tokens:
                 outputs = outputs.split(st)[0]
-        decoded_samples = dataset.target_prompt_text + outputs.strip()
+        if dataset.target_prompt_text is not None:
+            decoded_samples = dataset.target_prompt_text + outputs.strip()
+        else:
+            decoded_samples = outputs.strip()
         if local_rank == 0:
+            print("Input:", tokenizer.decode(input_ids[0]))
             print("Output:", decoded_samples)
         generated_samples.append(decoded_samples)
 
