@@ -9,15 +9,10 @@ BLOCK_SIZE=8
 EVAL_BLOCK_SIZE=8
 HIDDEN_SIZE=512
 INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
-N_ENCODER_LAYERS=20
-ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=4
-DECODER_TOP_LAYERS=false
-REINIT_ENCODER=true
-REINIT_DECODER=true
-TIE_WEIGHTS=false
+N_LAYERS=12
+TOP_LAYERS=false
+REINIT_MODEL=true
 LOGIT_SHIFT=false
-ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
 LR=3e-4
@@ -27,34 +22,20 @@ MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=e2d2_from-scratch_bidir-ctxt_v2
-if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
-  ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
+TAG=bd3lm_from-scratch_v4
+if [ "${TOP_LAYERS}" == "true" ]; then
+  LAYERS="TOPlayers${N_LAYERS}"
 else
-  ENC_LAYERS="enc${N_ENCODER_LAYERS}"
+  LAYERS="layers${N_LAYERS}"
 fi
-if [ "${DECODER_TOP_LAYERS}" == "true" ]; then
-  DEC_LAYERS="TOPdec${N_DECODER_LAYERS}"
-else
-  DEC_LAYERS="dec${N_DECODER_LAYERS}"
-fi
-RUN_NAME=wmt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
-if [ "${TIE_WEIGHTS}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_tie-weights"
-fi
+RUN_NAME=wmt_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 if [ "${LOGIT_SHIFT}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_logit-shift"
 fi
-if [ "${ENCODER_CAUSAL_MASK}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_encoder-causal-mask"
-fi
-#if [ "${REINIT_ENCODER}" == "true" ]; then
-#  RUN_NAME="${RUN_NAME}_reinit-encoder"
+#if [ "${REINIT_MODEL}" == "true" ]; then
+#  RUN_NAME="${RUN_NAME}_reinit"
 #fi
-#if [ "${REINIT_DECODER}" == "true" ]; then
-#  RUN_NAME="${RUN_NAME}_reinit-decoder"
-#fi
-MICRO_BATCH_SIZE=8 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
+MICRO_BATCH_SIZE=16 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -68,20 +49,15 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
-  model=e2d2 \
+  model=bd3lm \
   model.config.attn_backend="sdpa" \
   training.compile_backbone=true \
   model.config.length=256 \
   model.config.shift_logits=${LOGIT_SHIFT} \
-  model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
-  model.config.backbone_config.use_encoder_causal_mask=${ENCODER_CAUSAL_MASK} \
-  model.config.backbone_config.num_encoder_layers=${N_ENCODER_LAYERS} \
-  model.config.backbone_config.num_decoder_layers=${N_DECODER_LAYERS} \
-  model.config.backbone_config.tie_encoder_decoder_weights=${TIE_WEIGHTS} \
-  model.config.backbone_config.reinit_decoder=${REINIT_DECODER} \
-  model.config.backbone_config.reinit_encoder=${REINIT_ENCODER} \
-  model.config.backbone_config.keep_top_decoder_layers=${DECODER_TOP_LAYERS} \
-  model.config.backbone_config.keep_top_encoder_layers=${ENCODER_TOP_LAYERS} \
+  model/backbone@model.config.backbone_config=automodel_for_causal_lm \
+  model.config.backbone_config.reinit_model=${REINIT_MODEL} \
+  model.config.backbone_config.num_layers=${N_LAYERS} \
+  model.config.backbone_config.keep_top_layers=${TOP_LAYERS} \
   +model.config.backbone_config.hidden_size=${HIDDEN_SIZE} \
   +model.config.backbone_config.intermediate_size=${INTERMEDIATE_SIZE} \
   training.global_batch_size=${BATCH_SIZE} \

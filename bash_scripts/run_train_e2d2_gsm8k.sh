@@ -11,24 +11,27 @@ EVAL_BLOCK_SIZE=4
 #INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
 N_ENCODER_LAYERS=28
 ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=12
-DECODER_TOP_LAYERS=false
-REINIT_ENCODER=flase
-REINIT_DECODER=flase
+N_DECODER_LAYERS=20
+DECODER_TOP_LAYERS=true
+REINIT_ENCODER=false
+REINIT_DECODER=false
 TIE_WEIGHTS=false
 LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
-LR=1e-5 # 1e-5, 1e-4, 1e-3
-WARMUP_DURATION="100ba" # 0.1, 0.3, 0.5
-ALPHA_F=0.0
-BATCH_SIZE=8 # 96, 128, 256
+LR=2e-5
+BETA1=0.9
+BETA2=0.9998
+WARMUP_DURATION="10ba"
+ALPHA_F=0.5
+BATCH_SIZE=1
 MAX_DURATION="30000ba"
+PRECISION="fp32" # amp_bf16 fp32
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=e2d2_tput-sdpa_compile
+TAG=e2d2_ema_edit-dataset
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -40,7 +43,7 @@ else
   DEC_LAYERS="dec${N_DECODER_LAYERS}"
 fi
 #RUN_NAME=gsm8k_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
-RUN_NAME=gsm8k_FT2B_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
+RUN_NAME=gsm8k_FT2B_block${BLOCK_SIZE}_lr${LR}_b1${BETA1}_b2${BETA2}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_prec${PRECISION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
 fi
@@ -68,7 +71,9 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="1ep" \
+  composer.optimizer.betas="[${BETA1}, ${BETA2}]" \
+  composer.trainer.precision=${PRECISION} \
+  composer.trainer.eval_interval="100ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=cosine_annealing_with_warmup \
@@ -76,7 +81,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.alpha_f=${ALPHA_F} \
   model=e2d2 \
   model.config.attn_backend="sdpa" \
-  training.compile_backbone=true \
+  training.compile_backbone=false \
   model.config.length=768 \
   model.config.shift_logits=${LOGIT_SHIFT} \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
@@ -99,4 +104,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="100ep" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  eval_dataloader.batch_size=4

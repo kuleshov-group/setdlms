@@ -5,23 +5,23 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=4
-EVAL_BLOCK_SIZE=4
+BLOCK_SIZE=8
+EVAL_BLOCK_SIZE=8
 N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=false
 LOGIT_SHIFT=false
 
 # Hyperparameters
-LR=1e-5 # 1e-5, 1e-4, 1e-3
-WARMUP_DURATION="100ba" # 0.1, 0.3, 0.5
-ALPHA_F=0.0
-BATCH_SIZE=4 # 96, 128, 256
-MAX_DURATION="8000ba"
+LR=5e-6 # 1e-5, 1e-4, 1e-3
+WARMUP_DURATION="10ba" # 0.1, 0.3, 0.5
+ALPHA_F=0.5
+BATCH_SIZE=1 # 96, 128, 256
+MAX_DURATION="30000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=bd3lm_arch-search
+TAG=bd3lm
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -35,7 +35,7 @@ if [ "${REINIT_MODEL}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_reinit"
 fi
 
-MICRO_BATCH_SIZE=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
+MICRO_BATCH_SIZE=1 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -44,7 +44,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="1ep" \
+  composer.trainer.eval_interval="100ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=cosine_annealing_with_warmup \
@@ -66,7 +66,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="1ep" \
+  composer.trainer.save_interval="100ep" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  eval_dataloader.batch_size=$(( NUM_VISIBLE_DEVICES * 4 ))
