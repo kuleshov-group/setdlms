@@ -939,6 +939,7 @@ class BD3LM(MDLM):
 
         if self.config.backbone_is_decoder_only:
             # TODO: Enable flex-attention for decoder only backbones
+            # TODO: Enable bi-directional attention on context
             decoder_attention_mask = (
                 self.static_attention_mask[None, ...]
                 & attention_mask.repeat(1, 2)[:, None, :]
@@ -972,7 +973,10 @@ class BD3LM(MDLM):
                     & attention_mask[..., None]
                 )[:, None, ...]  # Make attention mask 4D
                 encoder_attention_mask = (
-                    self.encoder_static_attention_mask[None, ...]
+                    (
+                        self.encoder_static_attention_mask[None, ...]
+                        | context_mask[:, None, :]
+                    )
                     & attention_mask[:, None, :]
                     & attention_mask[..., None]
                 )[:, None, ...]  # Make attention mask 4D
@@ -983,6 +987,7 @@ class BD3LM(MDLM):
                     decoder_attention_mask, dtype=torch.float
                 )
             elif self.config.attn_backend == "flex_attention":
+                # TODO enable bi-directional attention on context
                 padding_mask = create_attn_mask(attention_mask.bool())
                 dec_padding_mask = create_attn_mask(attention_mask.repeat(1, 2).bool())
                 enc_masks = [
@@ -1111,12 +1116,15 @@ class BD3LM(MDLM):
                     encoder_past_key_values
                 )
                 encoder_full_seq_length = encoder_cache_length + context.shape[-1]
-                encoder_attention_mask = self.encoder_static_attention_mask[
-                    None,
-                    None,
-                    encoder_cache_length:encoder_full_seq_length,
-                    :encoder_full_seq_length,
-                ]  # Make attention mask 4D
+                encoder_attention_mask = torch.ones(
+                    (
+                        1,
+                        1,
+                        encoder_full_seq_length - encoder_cache_length,
+                        encoder_full_seq_length,
+                    ),
+                    device=context.device,
+                )
                 encoder_position_ids = torch.arange(
                     encoder_cache_length, encoder_full_seq_length
                 ).to(device)[None, :]
