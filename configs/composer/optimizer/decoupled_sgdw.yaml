@@ -1,0 +1,6 @@
+_target_: composer.optim.DecoupledSGDW
+lr: ${training.lr}  # Peak learning rate
+momentum: 0
+dampening: 0
+weight_decay: 0
+nesterov: false
