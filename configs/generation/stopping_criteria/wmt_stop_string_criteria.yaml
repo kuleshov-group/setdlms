@@ -4,4 +4,4 @@ wmt_stop_string_criteria:
   stop_strings:
     - '<|im_end|>'
     - '<|endoftext|>'
-#    - '.'  # Only use first generated sentence (test set only contains single sentence)
+    - '.'  # Only use first generated sentence (test set only contains single sentence)

@@ -5,7 +5,7 @@ cnndm_stop_string_criteria:
   stop_strings:
     - '<|im_end|>'
     - '<|endoftext|>'
-    - 'Summary:'
+#    - 'Summary:'
 #    - 'CLICK'
 #    - 'Click '
 #    - 'READ:'
