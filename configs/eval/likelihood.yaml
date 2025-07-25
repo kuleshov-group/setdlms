@@ -1,6 +1,6 @@
 defaults:
   - _self_
-load_ema_weights: false
+load_ema_weights: true
 ckpt_file: 'best-rank0.pt'  # best-rank0.pt or latest-rank0.pt
 eval_dataloader:
   _target_: torch.utils.data.DataLoader

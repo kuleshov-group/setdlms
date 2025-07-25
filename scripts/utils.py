@@ -174,6 +174,39 @@ def load_model_from_ckpt_dir_path(
         Denoiser: The loaded denoiser model.
     """
 
+    def _replace_in_state_dict_if_present(
+        sd: dict[str, Any],
+        prefix: str,
+        replacement: str = "",
+    ) -> None:
+        """Replace string in the prefix in state_dict (sd) in place, if any.
+
+        Args:
+            sd (OrderedDict): a state-dict to be loaded to the model.
+            prefix (str): prefix.
+            replacement (Optional; str): replacement string.
+        """
+        keys = list(sd.keys())
+        for key in keys:
+            if prefix in key:
+                newkey = key.replace(prefix, replacement)
+                sd[newkey] = state_dict.pop(key)
+
+        # also strip the prefix in metadata if any.
+        if hasattr(sd, "_metadata"):
+            keys = list(sd._metadata.keys())
+            for key in keys:
+                # for the metadata dict, the key can be:
+                # '': for the DDP module, which we want to remove.
+                # 'module': for the actual model.
+                # 'module.xx.xx': for the rest.
+                if len(key) == 0:
+                    continue
+                # handling both, 'module' case and  'module.' cases
+                if key == prefix.replace(".", "") or prefix in key:
+                    newkey = key.replace(prefix, replacement)
+                    sd._metadata[newkey] = sd._metadata.pop(key)
+
     with open(os.path.join(path_to_ckpt_dir, "config.yaml"), "rb") as f:
         config = yaml.safe_load(f)
     config = OmegaConf.create(config)
@@ -222,6 +255,7 @@ def load_model_from_ckpt_dir_path(
             raise ValueError("EMA weights not found in checkpoint.")
     else:
         state_dict = ckpt["state"]["model"]
+    _replace_in_state_dict_if_present(state_dict, "_orig_mod.")  # for compiled models
     torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(state_dict, "model.")
     model.load_state_dict(state_dict, strict=False)
 
