@@ -67,6 +67,7 @@ class LLMasEncoderDecoder(nn.Module):
         num_decoder_layers: int = -1,
         keep_top_encoder_layers: bool = False,
         keep_top_decoder_layers: bool = False,
+        use_gradient_checkpointing: bool = False,
         **llm_init_kwargs,
     ):
         assert not (tie_encoder_decoder_weights and reinit_decoder), (
@@ -118,6 +119,8 @@ class LLMasEncoderDecoder(nn.Module):
             for name, param in self.encoder.named_parameters():
                 if "embed_tokens" not in name:
                     param.requires_grad = False
+        if use_gradient_checkpointing:
+            self.encoder.gradient_checkpointing_enable()
 
         if tie_encoder_decoder_weights:
             self.decoder = self.encoder
@@ -166,8 +169,8 @@ class LLMasEncoderDecoder(nn.Module):
                         :num_decoder_layers
                     ]
             del self.decoder.model.embed_tokens
-            # if lm head is weight-tied to embedding, point decoder lm head to encoder
-            # (instead of initializing a separate lm head)
+            # if in the original LM, the lm_head is weight-tied to embedding,
+            # point decoder lm_head to encoder's (instead of initializing separately)
             if (
                 self.encoder.lm_head.weight.data_ptr()
                 == self.encoder.model.embed_tokens.weight.data_ptr()
@@ -175,7 +178,17 @@ class LLMasEncoderDecoder(nn.Module):
                 self.decoder.lm_head = self.encoder.lm_head
             else:
                 del self.encoder.lm_head
+            if use_gradient_checkpointing:
+                self.decoder.gradient_checkpointing_enable()
         self.max_length = max_length
+
+    def freeze_encoder(self):
+        for p in self.encoder.model.parameters():
+            p.requires_grad = False
+
+    def unfreeze_encoder(self):
+        for p in self.encoder.model.parameters():
+            p.requires_grad = True
 
     def forward(
         self,
@@ -314,7 +327,7 @@ class LLMasEncoderDecoder(nn.Module):
                 prev_cache_len = 0
             cache_len = prev_cache_len + new_seen_tokens
 
-            if self.decoder.model.gradient_checkpointing and self.training:
+            if False:  # self.decoder.model.gradient_checkpointing and self.training:
                 # noinspection PyProtectedMember
                 decoder_hidden_states = self.decoder._gradient_checkpointing_func(
                     partial(decoder_layer.__call__, **flash_attn_kwargs),

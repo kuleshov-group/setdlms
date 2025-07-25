@@ -11,3 +11,4 @@ num_encoder_layers: -1
 num_decoder_layers: -1
 keep_top_decoder_layers: false
 keep_top_encoder_layers: false
+use_gradient_checkpointing: false
