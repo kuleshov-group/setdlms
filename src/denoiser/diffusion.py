@@ -49,6 +49,7 @@ class DiffusionGenerationConfig(GenerationConfig):
         first_hitting: bool = False,
         sampling_strategy: Literal["posterior", "predict_then_noise"] = "posterior",
         confidence_based_noising: bool = False,
+        confidence_margin_based_noising: bool = False,
         confidence_threshold: float = 1.0,
         use_model_output_cache: bool = True,
         **kwargs,
@@ -86,6 +87,15 @@ class DiffusionGenerationConfig(GenerationConfig):
             confidence_based_noising (bool): When using the "predict_then_noise"
                 strategy, whether to add noise to random positions or to those that have
                 the lowest probability under x_theta.
+                Cannot be used in conjunction with confidence_margin_based_noising.
+                Defaults to False.
+            confidence_margin_based_noising (bool): When using the "predict_then_noise"
+                strategy, whether to add noise to random positions or to those that have
+                the lowest probability margins under x_theta, where margin is defined as
+                the absolute difference between the top two probabilities at a given
+                position.
+                See https://arxiv.org/abs/2502.06768 for details.
+                Cannot be used in conjunction with confidence_based_noising.
                 Defaults to False.
             use_model_output_cache (bool): Whether to re-use model's output, if sequence
                 is unchanged, because if xt == xs, we can simply re-use the denoising
@@ -104,7 +114,12 @@ class DiffusionGenerationConfig(GenerationConfig):
             # TODO: log.warn that this is being overridden
             self.num_steps = min(num_steps, self.block_size)
         self.sampling_strategy = sampling_strategy
+        assert not confidence_based_noising or not confidence_margin_based_noising, (
+            "Cannot use both `confidence_based_noising` and"
+            " `confidence_margin_based_noising`."
+        )
         self.confidence_based_noising = confidence_based_noising
+        self.confidence_margin_based_noising = confidence_margin_based_noising
         self.confidence_threshold = confidence_threshold
         self.use_model_output_cache = use_model_output_cache
 
@@ -388,10 +403,7 @@ class D3PM(Denoiser):
             # assert x_theta.isnan().sum().item() == 0, (
             #     "NaN found in the denoising output."
             # )
-            assert self.config.diffusion_type == "absorbing", (
-                "predict_and_noise sampling strategy only implemented for absorbing"
-                " state diffusion."
-            )
+
             # Predict
             xs = self._sample_categorical(x_theta, generation_config.do_sample)
 
@@ -403,8 +415,15 @@ class D3PM(Denoiser):
             num_noise_indices = ((1 - alpha_s) * generation_config.block_size).to(
                 torch.int
             )
-            if generation_config.confidence_based_noising:
-                conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
+            if (
+                generation_config.confidence_based_noising
+                or generation_config.confidence_margin_based_noising
+            ):
+                if generation_config.confidence_based_noising:
+                    conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
+                else:
+                    top2 = torch.topk(x_theta, k=2, dim=-1).values  # shape: (B, L, 2)
+                    conf = (top2[..., 0] - top2[..., 1]).abs()
                 if self.config.shift_logits:
                     # noinspection LongLine
                     conf = torch.where(  # already decoded tokens have 'inf' confidence
@@ -421,7 +440,7 @@ class D3PM(Denoiser):
                     )
                 noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
             else:
-                # TODO: implement this
+                # TODO: implement random noise indices selection
                 raise NotImplementedError
             xs[..., noise_indices] = self.mask_token_id
         else:
@@ -488,10 +507,9 @@ class D3PM(Denoiser):
                 inputs=inputs,
                 cache={},
             )
-            inputs_offset = inputs.shape[-1]
         else:
             cache = None
-            inputs_offset = 0
+        inputs_offset = inputs.shape[-1] if inputs.numel() > 0 else 0
 
         total_NFEs = 0
         timesteps = self._sample_generation_timesteps(  # Re-use in every block
@@ -506,12 +524,18 @@ class D3PM(Denoiser):
         )
         for block_id in block_pbar:
             block_NFEs = 0
-            xt = accumulated_samples[
-                :,
-                inputs_offset + (block_id * block_size) : inputs_offset
-                + ((block_id + 1) * block_size)
-                + logit_offset,
-            ]
+            if generation_config.use_cache:
+                xt = accumulated_samples[
+                    :,
+                    inputs_offset + (block_id * block_size) : inputs_offset
+                    + ((block_id + 1) * block_size)
+                    + logit_offset,
+                ]
+            else:
+                xt = accumulated_samples[
+                    :,
+                    : inputs_offset + ((block_id + 1) * block_size) + logit_offset,
+                ]
             if self.mask_token_id not in xt:
                 continue
             timesteps = self._sample_generation_timesteps(
@@ -533,7 +557,7 @@ class D3PM(Denoiser):
             # Used for logit processing
             running_generation = accumulated_samples[
                 :,
-                inputs.shape[-1] + logit_offset : inputs.shape[-1]
+                inputs_offset + logit_offset : inputs_offset
                 + (block_id * block_size)
                 + logit_offset,
             ]
@@ -575,17 +599,32 @@ class D3PM(Denoiser):
                     or not generation_config.use_model_output_cache
                 ):
                     model_output_cache = None
-                xt = xs
+                if not generation_config.use_cache:
+                    xt[..., -block_size:] = xs[..., -block_size:]
+                else:
+                    xt = xs
                 if (
                     xt == self.mask_token_id
                 ).sum().item() == 0 and self.config.diffusion_type == "absorbing":
                     break
-            accumulated_samples[
-                :,
-                inputs_offset + (block_id * block_size) + logit_offset : inputs_offset
-                + ((block_id + 1) * block_size)
-                + logit_offset,
-            ] = xt[:, logit_offset:]
+            if generation_config.use_cache:
+                accumulated_samples[
+                    :,
+                    inputs_offset
+                    + (block_id * block_size)
+                    + logit_offset : inputs_offset
+                    + ((block_id + 1) * block_size)
+                    + logit_offset,
+                ] = xt[:, logit_offset:]
+            else:
+                accumulated_samples[
+                    :,
+                    inputs_offset
+                    + (block_id * block_size)
+                    + logit_offset : inputs_offset
+                    + ((block_id + 1) * block_size)
+                    + logit_offset,
+                ] = xt[:, logit_offset + inputs_offset :]
             if tokenizer is not None:
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
