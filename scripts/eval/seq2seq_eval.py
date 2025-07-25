@@ -109,8 +109,8 @@ def main(cfg: DictConfig) -> None:
         disable=(local_rank != 0),
     ):
         input_ids = elem["input_ids"].to(device)  # type: ignore
-        input_ids = input_ids[:, 1:]  # remove bos
         if dataset.target_prompt_text is not None:
+            input_ids = input_ids[:, 1:]  # remove bos
             prompt_ids = (
                 torch.tensor(tokenizer.encode(dataset.target_prompt_text.strip()))
                 .to(input_ids.dtype)
@@ -123,7 +123,7 @@ def main(cfg: DictConfig) -> None:
             outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=(local_rank != 0),
-                # tokenizer=tokenizer,  # For debugging: prints intermediate generation
+                tokenizer=tokenizer,  # For debugging: prints intermediate generation
                 **gen_kwargs,
             )
         outputs = outputs[:, input_ids.shape[-1] :]
@@ -165,12 +165,14 @@ def main(cfg: DictConfig) -> None:
         )
 
         # Display results
-        print("\n=== Evaluation Metrics ===")
-        print(f"ROUGE-1: {rouge_scores['rouge1']:.4f}")
-        print(f"ROUGE-2: {rouge_scores['rouge2']:.4f}")
-        print(f"ROUGE-L: {rouge_scores['rougeL']:.4f}")
-        print(f"BLEU:    {bleu_score['score']:.4f}")
-        print(f"METEOR:  {meteor_score['meteor']:.4f}")
+        print("\n=== Evaluation Metrics ===\n")
+        print("| Metric  | Value   |")
+        print("|---------|---------|")
+        print(f"| ROUGE-1 | {rouge_scores['rouge1']:>7.4f} |")
+        print(f"| ROUGE-2 | {rouge_scores['rouge2']:>7.4f} |")
+        print(f"| ROUGE-L | {rouge_scores['rougeL']:>7.4f} |")
+        print(f"| BLEU    | {bleu_score['score']:>7.4f} |")
+        print(f"| METEOR  | {meteor_score['meteor']:>7.4f} |")
 
         res_for_json = [
             {"ground_truth": references[i], "result": generated_samples[i]}
