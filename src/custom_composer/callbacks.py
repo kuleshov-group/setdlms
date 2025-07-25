@@ -413,3 +413,30 @@ class LogSampledTimestep(Callback):
                 f"sampled_t/{state.dataloader_label}/min": sampled_t.min().item(),
             },
         )
+
+
+class WarmupWithFrozenEncoder(Callback):
+    def __init__(
+        self,
+        num_warmup_steps: int,
+    ):
+        super().__init__()
+        self.num_warmup_steps = num_warmup_steps
+        self.encoder_is_frozen = False
+
+    def fit_start(self, state: State, logger: Logger) -> None:
+        if hasattr(state.model, "module"):
+            state.model.module.model.backbone.freeze_encoder()
+        else:
+            state.model.model.backbone.freeze_encoder()
+        self.encoder_is_frozen = True
+
+    def batch_end(self, state: State, logger: Logger) -> None:
+        if (
+            self.encoder_is_frozen
+            and state.timestamp.iteration >= self.num_warmup_steps
+        ):
+            if hasattr(state.model, "module"):
+                state.model.module.model.backbone.unfreeze_encoder()
+            else:
+                state.model.model.backbone.unfreeze_encoder()
