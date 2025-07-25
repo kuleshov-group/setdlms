@@ -3,20 +3,15 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/gsm8k-block4-enc-layers20-dec-layers8-e2d2_qwen600M_enat_from-scratch"
+MODEL_PATH="${RUN_DIR}/wmt_block4_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_enc28_dec4_hidden512_inter1536_e2d2_scratch_v2"
 REVISION=null
 
-## New HF
-#MODEL_PATH="kuleshov-group/gsm8k-block4-keepbottomenc-1-keeptopdec14-e2d2_qwen2B"
-#REVISION="946176208f91301bbfa7feb42db6996cc98074c1" #null
-
-## Old: NeurIPS
-#MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-block4-bs96-keep1-causalencfalse-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-e2d2_qwen2B_keeptop_tie_noema_v2"
-#REVISION=null
-
-EVAL_DATASET="gsm8k_eval"
+EVAL_DATASET="wmt_eval"
 BLOCK_SIZE=4
-BATCH_SIZE=96
+BATCH_SIZE=32
+PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-0.6B-Base"
+CKPT_FILE="best-rank0.pt"
+USE_EMA=true
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \
@@ -25,6 +20,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra/hydra_logging=disabled \
   +eval@task=likelihood \
   +dataset@task.eval_dataset=${EVAL_DATASET} \
+  task.load_ema_weights=${USE_EMA} \
+  task.ckpt_file=${CKPT_FILE} \
   task.eval_dataset.max_length=null \
   seed=1 \
   batch_size=${BATCH_SIZE} \
@@ -32,7 +29,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   task.eval_dataloader.batch_size=8 \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
-  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B-Base" \
+  tokenizer.pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
   output_path=null \
   +collator@task.collator=denoising \
   task.collator.global_batch_size=${BATCH_SIZE} \

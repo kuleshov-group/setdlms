@@ -16,12 +16,13 @@ DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 T=4
 FIRST_HITTING=true
-CONFIDENCE_BASED_NOISING=true
+CONFIDENCE_BASED_NOISING=false
+CONFIDENCE_MARGIN_BASED_NOISING=true
 KV_CACHING=true
 CKPT_FILE="latest-rank0.pt"
 USE_EMA=true
 
-OUTPUT_PATH="${OUTPUT_DIR}/L${L}_block_size${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hitting${FIRST_HITTING}-confidence_based_noising${CONFIDENCE_BASED_NOISING}"
+OUTPUT_PATH="${OUTPUT_DIR}/L${L}_block_size${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hitting${FIRST_HITTING}-confidence_based_noising${CONFIDENCE_BASED_NOISING}-confidence_margin_based_noising${CONFIDENCE_MARGIN_BASED_NOISING}"
 mkdir -p ${OUTPUT_PATH}
 
 accelerate launch scripts/eval/harness_eval.py \
@@ -44,6 +45,7 @@ accelerate launch scripts/eval/harness_eval.py \
   generation_config.num_steps=${T} \
   generation_config.first_hitting=${FIRST_HITTING} \
   generation_config.confidence_based_noising=${CONFIDENCE_BASED_NOISING} \
+  generation_config.confidence_margin_based_noising=${CONFIDENCE_MARGIN_BASED_NOISING} \
   generation_config.confidence_threshold=1.1 \
   generation_config.use_cache=${KV_CACHING} \
   ~generation/logits_processor@logits_processor_list \

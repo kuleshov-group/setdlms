@@ -5,11 +5,11 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=8
-EVAL_BLOCK_SIZE=8
+BLOCK_SIZE=4
+EVAL_BLOCK_SIZE=4
 HIDDEN_SIZE=512
-INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
-N_ENCODER_LAYERS=20
+INTERMEDIATE_SIZE=1536 #$(( 4 * HIDDEN_SIZE ))
+N_ENCODER_LAYERS=28
 ENCODER_TOP_LAYERS=false
 N_DECODER_LAYERS=4
 DECODER_TOP_LAYERS=false
@@ -21,13 +21,13 @@ ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
 LR=3e-4
-WARMUP_DURATION="2000ba"
-BATCH_SIZE=64
+WARMUP_DURATION="1000ba"
+BATCH_SIZE=128
 MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=e2d2_from-scratch_bidir-ctxt_v2
+TAG=e2d2_scratch_v2
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -54,7 +54,7 @@ fi
 #if [ "${REINIT_DECODER}" == "true" ]; then
 #  RUN_NAME="${RUN_NAME}_reinit-decoder"
 #fi
-MICRO_BATCH_SIZE=8 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
+MICRO_BATCH_SIZE=16 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -63,9 +63,9 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=wmt_train \
   dataset@eval_dataset=wmt_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="10000ba" \
+  composer.trainer.eval_interval="5000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
-  composer.trainer.save_num_checkpoints_to_keep=1 \
+  composer.trainer.save_num_checkpoints_to_keep=20 \
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=e2d2 \

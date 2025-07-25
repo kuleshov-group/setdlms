@@ -7,27 +7,27 @@ source setup_env.sh
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
 EVAL_BLOCK_SIZE=4
-HIDDEN_SIZE=2048
-INTERMEDIATE_SIZE=6144 #$(( 4 * HIDDEN_SIZE ))
-N_ENCODER_LAYERS=28
-N_DECODER_LAYERS=20
+HIDDEN_SIZE=512
+INTERMEDIATE_SIZE=1536 #$(( 4 * HIDDEN_SIZE ))
+N_ENCODER_LAYERS=48
+N_DECODER_LAYERS=12
 
 # Hyperparameters
-LR=3e-5
+LR=3e-4
 WARMUP_DURATION="1000ba"
-BATCH_SIZE=8
+BATCH_SIZE=64
 MAX_DURATION="100000ba"
-PRECISION="fp32" # amp_bf16 fp32
+PRECISION="amp_bf16" # amp_bf16 fp32
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=e2d2_bidir-context
+TAG=e2d2
 ENC_LAYERS="enc${N_ENCODER_LAYERS}"
 DEC_LAYERS="dec${N_DECODER_LAYERS}"
 #RUN_NAME=gsm8k-aug_FT2b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
 # v2 indicates the "Please place answer in box..." preprocessing
-RUN_NAME=gsm8k-aug-v2_FT2b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
-MICRO_BATCH_SIZE=2 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
+RUN_NAME=gsm8k-aug_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
+MICRO_BATCH_SIZE=4 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 
@@ -53,8 +53,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.num_encoder_layers=${N_ENCODER_LAYERS} \
   model.config.backbone_config.num_decoder_layers=${N_DECODER_LAYERS} \
   model.config.backbone_config.tie_encoder_decoder_weights=false \
-  model.config.backbone_config.reinit_decoder=false \
-  model.config.backbone_config.reinit_encoder=false \
+  model.config.backbone_config.reinit_decoder=true \
+  model.config.backbone_config.reinit_encoder=true \
   model.config.backbone_config.keep_top_decoder_layers=true \
   model.config.backbone_config.keep_top_encoder_layers=false \
   +model.config.backbone_config.hidden_size=${HIDDEN_SIZE} \

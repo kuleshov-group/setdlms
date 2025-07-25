@@ -7,11 +7,11 @@ source setup_env.sh
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=8
 EVAL_BLOCK_SIZE=8
-HIDDEN_SIZE=512
-INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
-N_ENCODER_LAYERS=20
+HIDDEN_SIZE=128
+INTERMEDIATE_SIZE=384 #$(( 4 * HIDDEN_SIZE ))
+N_ENCODER_LAYERS=32
 ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=4
+N_DECODER_LAYERS=8
 DECODER_TOP_LAYERS=false
 REINIT_ENCODER=true
 REINIT_DECODER=true
@@ -21,13 +21,13 @@ ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
 LR=3e-4
-WARMUP_DURATION="2000ba"
-BATCH_SIZE=512
+WARMUP_DURATION="1000ba"
+BATCH_SIZE=128
 MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=e2d2_from-scratch
+TAG=e2d2_scratch
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -38,7 +38,7 @@ if [ "${DECODER_TOP_LAYERS}" == "true" ]; then
 else
   DEC_LAYERS="dec${N_DECODER_LAYERS}"
 fi
-RUN_NAME=owt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
+RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
 fi
@@ -48,18 +48,22 @@ fi
 if [ "${ENCODER_CAUSAL_MASK}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_encoder-causal-mask"
 fi
-MICRO_BATCH_SIZE=8
+#if [ "${REINIT_ENCODER}" == "true" ]; then
+#  RUN_NAME="${RUN_NAME}_reinit-encoder"
+#fi
+#if [ "${REINIT_DECODER}" == "true" ]; then
+#  RUN_NAME="${RUN_NAME}_reinit-decoder"
+#fi
+MICRO_BATCH_SIZE=4 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
-  dataset@train_dataset=owt_train \
-  train_dataset.dataset_path=${DATA_DIR}/openwebtext-train_train_bs1024_wrapped_specialFalse.dat \
-  dataset@eval_dataset=owt_eval \
-  eval_dataset.dataset_path=${DATA_DIR}/openwebtext-valid_validation_bs1024_wrapped_specialFalse.dat \
+  dataset@train_dataset=cnn_dailymail_train \
+  dataset@eval_dataset=cnn_dailymail_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="10000ba" \
+  composer.trainer.eval_interval="5000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=20 \
   composer/lr_scheduler=constant_with_warmup \

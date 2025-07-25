@@ -9,9 +9,9 @@ BLOCK_SIZE=4
 EVAL_BLOCK_SIZE=4
 #HIDDEN_SIZE=512
 #INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
-N_ENCODER_LAYERS=28
+N_ENCODER_LAYERS=36
 ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=20
+N_DECODER_LAYERS=18
 DECODER_TOP_LAYERS=true
 REINIT_ENCODER=false
 REINIT_DECODER=false
@@ -20,18 +20,18 @@ LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
-LR=2e-5
+LR=5e-6
 BETA1=0.9
 BETA2=0.9998
-WARMUP_DURATION="10ba"
+WARMUP_DURATION="1000ba"
 ALPHA_F=0.5
 BATCH_SIZE=1
 MAX_DURATION="30000ba"
-PRECISION="fp32" # amp_bf16 fp32
+PRECISION="amp_bf16" # amp_bf16 fp32
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-4B-Base
 
-TAG=e2d2_ema_edit-dataset
+TAG=e2d2_4BFT_sgd
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -42,8 +42,7 @@ if [ "${DECODER_TOP_LAYERS}" == "true" ]; then
 else
   DEC_LAYERS="dec${N_DECODER_LAYERS}"
 fi
-#RUN_NAME=gsm8k_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
-RUN_NAME=gsm8k_FT2B_block${BLOCK_SIZE}_lr${LR}_b1${BETA1}_b2${BETA2}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_prec${PRECISION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
+RUN_NAME=gsm8k_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_prec${PRECISION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
 fi
@@ -71,9 +70,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
   composer.optimizer.lr=${LR} \
-  composer.optimizer.betas="[${BETA1}, ${BETA2}]" \
   composer.trainer.precision=${PRECISION} \
-  composer.trainer.eval_interval="100ba" \
+  composer.trainer.eval_interval="1000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=cosine_annealing_with_warmup \
@@ -93,6 +91,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.reinit_encoder=${REINIT_ENCODER} \
   model.config.backbone_config.keep_top_decoder_layers=${DECODER_TOP_LAYERS} \
   model.config.backbone_config.keep_top_encoder_layers=${ENCODER_TOP_LAYERS} \
+  model.config.backbone_config.use_gradient_checkpointing=true \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
   ~composer.trainer.compile_config \
@@ -105,4 +104,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  eval_dataloader.batch_size=4
+  composer.callbacks.save_best_checkpointing.save_local=false \
+  eval_dataloader.batch_size=2
