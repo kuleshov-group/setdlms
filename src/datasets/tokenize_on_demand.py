@@ -317,7 +317,7 @@ class CNNDailyMailDataset(Dataset):
         config_name: Literal["1.0.0", "2.0.0", "3.0.0"] = "3.0.0",
         padding: bool = False,
         add_special_tokens: bool = True,
-        source_prompt_text: str | None = _SUMMARY_PREFIX,
+        source_prompt_text: str | None = None,  # _SUMMARY_PREFIX,
         target_prompt_text: str | None = "Summary: ",
         separate_input_output: bool = False,
         source_key: str = "article",
@@ -436,9 +436,7 @@ class WMTDataset(Dataset):
         **_: Dict[str, Any],
     ):
         self.tokenizer = tokenizer
-        self.dataset = load_dataset(
-            dataset_path, subset, split=split, trust_remote_code=True
-        )
+        self.dataset = load_dataset(dataset_path, subset, split=split)
         self.source = subset.split("-")[0]
         self.target = subset.split("-")[1]
         self.max_length = max_length
