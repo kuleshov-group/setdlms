@@ -116,14 +116,17 @@ class LMEvalHarnessModel(LM):
             e,
             prefix_text: str | None = (
                 f"{self.tokenizer.bos_token}Please reason step by step, and put your "
-                + "final answer within $\\boxed{}$. "
+                + "final answer within $\\boxed{}$."
             ),
         ):
             ctx = (prefix_text if prefix_text is not None else "") + e["prefix"]
             # TODO: Hacks to make data look like training set
-            ctx = ctx.replace("Question: ", "")
+            ctx = ctx.replace("Question: ", "\nQuestion: ")
+            ctx = ctx.replace("\nAnswer:", "\nAnswer: ")
+
+            # ctx = ctx.replace("Question: ", "")
             # ctx = ctx.replace("\nAnswer:", "<|endoftext|>Answer: ")
-            # ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}\nAnswer: ")
+            # ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}Answer: ")
             n_spaces = len(ctx) - len(ctx)
             if n_spaces > 0:
                 ctx = ctx[:-n_spaces]
