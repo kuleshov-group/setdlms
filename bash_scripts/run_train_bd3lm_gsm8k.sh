@@ -5,29 +5,30 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=8
-EVAL_BLOCK_SIZE=8
+BLOCK_SIZE=4
+EVAL_BLOCK_SIZE=4
 N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=false
 LOGIT_SHIFT=false
 
 # Hyperparameters
-LR=5e-6 # 1e-5, 1e-4, 1e-3
-WARMUP_DURATION="10ba" # 0.1, 0.3, 0.5
+LR=1e-5
+WARMUP_DURATION="100ba" # 0.1, 0.3, 0.5
 ALPHA_F=0.5
 BATCH_SIZE=1 # 96, 128, 256
 MAX_DURATION="30000ba"
+PRECISION="amp_bf16" # amp_bf16 fp32
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=bd3lm
+TAG=bd3lm_2BFT
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
   LAYERS="layers${N_LAYERS}"
 fi
-RUN_NAME=gsm8k_FT-2B_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${LAYERS}_${TAG}
+RUN_NAME=gsm8k_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
 if [ "${LOGIT_SHIFT}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_logit-shift"
 fi
@@ -44,7 +45,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="100ba" \
+  composer.trainer.precision=${PRECISION} \
+  composer.trainer.eval_interval="1000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=cosine_annealing_with_warmup \
@@ -70,4 +72,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  eval_dataloader.batch_size=$(( NUM_VISIBLE_DEVICES * 4 ))
+  eval_dataloader.batch_size=2

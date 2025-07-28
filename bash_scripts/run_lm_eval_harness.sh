@@ -5,7 +5,7 @@ source setup_env.sh
 
 QWEN_MODEL="Qwen/Qwen3-1.7B-Base"
 
-MODEL_PATH="${RUN_DIR}/gsm8k_FT2B_block4_lr2e-5_b10.9_b20.9998_bsz1_warm10ba_alphaf0.5_max-dur30000ba_precfp32_enc28_TOPdec20_e2d2_ema_edit-dataset"
+MODEL_PATH="${RUN_DIR}/gsm8k_block4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_enc28_TOPdec14_e2d2_2BFT_freeze-enc"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 
@@ -16,10 +16,10 @@ DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 T=4
 FIRST_HITTING=true
-CONFIDENCE_BASED_NOISING=false
-CONFIDENCE_MARGIN_BASED_NOISING=true
-KV_CACHING=true
-CKPT_FILE="latest-rank0.pt"
+CONFIDENCE_BASED_NOISING=true
+CONFIDENCE_MARGIN_BASED_NOISING=false
+KV_CACHING=true  # "true" for BD3LM / E2D2, "false" for MDLM
+CKPT_FILE="best-rank0.pt"
 USE_EMA=true
 
 OUTPUT_PATH="${OUTPUT_DIR}/L${L}_block_size${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hitting${FIRST_HITTING}-confidence_based_noising${CONFIDENCE_BASED_NOISING}-confidence_margin_based_noising${CONFIDENCE_MARGIN_BASED_NOISING}"

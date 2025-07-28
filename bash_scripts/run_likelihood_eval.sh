@@ -3,14 +3,14 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/wmt_block4_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_enc28_dec4_hidden512_inter1536_e2d2_scratch_v2"
+MODEL_PATH="${RUN_DIR}/wmt_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_layers32_hidden512_inter1536_mdlm_scratch"
 REVISION=null
 
 EVAL_DATASET="wmt_eval"
-BLOCK_SIZE=4
+BLOCK_SIZE=null
 BATCH_SIZE=32
 PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-0.6B-Base"
-CKPT_FILE="best-rank0.pt"
+CKPT_FILE="latest-rank0.pt"
 USE_EMA=true
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \

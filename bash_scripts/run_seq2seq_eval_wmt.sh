@@ -3,7 +3,7 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/wmt_block4_evalblock4_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_layers12_hidden512_inter1536_bd3lm_scratch"
+MODEL_PATH="${RUN_DIR}/wmt_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_layers32_hidden512_inter1536_mdlm_scratch"
 OUTPUT_DIR="${MODEL_PATH}/wmt"
 REVISION=null
 mkdir -p ${OUTPUT_DIR}
@@ -15,7 +15,7 @@ DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise" #"predict_and_noise" "posterior"
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
-KV_CACHING=true
+KV_CACHING=false
 MAX_LENGTH=1024
 CKPT_FILE="latest-rank0.pt"
 USE_EMA=true
@@ -47,5 +47,5 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation/stopping_criteria@stopping_criteria_list='[max_length_criteria,wmt_stop_string_criteria]' \
   ~generation/logits_processor@logits_processor_list \
   gen_kwargs.logits_processor=null
-#  generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor]' \
-#  logits_processor_list.repetition_penalty_logits_processor.penalty=10.0
+#  generation/logits_processor@logits_processor_list='[top_p_logits_wrapper]' \
+#  logits_processor_list.top_p_logits_wrapper.top_p=0.95

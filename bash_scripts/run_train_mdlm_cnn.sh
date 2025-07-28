@@ -5,9 +5,9 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-HIDDEN_SIZE=256
-INTERMEDIATE_SIZE=768 #$(( 4 * HIDDEN_SIZE ))
-N_LAYERS=18
+HIDDEN_SIZE=128
+INTERMEDIATE_SIZE=284 #$(( 4 * HIDDEN_SIZE ))
+N_LAYERS=42
 TOP_LAYERS=false
 REINIT_MODEL=true
 LOGIT_SHIFT=false

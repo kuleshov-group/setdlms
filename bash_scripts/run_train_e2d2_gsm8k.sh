@@ -9,29 +9,28 @@ BLOCK_SIZE=4
 EVAL_BLOCK_SIZE=4
 #HIDDEN_SIZE=512
 #INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
-N_ENCODER_LAYERS=36
-ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=18
+N_ENCODER_LAYERS=14
+ENCODER_TOP_LAYERS=true
+N_DECODER_LAYERS=28
 DECODER_TOP_LAYERS=true
 REINIT_ENCODER=false
 REINIT_DECODER=false
 TIE_WEIGHTS=false
+FREEZE_ENCODER=false
 LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
-LR=5e-6
-BETA1=0.9
-BETA2=0.9998
-WARMUP_DURATION="1000ba"
+LR=1e-5
+WARMUP_DURATION="100ba"
 ALPHA_F=0.5
 BATCH_SIZE=1
 MAX_DURATION="30000ba"
 PRECISION="amp_bf16" # amp_bf16 fp32
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-4B-Base
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=e2d2_4BFT_sgd
+TAG=e2d2_2B-FT
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -42,7 +41,7 @@ if [ "${DECODER_TOP_LAYERS}" == "true" ]; then
 else
   DEC_LAYERS="dec${N_DECODER_LAYERS}"
 fi
-RUN_NAME=gsm8k_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_prec${PRECISION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
+RUN_NAME=gsm8k_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
 fi
@@ -51,6 +50,9 @@ if [ "${LOGIT_SHIFT}" == "true" ]; then
 fi
 if [ "${ENCODER_CAUSAL_MASK}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_encoder-causal-mask"
+fi
+if [ "${FREEZE_ENCODER}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_freeze-enc"
 fi
 #if [ "${REINIT_ENCODER}" == "true" ]; then
 #  RUN_NAME="${RUN_NAME}_reinit-encoder"
@@ -82,16 +84,17 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   training.compile_backbone=false \
   model.config.length=768 \
   model.config.shift_logits=${LOGIT_SHIFT} \
-  model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
+  model/backbone@model.config.backbone_config=llm_as_encoder_decoder_share_kv \
   model.config.backbone_config.use_encoder_causal_mask=${ENCODER_CAUSAL_MASK} \
   model.config.backbone_config.num_encoder_layers=${N_ENCODER_LAYERS} \
   model.config.backbone_config.num_decoder_layers=${N_DECODER_LAYERS} \
   model.config.backbone_config.tie_encoder_decoder_weights=${TIE_WEIGHTS} \
+  model.config.backbone_config.freeze_encoder=${FREEZE_ENCODER} \
   model.config.backbone_config.reinit_decoder=${REINIT_DECODER} \
   model.config.backbone_config.reinit_encoder=${REINIT_ENCODER} \
   model.config.backbone_config.keep_top_decoder_layers=${DECODER_TOP_LAYERS} \
   model.config.backbone_config.keep_top_encoder_layers=${ENCODER_TOP_LAYERS} \
-  model.config.backbone_config.use_gradient_checkpointing=true \
+  model.config.backbone_config.use_gradient_checkpointing=false \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
   ~composer.trainer.compile_config \
