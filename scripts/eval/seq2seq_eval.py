@@ -123,7 +123,7 @@ def main(cfg: DictConfig) -> None:
             outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=(local_rank != 0),
-                tokenizer=tokenizer,  # For debugging: prints intermediate generation
+                # tokenizer=tokenizer,  # For debugging: prints intermediate generation
                 **gen_kwargs,
             )
         outputs = outputs[:, input_ids.shape[-1] :]
