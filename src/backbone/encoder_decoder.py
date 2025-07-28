@@ -327,7 +327,7 @@ class LLMasEncoderDecoder(nn.Module):
                 prev_cache_len = 0
             cache_len = prev_cache_len + new_seen_tokens
 
-            if False:  # self.decoder.model.gradient_checkpointing and self.training:
+            if self.decoder.model.gradient_checkpointing and self.training:
                 # noinspection PyProtectedMember
                 decoder_hidden_states = self.decoder._gradient_checkpointing_func(
                     partial(decoder_layer.__call__, **flash_attn_kwargs),
@@ -349,7 +349,7 @@ class LLMasEncoderDecoder(nn.Module):
                     past_key_value=past_key_values,
                     output_attentions=False,
                     use_cache=True,
-                    cache_position=position_ids[0],
+                    cache_position=cache_position,
                     position_embeddings=decoder_position_embeddings,
                     q_start_idx=q_start_idx,  # Indicates where to slice output
                     **flash_attn_kwargs,
