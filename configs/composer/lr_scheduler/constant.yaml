@@ -1,0 +1,3 @@
+_target_: composer.optim.scheduler.ConstantScheduler
+alpha: 1.0
+t_max: '1dur'
