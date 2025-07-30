@@ -5,17 +5,15 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=4
-EVAL_BLOCK_SIZE=4
-#HIDDEN_SIZE=512
-#INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
-N_ENCODER_LAYERS=14
-ENCODER_TOP_LAYERS=true
-N_DECODER_LAYERS=28
+BLOCK_SIZE=16
+EVAL_BLOCK_SIZE=16
+N_ENCODER_LAYERS=28
+ENCODER_TOP_LAYERS=false
+N_DECODER_LAYERS=14
 DECODER_TOP_LAYERS=true
 REINIT_ENCODER=false
 REINIT_DECODER=false
-TIE_WEIGHTS=false
+TIE_WEIGHTS=true
 FREEZE_ENCODER=false
 LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
@@ -30,7 +28,7 @@ PRECISION="amp_bf16" # amp_bf16 fp32
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=e2d2_2B-FT
+TAG=e2d2_2B-FT_share_kv
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -108,4 +106,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   composer.callbacks.save_best_checkpointing.save_local=false \
-  eval_dataloader.batch_size=2
+  eval_dataloader.batch_size=4

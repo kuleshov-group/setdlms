@@ -20,9 +20,9 @@ BATCH_SIZE=1 # 96, 128, 256
 MAX_DURATION="30000ba"
 PRECISION="amp_bf16" # amp_bf16 fp32
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=bd3lm_2BFT
+TAG=bd3lm_600M-FT
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -72,4 +72,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  eval_dataloader.batch_size=2
+  eval_dataloader.batch_size=4

@@ -27,7 +27,7 @@ fi
 WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
-NUM_VISIBLE_DEVICES=8
+NUM_VISIBLE_DEVICES=1
 RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev"
 DATA_DIR="/share/kuleshov/ma2238/dllm-data"
 mkdir -p ${RUN_DIR}
@@ -37,7 +37,7 @@ sbatch \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=kuleshov,gpu \
+  --partition=gpu \
   --constraint="[h100|a100|a6000]" \
   --time=960:00:00 \
   --mem=128000 \
@@ -47,6 +47,6 @@ sbatch \
   --mail-user=${USERNAME}@cornell.edu \
   --mail-type=END \
   --requeue \
-  --exclude=brandal \
+  --exclude="brandal,kuleshov-compute-02" \
   --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
   ${script_full_path}
