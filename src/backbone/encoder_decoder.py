@@ -68,7 +68,6 @@ class LLMasEncoderDecoder(nn.Module):
         keep_top_encoder_layers: bool = False,
         keep_top_decoder_layers: bool = False,
         use_gradient_checkpointing: bool = False,
-        decoder_pretrained_model_name_or_path: str | None = None,
         **llm_init_kwargs,
     ):
         assert not (tie_encoder_decoder_weights and reinit_decoder), (
@@ -77,8 +76,6 @@ class LLMasEncoderDecoder(nn.Module):
         assert not (tie_encoder_decoder_weights and freeze_encoder), (
             "Cannot freeze encoder weights when tying encoder-decoder weights."
         )
-        if decoder_pretrained_model_name_or_path is None:
-            decoder_pretrained_model_name_or_path = pretrained_model_name_or_path
         super().__init__()
         self.use_encoder_causal_mask = use_encoder_causal_mask
         self.tie_encoder_decoder_weights = tie_encoder_decoder_weights
@@ -145,7 +142,7 @@ class LLMasEncoderDecoder(nn.Module):
             if reinit_decoder:
                 assert num_decoder_layers > 0
                 decoder_config = AutoConfig.from_pretrained(
-                    decoder_pretrained_model_name_or_path,
+                    pretrained_model_name_or_path,
                     trust_remote_code=True,
                     num_hidden_layers=num_decoder_layers,
                     attn_implementation=attn_backend,
@@ -154,7 +151,7 @@ class LLMasEncoderDecoder(nn.Module):
                 self.decoder = CustomQwen3ForCausalLM(decoder_config)
             else:
                 self.decoder = CustomQwen3ForCausalLM.from_pretrained(
-                    decoder_pretrained_model_name_or_path,
+                    pretrained_model_name_or_path,
                     trust_remote_code=True,
                     attn_implementation=attn_backend,
                     **llm_init_kwargs,
@@ -179,24 +176,11 @@ class LLMasEncoderDecoder(nn.Module):
                 == self.encoder.model.embed_tokens.weight.data_ptr()
             ):
                 self.decoder.lm_head = self.encoder.lm_head
-                if self.encoder.config.hidden_size != self.decoder.config.hidden_size:
-                    self.dec_to_enc_proj = torch.nn.Linear(
-                        self.decoder.config.hidden_size, self.encoder.config.hidden_size
-                    )
-                else:
-                    self.dec_to_enc_proj = None
             else:
                 del self.encoder.lm_head
-                self.dec_to_enc_proj = None
             if use_gradient_checkpointing:
                 self.decoder.gradient_checkpointing_enable()
         self.max_length = max_length
-        if self.encoder.config.hidden_size != self.decoder.config.hidden_size:
-            self.enc_to_dec_proj = torch.nn.Linear(
-                self.encoder.config.hidden_size, self.decoder.config.hidden_size
-            )
-        else:
-            self.enc_to_dec_proj = None
 
     def freeze_encoder(self):
         for p in self.encoder.model.parameters():
@@ -260,8 +244,6 @@ class LLMasEncoderDecoder(nn.Module):
         if encoder_last_hidden_state is None:  # No new encoder tokens
             q_start_idx = 0
             decoder_hidden_states = self.encoder.model.embed_tokens(input_ids)
-            if self.enc_to_dec_proj is not None:
-                decoder_hidden_states = self.enc_to_dec_proj(decoder_hidden_states)
             if cache_position is None:
                 if position_ids is not None:
                     cache_position = position_ids[0]
@@ -284,12 +266,6 @@ class LLMasEncoderDecoder(nn.Module):
         else:
             q_start_idx = encoder_last_hidden_state.shape[1]
             decoder_hidden_states = self.encoder.model.embed_tokens(input_ids)
-            if self.enc_to_dec_proj is not None:
-                encoder_last_hidden_state = self.enc_to_dec_proj(
-                    encoder_last_hidden_state
-                )
-                decoder_hidden_states = self.enc_to_dec_proj(decoder_hidden_states)
-
             decoder_hidden_states = torch.cat(
                 [
                     encoder_last_hidden_state,
@@ -400,8 +376,6 @@ class LLMasEncoderDecoder(nn.Module):
         decoder_hidden_states = self.decoder.model.norm(
             decoder_hidden_states[:, q_start_idx:, :]
         )
-        if self.dec_to_enc_proj is not None:
-            decoder_hidden_states = self.dec_to_enc_proj(decoder_hidden_states)
         logits = self.decoder.lm_head(decoder_hidden_states)
         return DecoderCausalLMOutputWithPast(
             logits=logits,
