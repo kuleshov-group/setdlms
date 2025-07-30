@@ -120,10 +120,9 @@ class GSM8KAugDataset(Dataset):
         dataset_path: str = "whynlp/gsm8k-aug-nl",
         padding: bool = False,
         add_special_tokens: bool = True,
-        # source_prompt_text: str | None = "Question: ",
         source_prompt_text: str | None = _QUESTION_PREFIX,
-        # target_prompt_text: str | None = "Answer: ",
         target_prompt_text: str | None = "\nAnswer: ",
+        # target_prompt_text: str | None = "Answer: ",
         source_key: str = "question",
         steps_key: str = "steps",
         target_key: str = "answer",
@@ -146,7 +145,7 @@ class GSM8KAugDataset(Dataset):
 
     @staticmethod
     def _postprocess_box_answer(
-        answer: str, prefix: str = "\n$\\boxed{", suffix: str = "}$"
+        answer: str, prefix: str = "$\\boxed{", suffix: str = "}$"
     ):
         """
         Post-processes the answer for the desired format.
@@ -155,7 +154,7 @@ class GSM8KAugDataset(Dataset):
         Returns:
             str: The post-processed answer string.
         """
-        answer = prefix + answer + suffix
+        answer = answer.replace("#### ", prefix) + suffix
         return answer
 
     @staticmethod
