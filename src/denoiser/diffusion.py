@@ -1180,9 +1180,9 @@ class BD3LM(MDLM):
             encoder_past_key_values, encoder_last_hidden_state = None, None
             if context is not None:
                 context_len = context.shape[1]
-                encoder_attention_mask = self.encoder_static_attention_mask[
-                    None, None, :context_len, :context_len
-                ]  # Make attention mask 4D
+                encoder_attention_mask = torch.ones(
+                    (1, 1, context_len, context_len), device=context.device
+                )
                 encoder_attention_mask = self._preprocess_attention_mask(
                     encoder_attention_mask, dtype=torch.float
                 )
