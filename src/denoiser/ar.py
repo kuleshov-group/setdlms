@@ -1,8 +1,9 @@
 import copy
-from typing import Any
+from typing import Any, Dict, Tuple
 
 import torch
 from transformers import (
+    DynamicCache,
     GenerationConfig,
     LogitsProcessorList,
     PreTrainedTokenizer,
@@ -87,6 +88,45 @@ class AR(Denoiser):
             tokens_mask=attention_mask * (1 - context_mask),
             past_key_values=past_key_values,
         )
+
+    def _prepare_inputs_inference(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.FloatTensor | None = None,
+        context: torch.LongTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        cache: Dict[str, Any] | None = None,
+        **backbone_kwargs: Any,
+    ) -> Tuple[DenoiserInput, Dict[str, Any]]:
+        assert input_ids is not None or context is not None, (
+            "Must provide either input_ids or context."
+        )
+        cache = cache if cache is not None else {}
+        past_key_values = cache.pop("past_key_values", DynamicCache())
+        if context is not None:
+            if input_ids is not None:
+                if context_mask is None:
+                    context_mask = torch.cat(
+                        [torch.ones_like(context), torch.zeros_like(input_ids)], dim=-1
+                    )
+                input_ids = torch.cat([context, input_ids], dim=-1)
+            else:
+                input_ids = context
+                context_mask = torch.ones_like(input_ids)
+        if attention_mask is None:
+            cache_length = self._get_past_key_values_seq_length(past_key_values)
+            full_seq_length = cache_length + input_ids.shape[-1]
+            attention_mask = torch.ones(
+                (input_ids.shape[0], input_ids.shape[1], full_seq_length),
+                device=input_ids.device,
+            )
+        return DenoiserInput(
+            xt=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            context_mask=context_mask,
+            backbone_kwargs=backbone_kwargs,
+        ), cache
 
     def _compute_loss(
         self,
