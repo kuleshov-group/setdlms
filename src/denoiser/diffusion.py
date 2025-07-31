@@ -52,6 +52,7 @@ class DiffusionGenerationConfig(GenerationConfig):
         confidence_margin_based_noising: bool = False,
         confidence_threshold: float = 1.0,
         use_model_output_cache: bool = True,
+        align_inputs_to_blocks: bool = True,
         **kwargs,
     ):
         """Generation config with additional parameters relevant for diffusion model
@@ -102,6 +103,10 @@ class DiffusionGenerationConfig(GenerationConfig):
                 model's outputs and save a function evaluation.
                 Relevant if model.backbone is not time/noise-conditioned.
                 Defaults to True.
+            align_inputs_to_blocks (bool): Whether to align input tokens to block size,
+                e.g., for an input of length C and block size S, context will be C // S,
+                and generation will begin with a block whose first C % S tokens come
+                from the input.
             kwargs: Keyword arguments passed to `GenerationConfig`.
         """
         super().__init__(**kwargs)
@@ -122,6 +127,7 @@ class DiffusionGenerationConfig(GenerationConfig):
         self.confidence_margin_based_noising = confidence_margin_based_noising
         self.confidence_threshold = confidence_threshold
         self.use_model_output_cache = use_model_output_cache
+        self.align_inputs_to_blocks = align_inputs_to_blocks
 
 
 class D3PMConfig(DenoiserConfig):
@@ -250,6 +256,48 @@ class D3PM(Denoiser):
             alpha_t_prime=alpha_t_prime,
         )
 
+    def _prepare_inputs_inference(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.FloatTensor | None = None,
+        context: torch.LongTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        cache: Dict[str, Any] | None = None,
+        **backbone_kwargs: Any,
+    ) -> Tuple[DenoiserInput, Dict[str, Any]]:
+        assert input_ids is not None or context is not None, (
+            "Must provide either input_ids or context."
+        )
+        cache = cache if cache is not None else {}
+        past_key_values = cache.pop("past_key_values", DynamicCache())
+        if context is not None:
+            if input_ids is not None:
+                if context_mask is None:
+                    context_mask = torch.cat(
+                        [torch.ones_like(context), torch.zeros_like(input_ids)], dim=-1
+                    )
+                input_ids = torch.cat([context, input_ids], dim=-1)
+            else:
+                input_ids = context
+                context_mask = torch.ones_like(input_ids)
+        if attention_mask is None:
+            cache_length = self._get_past_key_values_seq_length(past_key_values)
+            full_seq_length = cache_length + input_ids.shape[-1]
+            attention_mask = torch.ones(
+                (input_ids.shape[0], 1, input_ids.shape[1], full_seq_length),
+                device=input_ids.device,
+            )  # Make attention mask 4D
+            attention_mask = self._preprocess_attention_mask(
+                attention_mask, dtype=torch.float
+            )
+        return DenoiserInput(
+            xt=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            context_mask=context_mask,
+            backbone_kwargs=backbone_kwargs | {"use_cache": False},
+        ), cache
+
     def _forward(
         self,
         backbone_output: torch.FloatTensor,
@@ -367,6 +415,7 @@ class D3PM(Denoiser):
         cache: Dict[str, Any] | None = None,
         running_generation: torch.LongTensor | None = None,
         logits_processor: LogitsProcessorList | None = None,
+        tokenizer: PreTrainedTokenizer | None = None,  # Useful for debugging
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
@@ -519,16 +568,22 @@ class D3PM(Denoiser):
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if generation_config.use_cache and inputs.numel() > 0:
             cache = self.update_cache(
-                # inputs=inputs,
-                inputs=inputs[:, : block_size * (inputs.shape[-1] // block_size)],
+                inputs=inputs[:, : block_size * (inputs.shape[-1] // block_size)]
+                if generation_config.align_inputs_to_blocks
+                else inputs,
                 cache={},
             )
         else:
             cache = None
-        # inputs_offset = inputs.shape[-1] if inputs.numel() > 0 else 0
-        inputs_offset = (
-            block_size * (inputs.shape[-1] // block_size) if inputs.numel() > 0 else 0
-        )
+
+        if generation_config.align_inputs_to_blocks:
+            inputs_offset = (
+                block_size * (inputs.shape[-1] // block_size)
+                if inputs.numel() > 0
+                else 0
+            )
+        else:
+            inputs_offset = inputs.shape[-1] if inputs.numel() > 0 else 0
 
         total_NFEs = 0
         timesteps = self._sample_generation_timesteps(  # Re-use in every block
@@ -594,6 +649,7 @@ class D3PM(Denoiser):
                     cache=cache,
                     running_generation=running_generation,
                     logits_processor=logits_processor,
+                    tokenizer=tokenizer,
                     **kwargs,
                 )
                 if self.config.shift_logits:
