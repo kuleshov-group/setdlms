@@ -3,7 +3,7 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/gsm8k_block4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_enc28_TOPdec24_e2d2_2B-FT_kv_tie-weights"
+MODEL_PATH="${RUN_DIR}/rebuttal/gsm8k-bs96-keep1-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-ar_qweb2B_v1"
 REVISION=null
 
 EVAL_DATASET="gsm8k_eval"
@@ -11,7 +11,7 @@ BLOCK_SIZE=null
 BATCH_SIZE=32
 PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-1.7B-Base"
 CKPT_FILE="best-rank0.pt"
-USE_EMA=true
+USE_EMA=false
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \

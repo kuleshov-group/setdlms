@@ -3,19 +3,19 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/wmt_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_layers32_hidden512_inter1536_mdlm_scratch_fix-attn"
+MODEL_PATH="${RUN_DIR}/wmt_block4_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_enc28_dec4_hidden512_inter1536_e2d2_scratch_v2"
 OUTPUT_DIR="${MODEL_PATH}/wmt"
 REVISION=null
 mkdir -p ${OUTPUT_DIR}
 
 L=256
-BLOCK_SIZE=8
-T=${BLOCK_SIZE}
+BLOCK_SIZE=4
+T=4
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise" #"predict_and_noise" "posterior"
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
-KV_CACHING=false
+KV_CACHING=true
 ALIGN_INPUTS_TO_BLOCKS=false
 MAX_LENGTH=1024
 CKPT="best"
@@ -46,6 +46,8 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.confidence_based_noising=${CONFIDENCE_BASED_NOISING} \
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
-  generation/stopping_criteria@stopping_criteria_list='[max_length_criteria,wmt_stop_string_criteria]' \
+  ~generation/stopping_criteria@stopping_criteria_list \
+  gen_kwargs.stopping_criteria=null \
   ~generation/logits_processor@logits_processor_list \
-  gen_kwargs.logits_processor=null
+  gen_kwargs.logits_processor=null \
+  +throughput_run=true
