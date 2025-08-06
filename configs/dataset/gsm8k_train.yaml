@@ -5,3 +5,4 @@ dataset_path: "openai/gsm8k"
 config_name: "main"
 padding: false
 add_special_tokens: true
+num_shot: 0
