@@ -2,7 +2,7 @@
 defaults:
   - trainer: trainer
   - algorithms:
-    - ema
+#    - ema
     - gradient_clipping
 #    - low_precision_layer_norm
   - callbacks:
