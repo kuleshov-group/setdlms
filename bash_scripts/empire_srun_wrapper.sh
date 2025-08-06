@@ -3,7 +3,7 @@
 <<comment
 #  Usage:
 cd bash_scripts/
-source g2_run_wrapper.sh <SHELL_SCRIPT>
+source empire_run_wrapper.sh <SHELL_SCRIPT>
 comment
 
 

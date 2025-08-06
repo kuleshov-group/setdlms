@@ -6,7 +6,7 @@ source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
 HIDDEN_SIZE=128
-INTERMEDIATE_SIZE=284 #$(( 4 * HIDDEN_SIZE ))
+INTERMEDIATE_SIZE=384 #$(( 4 * HIDDEN_SIZE ))
 N_LAYERS=42
 TOP_LAYERS=false
 REINIT_MODEL=true
