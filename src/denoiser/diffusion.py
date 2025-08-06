@@ -245,12 +245,16 @@ class D3PM(Denoiser):
         processed_attention_mask = self._preprocess_attention_mask(
             processed_attention_mask, dtype=torch.float
         )
+        if self.training and self.config.train_on_context:
+            tokens_mask = attention_mask
+        else:
+            tokens_mask = attention_mask * (1 - context_mask)
         return DenoiserInput(
             xt=xt,
             x0=input_ids,
             attention_mask=processed_attention_mask,
             context_mask=context_mask,
-            tokens_mask=attention_mask * (1 - context_mask),
+            tokens_mask=tokens_mask,
             t=t,
             alpha_t=alpha_t,
             alpha_t_prime=alpha_t_prime,
@@ -1044,11 +1048,15 @@ class BD3LM(MDLM):
             position_ids = (
                 torch.arange(input_ids.shape[1]).repeat(2).to(input_ids.device)[None, :]
             )
+            if self.training and self.config.train_on_context:
+                tokens_mask = attention_mask
+            else:
+                tokens_mask = attention_mask * (1 - context_mask)
             return DenoiserInput(
                 xt=backbone_input_ids,  # type: ignore
                 x0=input_ids,
                 attention_mask=decoder_attention_mask,  # type: ignore
-                tokens_mask=attention_mask * (1 - context_mask),
+                tokens_mask=tokens_mask,
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,
@@ -1120,11 +1128,15 @@ class BD3LM(MDLM):
             position_ids = torch.arange(input_ids.shape[1]).to(input_ids.device)[
                 None, :
             ]
+            if self.training and self.config.train_on_context:
+                tokens_mask = attention_mask
+            else:
+                tokens_mask = attention_mask * (1 - context_mask)
             return DenoiserInput(
                 xt=xt,
                 x0=input_ids,
                 attention_mask=decoder_attention_mask,
-                tokens_mask=attention_mask * (1 - context_mask),
+                tokens_mask=tokens_mask,
                 t=t,
                 alpha_t=alpha_t,
                 alpha_t_prime=alpha_t_prime,

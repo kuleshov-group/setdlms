@@ -114,6 +114,7 @@ class DenoiserConfig(PretrainedConfig):
         tokenization_config: dict[str, Any] | None = None,
         time_conditioned_backbone: bool | None = None,
         attn_backend: str = "sdpa",  # "sdpa", "flash_attention_2", "flex_attention"
+        train_on_context: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -137,6 +138,7 @@ class DenoiserConfig(PretrainedConfig):
         self.length = length
         self.time_conditioned_backbone = time_conditioned_backbone
         self.attn_backend = attn_backend
+        self.train_on_context = train_on_context
 
 
 class Denoiser(ABC, PreTrainedModel):

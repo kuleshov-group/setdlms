@@ -12,3 +12,4 @@ config:
   tokenization_config: ${oc.create:${make_tokenization_config:${tokenizer}}}
   tokenizer_name: ${tokenizer.pretrained_model_name_or_path}
   attn_backend: "sdpa" # "sdpa", "flex_attention"
+  train_on_context: false
