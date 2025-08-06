@@ -1,3 +1,5 @@
+import random
+import re
 from typing import Any, Dict, Literal
 
 import torch
@@ -9,7 +11,9 @@ from datasets import load_dataset
 # _QUESTION_PREFIX = (
 #     "Please reason step by step, and put your final answer within $\\boxed{}$. "
 # )
-_QUESTION_PREFIX = "Please reason step by step, and put your final answer within $\\boxed{}$.\nQuestion: "  # noqa: E501
+_QUESTION_PREFIX = (
+    "Please reason step by step, and put your final answer within $\\boxed{}$."  # noqa: E501
+)
 _SUMMARY_PREFIX = "Please summarize the following text: "
 _TRANSLATION_PREFIX = "Translate the following text from {source} to {target}: "
 
@@ -25,14 +29,16 @@ class GSM8KDataset(Dataset):
         padding: bool = False,
         add_special_tokens: bool = True,
         source_prompt_text: str | None = _QUESTION_PREFIX,
-        target_prompt_text: str | None = "\nAnswer: ",
-        # target_prompt_text: str | None = "Answer: ",
+        question_prompt_text: str | None = "\nQuestion: ",
+        answer_prompt_text: str | None = "\nAnswer: ",
         source_key: str = "question",
         target_key: str = "answer",
+        num_shot: int = 0,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
         self.tokenizer = tokenizer
+        self.split = split
         self.dataset = load_dataset(
             dataset_path, config_name, split=split, trust_remote_code=True
         )
@@ -40,51 +46,53 @@ class GSM8KDataset(Dataset):
         self.padding = padding
         self.add_special_tokens = add_special_tokens
         self.source_prompt_text = source_prompt_text
-        self.target_prompt_text = target_prompt_text
+        self.question_prompt_text = question_prompt_text
+        self.answer_prompt_text = answer_prompt_text
         self.source_key = source_key
         self.target_key = target_key
+        self.num_shot = num_shot
+        self._arange = range(len(self.dataset))
 
     def __len__(self):
         return len(self.dataset)
 
-    @staticmethod
-    def _postprocess_box_answer(
-        answer: str, prefix: str = "$\\boxed{", suffix: str = "}$"
-    ):
-        """
-        Post-processes the answer for the desired format.
-        Args:
-            answer (str): The answer string to be post-processed.
-        Returns:
-            str: The post-processed answer string.
-        """
-        answer = answer.replace("#### ", prefix) + suffix
-        return answer
+    def _few_shot_idxs(self, exclude: int):
+        candidates = [x for x in self._arange if x != exclude]
+        if self.split == "train":
+            return random.sample(candidates, self.num_shot)
+        return [(exclude + n) % len(self.dataset) for n in range(self.num_shot)]
 
     def __getitem__(self, idx):
         example = self.dataset[idx]
-        if self.source_prompt_text is not None:
-            example[self.source_key] = (
-                self.source_prompt_text + example[self.source_key]
+        sp = self.source_prompt_text if self.source_prompt_text is not None else ""
+        qp = self.question_prompt_text if self.question_prompt_text is not None else ""
+        ap = self.answer_prompt_text if self.answer_prompt_text is not None else ""
+        if self.num_shot > 0:
+            example_shots = [self.dataset[fsi] for fsi in self._few_shot_idxs(idx)]
+            source = f"\n{self.tokenizer.eos_token}".join(
+                [
+                    sp + qp + i[self.source_key] + ap + i[self.target_key]
+                    for i in example_shots
+                ]
             )
-        if self.target_prompt_text is not None:
-            example[self.target_key] = (
-                self.target_prompt_text + example[self.target_key]
-            )
-        example[self.target_key] = self._postprocess_box_answer(
-            example[self.target_key]
+        else:
+            source = ""
+        source = (
+            source + f"\n{self.tokenizer.eos_token}{sp}" + qp + example[self.source_key]
+        )  # sp + source + qp + example[self.source_key]
+        target = ap + example[self.target_key]
+        source = re.sub(
+            r"^####\s*(\d+)\s*$", r"$\\boxed{\1}$", source, flags=re.MULTILINE
+        )
+        target = re.sub(
+            r"^####\s*(\d+)\s*$", r"$\\boxed{\1}$", target, flags=re.MULTILINE
         )
         if self.add_special_tokens:
-            example[self.source_key] = (
-                self.tokenizer.bos_token + example[self.source_key]
-                # + self.tokenizer.eos_token
-            )
-            example[self.target_key] = (
-                example[self.target_key] + self.tokenizer.eos_token
-            )
+            source = self.tokenizer.bos_token + source
+            target = target + self.tokenizer.eos_token
 
         qa_tokenized = self.tokenizer.batch_encode_plus(
-            [example[self.source_key], example[self.target_key]],
+            [source, target],
             max_length=self.max_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
