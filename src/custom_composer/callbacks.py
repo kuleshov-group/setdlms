@@ -9,7 +9,7 @@ from typing import Any, Literal
 import torch
 import wandb
 from composer.callbacks import CheckpointSaver
-from composer.core import Callback, State, Timestamp
+from composer.core import Callback, State, Time, Timestamp
 from composer.loggers import Logger
 from composer.utils import PartialFilePath, dist, get_save_filename
 
@@ -418,25 +418,32 @@ class LogSampledTimestep(Callback):
 class WarmupWithFrozenEncoder(Callback):
     def __init__(
         self,
-        num_warmup_steps: int,
+        num_warmup_steps: str,
     ):
         super().__init__()
-        self.num_warmup_steps = num_warmup_steps
+        self.num_warmup_steps = Time.from_timestring(num_warmup_steps)
         self.encoder_is_frozen = False
 
     def fit_start(self, state: State, logger: Logger) -> None:
         if hasattr(state.model, "module"):
+            if not hasattr(state.model.module.model.backbone, "freeze_encoder"):
+                raise NotImplementedError(
+                    "Model backbone does not have freeze_encoder implemented."
+                )
             state.model.module.model.backbone.freeze_encoder()
         else:
+            if not hasattr(state.model.model.backbone, "freeze_encoder"):
+                raise NotImplementedError(
+                    "Model backbone does not have freeze_encoder implemented."
+                )
             state.model.model.backbone.freeze_encoder()
         self.encoder_is_frozen = True
 
     def batch_end(self, state: State, logger: Logger) -> None:
-        if (
-            self.encoder_is_frozen
-            and state.timestamp.iteration >= self.num_warmup_steps
-        ):
+        current_time = state.timestamp.get(self.num_warmup_steps.unit).value
+        if self.encoder_is_frozen and self.num_warmup_steps.value >= current_time:
             if hasattr(state.model, "module"):
                 state.model.module.model.backbone.unfreeze_encoder()
             else:
                 state.model.model.backbone.unfreeze_encoder()
+            self.encoder_is_frozen = False
