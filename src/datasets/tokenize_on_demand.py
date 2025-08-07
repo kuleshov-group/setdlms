@@ -128,7 +128,7 @@ class GSM8KDataset(Dataset):
         }
 
 
-class GSM8KAugDataset(Dataset):
+class GSM8KAugDataset(GSM8KDataset):
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -138,15 +138,16 @@ class GSM8KAugDataset(Dataset):
         padding: bool = False,
         add_special_tokens: bool = True,
         source_prompt_text: str | None = _QUESTION_PREFIX,
-        target_prompt_text: str | None = "\nAnswer: ",
-        # target_prompt_text: str | None = "Answer: ",
+        target_prompt_text: str | None = "Answer: ",
         source_key: str = "question",
         steps_key: str = "steps",
         target_key: str = "answer",
+        num_shot: int = 0,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
         self.tokenizer = tokenizer
+        self.split = split
         self.dataset = load_dataset(dataset_path, split=split, trust_remote_code=True)
         self.max_length = max_length
         self.padding = padding
@@ -156,35 +157,8 @@ class GSM8KAugDataset(Dataset):
         self.source_key = source_key
         self.steps_key = steps_key
         self.target_key = target_key
-
-    def __len__(self):
-        return len(self.dataset)
-
-    @staticmethod
-    def _postprocess_box_answer(
-        answer: str, prefix: str = "$\\boxed{", suffix: str = "}$"
-    ):
-        """
-        Post-processes the answer for the desired format.
-        Args:
-            answer (str): The answer string to be post-processed.
-        Returns:
-            str: The post-processed answer string.
-        """
-        answer = answer.replace("#### ", prefix) + suffix
-        return answer
-
-    @staticmethod
-    def _postprocess_answer(answer: str, prefix: str = "\n#### "):
-        """
-        Post-processes the answer for the desired format.
-        Args:
-            answer (str): The answer string to be post-processed.
-        Returns:
-            str: The post-processed answer string.
-        """
-        answer = prefix + answer
-        return answer
+        self.num_shot = num_shot
+        self._arange = range(len(self.dataset))
 
     @staticmethod
     def _process_step(line: str) -> str:
@@ -195,31 +169,49 @@ class GSM8KAugDataset(Dataset):
 
     def __getitem__(self, idx):
         example = self.dataset[idx]
-        if self.source_prompt_text is not None:
-            example[self.source_key] = (
-                self.source_prompt_text + example[self.source_key]
+        sp = (self.tokenizer.bos_token if self.add_special_tokens else "") + (
+            self.source_prompt_text if self.source_prompt_text is not None else ""
+        )
+        tp = self.target_prompt_text if self.target_prompt_text is not None else ""
+        if self.num_shot > 0:
+            example_shots = [self.dataset[fsi] for fsi in self._few_shot_idxs(idx)]
+            source = (
+                "\n".join(
+                    [
+                        sp
+                        + i[self.source_key]  # type: ignore
+                        + (self.tokenizer.eos_token if self.add_special_tokens else "")
+                        + tp
+                        + "\n".join([self._process_step(s) for s in i[self.steps_key]])
+                        + "\n$\\boxed{"
+                        + i[self.target_key]  # type: ignore
+                        + "}$"
+                        + (self.tokenizer.eos_token if self.add_special_tokens else "")
+                        for i in example_shots
+                    ]
+                )
+                + "\n"
             )
-        if self.target_prompt_text is not None:
-            example[self.steps_key] = self.target_prompt_text + "\n".join(
-                [self._process_step(s) for s in example[self.steps_key]]
-            )
+        else:
+            source = ""
+        source = (
+            source
+            + sp
+            + example[self.source_key]  # type: ignore
+            + (self.tokenizer.eos_token if self.add_special_tokens else "")
+        )
         # Combine steps + final answer
-        example[self.target_key] = example[
-            self.steps_key
-        ] + self._postprocess_box_answer(
-            example[self.target_key]
-        )  # self._postprocess_answer(example[self.target_key])
-        if self.add_special_tokens:
-            example[self.source_key] = (
-                self.tokenizer.bos_token + example[self.source_key]
-                # + self.tokenizer.eos_token
-            )
-            example[self.target_key] = (
-                example[self.target_key] + self.tokenizer.eos_token
-            )
+        target = (
+            tp
+            + "\n".join([self._process_step(s) for s in example[self.steps_key]])
+            + "\n$\\boxed{"
+            + example[self.target_key]  # type: ignore
+            + "}$"
+            + (self.tokenizer.eos_token if self.add_special_tokens else "")
+        )
 
         qa_tokenized = self.tokenizer.batch_encode_plus(
-            [example[self.source_key], example[self.target_key]],
+            [source, target],
             max_length=self.max_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
@@ -279,11 +271,11 @@ class HendrycksMathDataset(Dataset):
         example = self.dataset[idx]
         if self.source_prompt_text is not None:
             example[self.source_key] = (
-                self.source_prompt_text + example[self.source_key]
+                self.source_prompt_text + example[self.source_key]  # type: ignore
             )
         if self.target_prompt_text is not None:
             example[self.target_key] = (
-                self.target_prompt_text + example[self.target_key]
+                self.target_prompt_text + example[self.target_key]  # type: ignore
             )
         if self.add_special_tokens:
             example[self.source_key] = (
@@ -366,11 +358,11 @@ class CNNDailyMailDataset(Dataset):
         example = self.dataset[idx]
         if self.source_prompt_text is not None:
             example[self.source_key] = (
-                self.source_prompt_text + example[self.source_key]
+                self.source_prompt_text + example[self.source_key]  # type: ignore
             )
         if self.target_prompt_text is not None:
             example[self.target_key] = (
-                self.target_prompt_text + example[self.target_key]
+                self.target_prompt_text + example[self.target_key]  # type: ignore
             )
         if self.add_special_tokens:
             example[self.source_key] = (
