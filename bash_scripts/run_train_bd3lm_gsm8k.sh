@@ -4,10 +4,11 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
+for N in 17 21 28; do
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
 EVAL_BLOCK_SIZE=4
-N_LAYERS=28
+N_LAYERS=${N} #28
 TOP_LAYERS=false
 REINIT_MODEL=false
 LOGIT_SHIFT=false
@@ -20,9 +21,9 @@ BATCH_SIZE=1 # 96, 128, 256
 MAX_DURATION="30000ba"
 PRECISION="amp_bf16" # amp_bf16 fp32
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=bd3lm_600M-FT
+TAG=bd3lm_repro
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -68,8 +69,9 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="100ep" \
+  composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   eval_dataloader.batch_size=4
+done

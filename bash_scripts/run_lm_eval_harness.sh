@@ -6,20 +6,14 @@ source setup_env.sh
 QWEN_MODEL="Qwen/Qwen3-1.7B-Base"
 NUM_FEW_SHOT=0
 
-
-#MODEL_PATH="${QWEN_MODEL}"
-#MODEL_PATH="gsm8k_block4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_enc28_TOPdec14_e2d2_2BFT_tie-weights"
-MODEL_PATH="${RUN_DIR}/gsm8k-0shot_lr1e-5_bsz96_warm1000ba_alphaf0.0_max-dur20000ba_amp_bf16_layers28_ar_FT2B_repro_no-ema"
-#MODEL_PATH="${D}"
-#MODEL_PATH="gsm8k_block${BLOCK_SIZE}_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_enc28_TOPdec14_e2d2_2B-FT_share_kv_tie-weights"
+for N in 17 21 28; do
+  for ALIGN in true false; do
+MODEL_PATH="${RUN_DIR}/gsm8k_block4_evalblock4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers${N}_bd3lm_repro"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 
-mkdir -p ${OUTPUT_DIR}
-#for ALIGN_INPUTS_TO_BLOCKS in false; do #true; do
-#  for T in 1 2 4; do
 L=512
-BLOCK_SIZE=1
+BLOCK_SIZE=4
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 T=${BLOCK_SIZE}
@@ -27,11 +21,11 @@ FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
 CONFIDENCE_MARGIN_BASED_NOISING=false
 KV_CACHING=true  # "true" for BD3LM / E2D2, "false" for MDLM
-ALIGN_INPUTS_TO_BLOCKS=false
-CKPT_FILE="best-rank0.pt"
-USE_EMA=false
+ALIGN_INPUTS_TO_BLOCKS=${ALIGN}
+CKPT="best"
+USE_EMA=true
 
-OUTPUT_PATH="${OUTPUT_DIR}/${NUM_FEW_SHOT}shot_L${L}_block_size${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hitting${FIRST_HITTING}-confidence_based_noising${CONFIDENCE_BASED_NOISING}-confidence_margin_based_noising${CONFIDENCE_MARGIN_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}"
+OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_${NUM_FEW_SHOT}shot_L${L}_block_size${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hitting${FIRST_HITTING}-confidence_based_noising${CONFIDENCE_BASED_NOISING}-confidence_margin_based_noising${CONFIDENCE_MARGIN_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}"
 mkdir -p ${OUTPUT_PATH}
 
 accelerate launch scripts/eval/harness_eval.py \
@@ -42,7 +36,7 @@ accelerate launch scripts/eval/harness_eval.py \
   +eval/lm_eval_harness@task=gsm8k \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
-  task.model.ckpt_file=${CKPT_FILE} \
+  task.model.ckpt_file="${CKPT}-rank0.pt" \
   task.model.load_ema_weights=${USE_EMA} \
   tokenizer.pretrained_model_name_or_path=${QWEN_MODEL} \
   output_path=${OUTPUT_PATH} \
@@ -64,5 +58,5 @@ accelerate launch scripts/eval/harness_eval.py \
   task.num_fewshot=${NUM_FEW_SHOT}
 #  ~generation/stopping_criteria@stopping_criteria_list \
 #  gen_kwargs.stopping_criteria=null
-#  done
-#done
+  done
+done
