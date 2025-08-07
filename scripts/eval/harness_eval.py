@@ -128,7 +128,7 @@ class LMEvalHarnessModel(LM):
             # ctx = (prefix_text if prefix_text is not None else "") + e["prefix"]
             ctx = e["prefix"]
             ctx = re.sub(
-                r"^####\s*(\d+)\s*$",
+                r"^####\s*(\d+)\s*$\n",
                 r"$\\boxed{\1}$" + self.tokenizer.eos_token,
                 ctx,
                 flags=re.MULTILINE,
