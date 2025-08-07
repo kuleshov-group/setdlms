@@ -8,11 +8,8 @@ from transformers import PreTrainedTokenizer
 
 from datasets import load_dataset
 
-# _QUESTION_PREFIX = (
-#     "Please reason step by step, and put your final answer within $\\boxed{}$. "
-# )
 _QUESTION_PREFIX = (
-    "Please reason step by step, and put your final answer within $\\boxed{}$."  # noqa: E501
+    "Please reason step by step, and put your final answer within $\\boxed{}$. "
 )
 _SUMMARY_PREFIX = "Please summarize the following text: "
 _TRANSLATION_PREFIX = "Translate the following text from {source} to {target}: "
@@ -29,8 +26,7 @@ class GSM8KDataset(Dataset):
         padding: bool = False,
         add_special_tokens: bool = True,
         source_prompt_text: str | None = _QUESTION_PREFIX,
-        question_prompt_text: str | None = "\nQuestion: ",
-        answer_prompt_text: str | None = "\nAnswer: ",
+        target_prompt_text: str | None = "Answer: ",
         source_key: str = "question",
         target_key: str = "answer",
         num_shot: int = 0,
@@ -46,8 +42,7 @@ class GSM8KDataset(Dataset):
         self.padding = padding
         self.add_special_tokens = add_special_tokens
         self.source_prompt_text = source_prompt_text
-        self.question_prompt_text = question_prompt_text
-        self.answer_prompt_text = answer_prompt_text
+        self.target_prompt_text = target_prompt_text
         self.source_key = source_key
         self.target_key = target_key
         self.num_shot = num_shot
@@ -64,32 +59,46 @@ class GSM8KDataset(Dataset):
 
     def __getitem__(self, idx):
         example = self.dataset[idx]
-        sp = self.source_prompt_text if self.source_prompt_text is not None else ""
-        qp = self.question_prompt_text if self.question_prompt_text is not None else ""
-        ap = self.answer_prompt_text if self.answer_prompt_text is not None else ""
+        sp = (self.tokenizer.bos_token if self.add_special_tokens else "") + (
+            self.source_prompt_text if self.source_prompt_text is not None else ""
+        )
+        tp = self.target_prompt_text if self.target_prompt_text is not None else ""
         if self.num_shot > 0:
             example_shots = [self.dataset[fsi] for fsi in self._few_shot_idxs(idx)]
-            source = f"\n{self.tokenizer.eos_token}".join(
+            source = "\n".join(
                 [
-                    sp + qp + i[self.source_key] + ap + i[self.target_key]
+                    sp
+                    + i[self.source_key]  # type: ignore
+                    + (self.tokenizer.eos_token if self.add_special_tokens else "")
+                    + tp
+                    + re.sub(  # type: ignore
+                        r"^####\s*(\d+)\s*$",
+                        r"$\\boxed{\1}$",
+                        i[self.target_key],
+                        flags=re.MULTILINE,
+                    )
+                    + (self.tokenizer.eos_token if self.add_special_tokens else "")
                     for i in example_shots
                 ]
             )
         else:
             source = ""
         source = (
-            source + f"\n{self.tokenizer.eos_token}{sp}" + qp + example[self.source_key]
-        )  # sp + source + qp + example[self.source_key]
-        target = ap + example[self.target_key]
-        source = re.sub(
-            r"^####\s*(\d+)\s*$", r"$\\boxed{\1}$", source, flags=re.MULTILINE
+            source
+            + sp
+            + example[self.source_key]  # type: ignore
+            + (self.tokenizer.eos_token if self.add_special_tokens else "")
         )
-        target = re.sub(
-            r"^####\s*(\d+)\s*$", r"$\\boxed{\1}$", target, flags=re.MULTILINE
+        target = (
+            tp
+            + re.sub(  # type: ignore
+                r"^####\s*(\d+)\s*$",
+                r"$\\boxed{\1}$",
+                example[self.target_key],
+                flags=re.MULTILINE,
+            )
+            + (self.tokenizer.eos_token if self.add_special_tokens else "")
         )
-        if self.add_special_tokens:
-            source = self.tokenizer.bos_token + source
-            target = target + self.tokenizer.eos_token
 
         qa_tokenized = self.tokenizer.batch_encode_plus(
             [source, target],

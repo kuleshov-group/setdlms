@@ -122,29 +122,19 @@ class LMEvalHarnessModel(LM):
             e,
             prefix_text: str | None = (
                 f"{self.tokenizer.bos_token}Please reason step by step, and put your "
-                + "final answer within $\\boxed{}$."
+                + "final answer within $\\boxed{}$. "
             ),
-            # Legacy:
-            # prefix_text: str | None = (
-            #     "<|im_end|>Please reason step by step, and put your "
-            #     + "final answer within $\\boxed{}$. "
-            # ),
         ):
-            # ctx = e["prefix"].replace("Question: ", (prefix_text if prefix_text is not None else "") + "\nQuestion: ")  # noqa: E501
             # ctx = (prefix_text if prefix_text is not None else "") + e["prefix"]
             ctx = e["prefix"]
-            # TODO: Hacks to make data look like training set
-            ctx = ctx.replace("Question: ", f"{prefix_text}\nQuestion: ")
-            ctx = ctx.replace("\nAnswer:", "\nAnswer: ")
             ctx = re.sub(
-                r"^####\s*(\d+)\s*$", r"$\\boxed{\1}$", ctx, flags=re.MULTILINE
+                r"^####\s*(\d+)\s*$\n",
+                r"$\\boxed{\1}$" + self.tokenizer.eos_token,
+                ctx,
+                flags=re.MULTILINE,
             )
-            # Legacy:
-            # ctx = ctx.replace("Question: ", "")
-            # ctx = ctx.replace("\nAnswer:", "<|im_end|>Answer: ")
-            n_spaces = len(ctx) - len(ctx)
-            if n_spaces > 0:
-                ctx = ctx[:-n_spaces]
+            ctx = ctx.replace("Question: ", prefix_text)
+            ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}Answer:")
             prefix_tokens = self.tokenizer(ctx)["input_ids"]
             return {
                 "prefix_text": ctx,
