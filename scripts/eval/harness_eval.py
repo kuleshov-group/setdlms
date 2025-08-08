@@ -46,6 +46,8 @@ class LMEvalHarnessModel(LM):
         gen_kwargs: Any | None = None,
         accelerator: accelerate.Accelerator | None = None,
         throughput_run: bool = False,
+        throughput_samples: int = 100,
+        throughput_warmup: int = 100,
     ):
         """
         Args:
@@ -102,6 +104,8 @@ class LMEvalHarnessModel(LM):
         self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
         self.gen_kwargs = gen_kwargs
         self.throughput_run = throughput_run
+        self.throughput_warmup = throughput_warmup
+        self.throughput_samples = throughput_samples
 
     @property
     def rank(self):
@@ -153,7 +157,10 @@ class LMEvalHarnessModel(LM):
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
         ):
-            if self.throughput_run and i >= 50:
+            if (
+                self.throughput_run
+                and i >= self.throughput_samples + self.throughput_warmup
+            ):
                 tputs_path = (
                     f"{self.generated_samples_output_path}/throughput-rank{self.rank}"
                 )
@@ -168,17 +175,19 @@ class LMEvalHarnessModel(LM):
                         indent=2,
                     )
                 sys.exit(0)
-            if self.rank == 0:
+            if self.rank == 0 and i >= self.throughput_warmup:
                 start_event = torch.cuda.Event(enable_timing=True)
                 end_event = torch.cuda.Event(enable_timing=True)
                 start_event.record()
+            else:
+                start_event, end_event = None, None
             sample = self.model.generate(
                 inputs=elem["prefix"][None, ...].to(self.device),
                 disable_pbar=(self.rank != 0),
                 # tokenizer=self.tokenizer,  # Uncomment for debugging
                 **self.gen_kwargs,
             )
-            if self.rank == 0:
+            if self.rank == 0 and i >= self.throughput_warmup:
                 end_event.record()
                 torch.cuda.synchronize()
                 elapsed_time_s = start_event.elapsed_time(end_event) / 1000
@@ -213,10 +222,13 @@ class LMEvalHarnessModel(LM):
                     "result": result,
                 }
             )
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             if self.rank == 0:
                 print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
-                print(f"Thrput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
+                if i >= self.throughput_warmup:
+                    print(
+                        f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}"
+                    )
         samples_path = f"{self.generated_samples_output_path}/rank{self.rank}"
         with open(f"{samples_path}.json", "w") as f:
             json.dump(
