@@ -290,11 +290,11 @@ class CNNDailyMailDataset(Dataset):
         config_name: Literal["1.0.0", "2.0.0", "3.0.0"] = "3.0.0",
         padding: bool = False,
         add_special_tokens: bool = True,
-        source_prompt_text: str | None = None,  # _SUMMARY_PREFIX,
+        source_prompt_text: str | None = None,
         target_prompt_text: str | None = "Summary: ",
-        separate_input_output: bool = False,
         source_key: str = "article",
         target_key: str = "highlights",
+        separate_input_output: bool = False,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -400,11 +400,11 @@ class WMTDataset(Dataset):
         subset: str = "de-en",
         padding: bool = False,
         add_special_tokens: bool = True,
-        source_prompt_text: str | None = None,  # _TRANSLATION_PREFIX,
-        target_prompt_text: str | None = None,  # "Translation: ",
-        separate_input_output: bool = False,
+        source_prompt_text: str | None = None,
+        target_prompt_text: str | None = None,
         source_key: str = "translation",
         target_key: str = "translation",
+        separate_input_output: bool = False,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
