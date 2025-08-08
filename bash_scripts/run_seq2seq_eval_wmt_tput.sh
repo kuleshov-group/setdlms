@@ -3,25 +3,48 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/wmt_block4_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_enc28_dec4_hidden512_inter1536_e2d2_scratch_v2"
-OUTPUT_DIR="${MODEL_PATH}/wmt"
-REVISION=null
-mkdir -p ${OUTPUT_DIR}
+# TODO: FOR REBUTTAL
+RUN_DIR="${RUN_DIR}/rebuttal"
+
+########### AR
+#for N in 16 32; do
+#  MODEL_PATH="${RUN_DIR}/wmt_block_lr3e-4_bsz128_warm1000ba_layers${N}_hidden512_inter1536_ar_reinit"
+#  BLOCK_SIZE=1
+#  KV_CACHING=true
+#  ALIGN_INPUTS_TO_BLOCKS=true
+
+########## MDLM
+for N in -1; do
+  MODEL_PATH="${RUN_DIR}/wmt_block_lr3e-4_bsz128_warm1000ba_layers32_hidden512_inter1536_mdlm_reinit"
+  BLOCK_SIZE=32
+  KV_CACHING=false
+  ALIGN_INPUTS_TO_BLOCKS=false
+
+########### BD3LM
+#for N in 12 16; do
+#  MODEL_PATH="${RUN_DIR}/wmt_block4_lr3e-4_bsz128_warm1000ba_layers${N}_hidden512_inter1536_bd3lm_reinit"
+#  BLOCK_SIZE=4
+#  KV_CACHING=true
+#  ALIGN_INPUTS_TO_BLOCKS=true
+
+########### E2D2
+#for N in -1; do
+#  MODEL_PATH="${RUN_DIR}/wmt_block4_lr3e-4_bsz128_warm1000ba_enc28_dec4_hidden512_inter1536_e2d2_reinit-encoder_reinit-decoder"
+#  BLOCK_SIZE=4
+#  KV_CACHING=true
+#  ALIGN_INPUTS_TO_BLOCKS=false
 
 L=256
-BLOCK_SIZE=4
-T=4
+T=${BLOCK_SIZE}
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise" #"predict_and_noise" "posterior"
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=false
 MAX_LENGTH=1024
-CKPT="best"
+CKPT="latest"
 USE_EMA=true
 
-OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}"
+OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_L${L}_block_size${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hitting${FIRST_HITTING}-confidence_based_noising${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}"
 PORT=29501
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/seq2seq_eval.py \
   hydra.output_subdir=null \
@@ -51,3 +74,4 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   ~generation/logits_processor@logits_processor_list \
   gen_kwargs.logits_processor=null \
   +throughput_run=true
+done

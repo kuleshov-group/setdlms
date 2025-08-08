@@ -9,7 +9,7 @@ BLOCK_SIZE=4
 EVAL_BLOCK_SIZE=4
 N_ENCODER_LAYERS=28
 ENCODER_TOP_LAYERS=false
-N_DECODER_LAYERS=24
+N_DECODER_LAYERS=14
 DECODER_TOP_LAYERS=true
 REINIT_ENCODER=false
 REINIT_DECODER=false
@@ -68,7 +68,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.precision=${PRECISION} \
   composer.trainer.eval_interval="1000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
-  composer.trainer.save_num_checkpoints_to_keep=-1 \
+  composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=cosine_annealing_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   composer.lr_scheduler.alpha_f=${ALPHA_F} \

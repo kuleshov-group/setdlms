@@ -6,21 +6,21 @@ source setup_env.sh
 QWEN_MODEL="Qwen/Qwen3-1.7B-Base"
 NUM_FEW_SHOT=0
 
-for N in 17 21 28; do
-  for ALIGN in true false; do
-MODEL_PATH="${RUN_DIR}/gsm8k_block4_evalblock4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers${N}_bd3lm_repro"
+#for N in 17 21 28; do
+for ALIGN in true false; do
+MODEL_PATH="${RUN_DIR}/gsm8k_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers-1_mdlm_repro"
 OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 
 L=512
-BLOCK_SIZE=4
+BLOCK_SIZE=64
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 T=${BLOCK_SIZE}
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
 CONFIDENCE_MARGIN_BASED_NOISING=false
-KV_CACHING=true  # "true" for BD3LM / E2D2, "false" for MDLM
+KV_CACHING=false  # "true" for BD3LM / E2D2, "false" for MDLM
 ALIGN_INPUTS_TO_BLOCKS=${ALIGN}
 CKPT="best"
 USE_EMA=true
@@ -34,6 +34,7 @@ accelerate launch scripts/eval/harness_eval.py \
   hydra/job_logging=disabled \
   hydra/hydra_logging=disabled \
   +eval/lm_eval_harness@task=gsm8k \
+  task.num_fewshot=${NUM_FEW_SHOT} \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   task.model.ckpt_file="${CKPT}-rank0.pt" \
@@ -54,9 +55,8 @@ accelerate launch scripts/eval/harness_eval.py \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   ~generation/logits_processor@logits_processor_list \
   gen_kwargs.logits_processor=null \
-  generation/stopping_criteria@stopping_criteria_list='[eos_token_criteria,max_length_criteria,gsm8k_regex_stopping_criteria]' \
-  task.num_fewshot=${NUM_FEW_SHOT}
-#  ~generation/stopping_criteria@stopping_criteria_list \
-#  gen_kwargs.stopping_criteria=null
-  done
-done
+  ~generation/stopping_criteria@stopping_criteria_list \
+  gen_kwargs.stopping_criteria=null
+#  generation/stopping_criteria@stopping_criteria_list='[eos_token_criteria,max_length_criteria,gsm8k_regex_stopping_criteria]' \
+  done[]
+#done

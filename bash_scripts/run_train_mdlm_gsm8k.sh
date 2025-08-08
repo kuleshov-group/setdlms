@@ -15,12 +15,12 @@ LR=1e-5
 WARMUP_DURATION="100ba"
 ALPHA_F=0.5
 BATCH_SIZE=1
-MAX_DURATION="60000ba"
+MAX_DURATION="30000ba"
 PRECISION="amp_bf16" # amp_bf16 fp32
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 
-TAG=mdlm_2BFT
+TAG=mdlm_repro
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -61,7 +61,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   ~composer.trainer.parallelism_config \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="100ep" \
+  composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \

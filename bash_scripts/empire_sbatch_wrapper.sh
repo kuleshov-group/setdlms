@@ -24,6 +24,7 @@ if [ ! -e "${script_full_path}" ]; then
   echo "Script '$script_full_path' not found."
 fi
 
+PARTITION="cornell"  # "priority,cornell" <-- On priority weeks
 WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
@@ -37,7 +38,7 @@ sbatch \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=cornell \
+  --partition=${PARTITION} \
   --account=cornell \
   --time=100:00:00 \
   --mem=64000 \
