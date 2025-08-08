@@ -22,14 +22,15 @@ MAX_DURATION="30000ba"
 PRECISION="amp_bf16" # amp_bf16 fp32
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
+NUM_SHOT=0
 
-TAG=bd3lm_repro
+TAG=bd3lm
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
   LAYERS="layers${N_LAYERS}"
 fi
-RUN_NAME=gsm8k_block${BLOCK_SIZE}_evalblock${EVAL_BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
+RUN_NAME=gsm8k-${NUM_SHOT}shot_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
 if [ "${LOGIT_SHIFT}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_logit-shift"
 fi
@@ -45,6 +46,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
   dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
+  train_dataset.num_shot=${NUM_SHOT} \
   composer.optimizer.lr=${LR} \
   composer.trainer.precision=${PRECISION} \
   composer.trainer.eval_interval="1000ba" \

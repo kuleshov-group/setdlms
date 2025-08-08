@@ -6,19 +6,19 @@ source setup_env.sh
 # TODO: FOR REBUTTAL
 RUN_DIR="${RUN_DIR}/rebuttal"
 
-########### AR
-#for N in 16 32; do
-#  MODEL_PATH="${RUN_DIR}/wmt_block_lr3e-4_bsz128_warm1000ba_layers${N}_hidden512_inter1536_ar_reinit"
-#  BLOCK_SIZE=1
-#  KV_CACHING=true
-#  ALIGN_INPUTS_TO_BLOCKS=true
+########## AR
+for N in 16 32; do
+  MODEL_PATH="${RUN_DIR}/wmt_block_lr3e-4_bsz128_warm1000ba_layers${N}_hidden512_inter1536_ar_reinit"
+  BLOCK_SIZE=1
+  KV_CACHING=true
+  ALIGN_INPUTS_TO_BLOCKS=true
 
-########## MDLM
-for N in -1; do
-  MODEL_PATH="${RUN_DIR}/wmt_block_lr3e-4_bsz128_warm1000ba_layers32_hidden512_inter1536_mdlm_reinit"
-  BLOCK_SIZE=32
-  KV_CACHING=false
-  ALIGN_INPUTS_TO_BLOCKS=false
+########### MDLM
+#for N in -1; do
+#  MODEL_PATH="${RUN_DIR}/wmt_block_lr3e-4_bsz128_warm1000ba_layers32_hidden512_inter1536_mdlm_reinit"
+#  BLOCK_SIZE=32
+#  KV_CACHING=false
+#  ALIGN_INPUTS_TO_BLOCKS=false
 
 ########### BD3LM
 #for N in 12 16; do
@@ -34,6 +34,10 @@ for N in -1; do
 #  KV_CACHING=true
 #  ALIGN_INPUTS_TO_BLOCKS=false
 
+OUTPUT_DIR="${MODEL_PATH}/wmt"
+REVISION=null
+mkdir -p ${OUTPUT_DIR}
+
 L=256
 T=${BLOCK_SIZE}
 DO_SAMPLE=false
@@ -45,7 +49,7 @@ CKPT="latest"
 USE_EMA=true
 
 OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_L${L}_block_size${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hitting${FIRST_HITTING}-confidence_based_noising${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}"
-PORT=29501
+PORT=29502
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/seq2seq_eval.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \

@@ -27,7 +27,7 @@ fi
 WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
-NUM_VISIBLE_DEVICES=4
+NUM_VISIBLE_DEVICES=1
 RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev/rebuttal"
 DATA_DIR="/share/kuleshov/ma2238/dllm-data"
 mkdir -p ${RUN_DIR}
@@ -37,8 +37,8 @@ sbatch \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=kuleshov,gpu \
-  --constraint="[h100|a100|a6000|a5000|3090]" \
+  --partition=gpu \
+  --constraint="[h100]" \
   --time=960:00:00 \
   --mem=128000 \
   --nodes=1 \
