@@ -144,6 +144,7 @@ class AR(Denoiser):
             # stopping_criteria=stopping_criteria,
             max_length=max_length,
             max_new_tokens=max_new_tokens,
+            # TODO: Can we pass this in `generation_config`?
             # eos_token_id=None,  # Uncomment for t-put runs; prevents stopping at EOS
             **kwargs,
         )
