@@ -7,9 +7,9 @@ source setup_env.sh
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=8
 EVAL_BLOCK_SIZE=8
-HIDDEN_SIZE=128
-INTERMEDIATE_SIZE=384 #$(( 4 * HIDDEN_SIZE ))
-N_ENCODER_LAYERS=32
+HIDDEN_SIZE=256
+INTERMEDIATE_SIZE=768 #$(( 4 * HIDDEN_SIZE ))
+N_ENCODER_LAYERS=20
 ENCODER_TOP_LAYERS=false
 N_DECODER_LAYERS=8
 DECODER_TOP_LAYERS=false
@@ -23,11 +23,11 @@ ENCODER_CAUSAL_MASK=false
 LR=3e-4
 WARMUP_DURATION="1000ba"
 BATCH_SIZE=128
-MAX_DURATION="1000000ba"
+MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=e2d2_scratch
+TAG="e2d2"
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -38,7 +38,7 @@ if [ "${DECODER_TOP_LAYERS}" == "true" ]; then
 else
   DEC_LAYERS="dec${N_DECODER_LAYERS}"
 fi
-RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
+RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
 fi
@@ -48,13 +48,21 @@ fi
 if [ "${ENCODER_CAUSAL_MASK}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_encoder-causal-mask"
 fi
-#if [ "${REINIT_ENCODER}" == "true" ]; then
-#  RUN_NAME="${RUN_NAME}_reinit-encoder"
-#fi
-#if [ "${REINIT_DECODER}" == "true" ]; then
-#  RUN_NAME="${RUN_NAME}_reinit-decoder"
-#fi
-MICRO_BATCH_SIZE=4 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
+if [ "${REINIT_ENCODER}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_reinit-encoder"
+fi
+if [ "${REINIT_DECODER}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_reinit-decoder"
+fi
+GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
+if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
+    MICRO_BATCH_SIZE=8
+elif [[ "$GPU_TYPE" == "A6000" ]]; then
+    MICRO_BATCH_SIZE=4
+else
+    MICRO_BATCH_SIZE=2
+fi
+#MICRO_BATCH_SIZE=16 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -65,7 +73,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.optimizer.lr=${LR} \
   composer.trainer.eval_interval="5000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
-  composer.trainer.save_num_checkpoints_to_keep=20 \
+  composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=e2d2 \

@@ -5,34 +5,37 @@ source setup_env.sh
 
 QWEN_MODEL="Qwen/Qwen3-1.7B-Base"
 
-
 ########### AR
-#for N in 1; do
-#  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_lr1e-5_bsz96_warm1000ba_alphaf0.0_max-dur20000ba_amp_bf16_layers28_ar_FT2B_repro_with-ema_v2"
+#for N in false true; do
+#  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_lr1e-5_bsz96_warm1000ba_alphaf0.0_max-dur20000ba_amp_bf16_layers28_ar"
 #  BLOCK_SIZE=1
 #  KV_CACHING=true
 #  ALIGN_INPUTS_TO_BLOCKS=true
+#  USE_EMA=${N}
 
 ########### MDLM
-#for N in 1; do
-#  MODEL_PATH="${RUN_DIR}/gsm8k_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers-1_mdlm_repro"
+#for N in -1; do
+#  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers-1_mdlm"
 #  BLOCK_SIZE=64
 #  KV_CACHING=false
 #  ALIGN_INPUTS_TO_BLOCKS=false
+#  USE_EMA=true
 
 ########### BD3LM
 #for N in 17 21 28; do
-#  MODEL_PATH="${RUN_DIR}/gsm8k_block4_evalblock4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers${N}_bd3lm_repro"
+#  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers${N}_bd3lm"
 #  BLOCK_SIZE=4
 #  KV_CACHING=true
 #  ALIGN_INPUTS_TO_BLOCKS=true
+#  USE_EMA=true
 
 ########## E2D2
-for N in 14 21 24 26; do
-  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_enc28_TOPdec${N}_e2d2_repro_with-ema_v2_tie-weights"
+for N in 14 21 24 26 27; do
+  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_enc28_TOPdec${N}_e2d2_tie-weights"
   BLOCK_SIZE=4
   KV_CACHING=true
   ALIGN_INPUTS_TO_BLOCKS=true
+  USE_EMA=true
 
   OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
   REVISION=null

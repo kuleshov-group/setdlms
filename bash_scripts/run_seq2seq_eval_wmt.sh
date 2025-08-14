@@ -3,20 +3,20 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/wmt_lr3e-4_bsz128_warm1000ba_max-dur1000000ba_layers32_hidden512_inter1536_mdlm_scratch_fix-attn"
+MODEL_PATH="${RUN_DIR}/wmt_block4_lr3e-4_bsz128_warm1000ba_enc28_dec4_hidden512_inter1536_e2d2_reinit-encoder_reinit-decoder"
 OUTPUT_DIR="${MODEL_PATH}/wmt"
 REVISION=null
 mkdir -p ${OUTPUT_DIR}
 
 L=256
-BLOCK_SIZE=8
+BLOCK_SIZE=4
 T=${BLOCK_SIZE}
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise" #"predict_and_noise" "posterior"
 FIRST_HITTING=true
 CONFIDENCE_BASED_NOISING=true
-KV_CACHING=false
-ALIGN_INPUTS_TO_BLOCKS=false
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=true
 MAX_LENGTH=1024
 CKPT="best"
 USE_EMA=true

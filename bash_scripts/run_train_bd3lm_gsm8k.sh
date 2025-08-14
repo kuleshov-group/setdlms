@@ -4,11 +4,11 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-for N in 17 21 28; do
+#for N in 17 21 28; do
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
 EVAL_BLOCK_SIZE=4
-N_LAYERS=${N} #28
+N_LAYERS=28 #${N} #28
 TOP_LAYERS=false
 REINIT_MODEL=false
 LOGIT_SHIFT=false
@@ -76,4 +76,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   eval_dataloader.batch_size=4
-done
+#done
