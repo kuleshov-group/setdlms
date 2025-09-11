@@ -30,7 +30,8 @@ else
   NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 fi
 export NUM_VISIBLE_DEVICES
-RUN_DIR="/share/kuleshov/$(whoami)/runs/dllm-dev"
+# TODO: Remove rebuttal
+RUN_DIR="/share/kuleshov/$(whoami)/runs/dllm-dev/cbd"
 DATA_DIR="/share/kuleshov/ma2238/dllm-data"
 mkdir -p ${RUN_DIR}
 mkdir -p ${DATA_DIR}

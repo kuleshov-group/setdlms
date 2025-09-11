@@ -50,7 +50,8 @@ class DiffusionGenerationConfig(GenerationConfig):
         sampling_strategy: Literal["posterior", "predict_then_noise"] = "posterior",
         confidence_based_noising: bool = False,
         confidence_margin_based_noising: bool = False,
-        confidence_threshold: float = 1.0,
+        coherence_based_noising: bool = False,
+        confidence_threshold: float = 1e6,
         use_model_output_cache: bool = True,
         align_inputs_to_blocks: bool = True,
         **kwargs,
@@ -98,6 +99,10 @@ class DiffusionGenerationConfig(GenerationConfig):
                 See https://arxiv.org/abs/2502.06768 for details.
                 Cannot be used in conjunction with confidence_based_noising.
                 Defaults to False.
+            confidence_threshold (float): Confidence threshold to use for sampling.
+                Any tokens that exceed threshold are decoded.
+                See https://arxiv.org/abs/2505.22618 for details.
+                Defaults to 1e6.
             use_model_output_cache (bool): Whether to re-use model's output, if sequence
                 is unchanged, because if xt == xs, we can simply re-use the denoising
                 model's outputs and save a function evaluation.
@@ -125,6 +130,7 @@ class DiffusionGenerationConfig(GenerationConfig):
         )
         self.confidence_based_noising = confidence_based_noising
         self.confidence_margin_based_noising = confidence_margin_based_noising
+        self.coherence_based_noising = coherence_based_noising
         self.confidence_threshold = confidence_threshold
         self.use_model_output_cache = use_model_output_cache
         self.align_inputs_to_blocks = align_inputs_to_blocks
@@ -225,6 +231,10 @@ class D3PM(Denoiser):
             attention_mask = torch.ones_like(input_ids)
         if context_mask is None:
             context_mask = torch.zeros_like(attention_mask)
+
+        if torch.is_floating_point(attention_mask):
+            attention_mask = attention_mask.to(torch.int)
+            context_mask = context_mask.to(torch.int)
 
         if t is None:
             t = torch.rand(input_ids.shape[0], device=input_ids.device)
@@ -459,7 +469,8 @@ class D3PM(Denoiser):
             )
             assert q_xs.isnan().sum().item() == 0, "NaN found in the posterior."
             xs = self._sample_categorical(q_xs, generation_config.do_sample)
-            xs = torch.where(
+            xs_probs = q_xs.gather(-1, xs[..., None]).squeeze(dim=-1)
+            output = torch.where(
                 (denoiser_inputs.xt != self.mask_token_id).bool(),
                 denoiser_inputs.xt,
                 xs,
@@ -477,6 +488,8 @@ class D3PM(Denoiser):
 
             # Predict
             xs = self._sample_categorical(x_theta, generation_config.do_sample)
+            xs_probs = x_theta.gather(-1, xs[..., None]).squeeze(dim=-1)
+            output = xs.clone()
 
             # Noise
             num_noise_indices = torch.minimum(
@@ -486,12 +499,101 @@ class D3PM(Denoiser):
             if (
                 generation_config.confidence_based_noising
                 or generation_config.confidence_margin_based_noising
+                or generation_config.coherence_based_noising
             ):
                 if generation_config.confidence_based_noising:
                     conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
-                else:
+                elif generation_config.confidence_margin_based_noising:
                     top2 = torch.topk(x_theta, k=2, dim=-1).values  # shape: (B, L, 2)
                     conf = (top2[..., 0] - top2[..., 1]).abs()
+                else:
+                    batch_size, seq_len = denoiser_inputs.xt.shape
+                    hamm_one_proposal = denoiser_inputs.xt[:, None, :].repeat(
+                        1, seq_len, 1
+                    )
+                    hamm_one_proposal[
+                        torch.arange(batch_size).unsqueeze(1),
+                        torch.arange(seq_len),
+                        torch.arange(seq_len),
+                    ] = xs
+                    # og_weighted_log_probs = torch.gather(
+                    #     log_x_theta, -1, xs[..., None]
+                    # ).squeeze(dim=-1) * xs_probs
+                    og_log_probs = log_x_theta.gather(-1, xs[..., None]).squeeze(dim=-1)
+                    cps_true = torch.zeros(
+                        (batch_size, seq_len, seq_len), device=denoiser_inputs.xt.device
+                    )
+                    # conf = torch.zeros_like(xs, dtype=torch.float)
+                    for i in range(seq_len):
+                        if denoiser_inputs.xt[0, i] != self.mask_token_id:
+                            continue
+                        z_hat_denoiser_inputs = DenoiserInput(
+                            xt=hamm_one_proposal[:, i],
+                            attention_mask=denoiser_inputs.attention_mask,
+                            context_mask=denoiser_inputs.context_mask,
+                            past_key_values=denoiser_inputs.past_key_values,
+                            backbone_kwargs=denoiser_inputs.backbone_kwargs,
+                        )
+                        backbone_output = self._backbone_forward(
+                            z_hat_denoiser_inputs,
+                            fix_cache_length=True,
+                            **kwargs,
+                        )
+                        backbone_output = {k: v for k, v in backbone_output.items()}
+                        logits = backbone_output.pop("logits")
+                        log_x_theta = self._forward(
+                            logits, z_hat_denoiser_inputs, **kwargs
+                        )
+                        # hamm_one_weighted_log_probs = log_x_theta.gather(
+                        #     -1, xs[..., None]
+                        # ).squeeze(dim=-1) * xs_probs
+                        # cps_true[:, :, i] = (
+                        #     hamm_one_weighted_log_probs - og_weighted_log_probs
+                        # )
+                        # conf[:, i] = (
+                        #     (hamm_one_weighted_log_probs - og_weighted_log_probs).sum(
+                        #         dim=-1
+                        #     )
+                        #     + og_weighted_log_probs[:, i]
+                        #     - hamm_one_weighted_log_probs[:, i]
+                        # )
+                        hamm_one_log_probs = log_x_theta.gather(
+                            -1, xs[..., None]
+                        ).squeeze(dim=-1)
+                        cps_true[:, :, i] = hamm_one_log_probs - og_log_probs
+                    # cps_true.diagonal(dim1=-2, dim2=-1).zero_()
+                    cps_true_sign = cps_true > 0.0
+                    mutual_coherence = cps_true_sign & cps_true_sign.transpose(1, 2)
+                    scores = torch.where(
+                        (denoiser_inputs.xt == self.mask_token_id).bool(),
+                        mutual_coherence.sum(dim=2),
+                        -1,
+                    )
+                    b_idx = torch.arange(batch_size, device=denoiser_inputs.xt.device)
+                    parallel_group = torch.zeros_like(
+                        denoiser_inputs.xt, dtype=torch.bool
+                    )
+
+                    # Choose node with most neighbors as the pivot
+                    pivot_idx = scores.argmax(dim=-1)
+                    parallel_group[b_idx, pivot_idx] = True
+                    scores[b_idx, pivot_idx] = -1
+                    # ignore pivot's non-neighbors
+                    scores[~mutual_coherence[b_idx, :, pivot_idx]] = -1
+                    for _ in range(seq_len - 1):
+                        if scores.max().item() == -1:
+                            break
+                        next_idx = scores.argmax(dim=-1)
+                        scores[b_idx, next_idx] = -1
+                        # Check:
+                        #   i ∈ clique implies i in neighbors(next_idx)
+                        #   equivalent to i ∉ clique OR i in neighbors(next_idx)
+                        parallel_group[b_idx, next_idx] = (
+                            ~parallel_group | mutual_coherence[b_idx, :, next_idx]
+                        ).all(dim=-1)
+                    output = denoiser_inputs.xt.clone()
+                    output[parallel_group] = xs[parallel_group]
+                    return output, model_output_cache, cache  # type: ignore
                 if self.config.shift_logits:
                     # noinspection LongLine
                     conf = torch.where(  # already decoded tokens have 'inf' confidence
@@ -510,13 +612,16 @@ class D3PM(Denoiser):
             else:
                 # TODO: implement random noise indices selection
                 raise NotImplementedError
-            xs[..., noise_indices] = self.mask_token_id
+            output[..., noise_indices] = self.mask_token_id
+            output = torch.where(
+                xs_probs >= generation_config.confidence_threshold, xs, output
+            )
         else:
             raise NotImplementedError(
                 f"Sampling strategy {generation_config.sampling_strategy} not"
                 " implemented."
             )
-        return xs, model_output_cache, cache
+        return output, model_output_cache, cache  # type: ignore
 
     @torch.no_grad()
     def generate(

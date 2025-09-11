@@ -25,6 +25,9 @@ from scripts.utils import (
 )
 from src.utils import fsspec_exists, fsspec_mkdirs
 
+THROUGHPUT_SAMPLES = 100
+THROUGHPUT_WARMUP = 100
+
 
 def gather_results(results, world_size):
     # Each GPU has local 'results' (any pickle-able object)
@@ -116,7 +119,9 @@ def main(cfg: DictConfig) -> None:
         total=len(dataloader),
         disable=(local_rank != 0),
     ):
-        if getattr(cfg, "throughput_run", False) and elem_id >= 50:
+        if getattr(cfg, "throughput_run", False) and elem_id >= (
+            THROUGHPUT_SAMPLES + THROUGHPUT_WARMUP
+        ):
             if not fsspec_exists(cfg.output_path):
                 fsspec_mkdirs(cfg.output_path)
             tputs_path = f"{cfg.output_path}/throughput-rank{local_rank}"
@@ -161,7 +166,8 @@ def main(cfg: DictConfig) -> None:
                 end_event.record()
                 torch.cuda.synchronize()
                 elapsed_time_s = start_event.elapsed_time(end_event) / 1000
-                tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
+                if elem_id >= THROUGHPUT_WARMUP:
+                    tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
         outputs = outputs[:, input_ids.shape[-1] :]
         # Decode the generated samples
         outputs = tokenizer.decode(outputs[0])
@@ -177,7 +183,8 @@ def main(cfg: DictConfig) -> None:
         if local_rank == 0:
             print("Input:", tokenizer.decode(input_ids[0]))
             print("Output:", decoded_samples)
-            print(f"Thrput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
+            if elem_id >= THROUGHPUT_WARMUP:
+                print(f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
         generated_samples.append(decoded_samples)
 
     # Compute metrics

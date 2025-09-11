@@ -13,25 +13,33 @@ REINIT_MODEL=true
 LOGIT_SHIFT=false
 
 # Hyperparameters
-LR=3e-4 # 1e-5, 1e-4, 1e-3
-WARMUP_DURATION="1000ba" # 0.1, 0.3, 0.5
+LR=3e-4
+WARMUP_DURATION="1000ba"
 BATCH_SIZE=128
-MAX_DURATION="1000000ba" # 20000ba, 10000ba, 5000ba
+MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=mdlm_scratch_fix-attn
+TAG=mdlm
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
   LAYERS="layers${N_LAYERS}"
 fi
-RUN_NAME=wmt_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
-if [ "${LOGIT_SHIFT}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_logit-shift"
+RUN_NAME=wmt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
+if [ "${REINIT_MODEL}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_reinit"
 fi
 
-MICRO_BATCH_SIZE=16
+GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
+if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
+    MICRO_BATCH_SIZE=16
+elif [[ "$GPU_TYPE" == "A6000" ]]; then
+    MICRO_BATCH_SIZE=8
+else
+    MICRO_BATCH_SIZE=4
+fi
+#MICRO_BATCH_SIZE=16 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -42,7 +50,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.optimizer.lr=${LR} \
   composer.trainer.eval_interval="5000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
-  composer.trainer.save_num_checkpoints_to_keep=-1 \
+  composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=mdlm \
