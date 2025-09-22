@@ -1,5 +1,5 @@
 _target_: composer.loggers.WandBLogger
-project: discrete-diffusion_rebuttal
+project: discrete-diffusion
 group: null
 name: ${run_name}
 init_kwargs:
