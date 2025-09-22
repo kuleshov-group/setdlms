@@ -295,6 +295,7 @@ class CNNDailyMailDataset(Dataset):
         source_key: str = "article",
         target_key: str = "highlights",
         separate_input_output: bool = False,
+        truncate: bool = True,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -310,6 +311,7 @@ class CNNDailyMailDataset(Dataset):
         self.separate_input_output = separate_input_output
         self.source_key = source_key
         self.target_key = target_key
+        self.truncate = truncate
 
     @property
     def target_references(self) -> list[str]:
@@ -321,30 +323,22 @@ class CNNDailyMailDataset(Dataset):
 
     def __getitem__(self, idx):
         example = self.dataset[idx]
+        source = example[self.source_key]
+        target = example[self.target_key]
         if self.source_prompt_text is not None:
-            example[self.source_key] = (
-                self.source_prompt_text + example[self.source_key]  # type: ignore
-            )
+            source = self.source_prompt_text + source  # type: ignore
         if self.target_prompt_text is not None:
-            example[self.target_key] = (
-                self.target_prompt_text + example[self.target_key]  # type: ignore
-            )
+            target = self.target_prompt_text + target  # type: ignore
         if self.add_special_tokens:
-            example[self.source_key] = (
-                self.tokenizer.bos_token
-                + example[self.source_key]
-                + self.tokenizer.eos_token
-            )
-            example[self.target_key] = (
-                example[self.target_key] + self.tokenizer.eos_token
-            )
+            source = self.tokenizer.bos_token + source + self.tokenizer.eos_token
+            target = target + self.tokenizer.eos_token
 
         seq2seq_tokenized = self.tokenizer.batch_encode_plus(
-            [example[self.source_key], example[self.target_key]],
+            [source, target],
             max_length=self.max_length // 2,
             padding=self.padding,
             add_special_tokens=False,  # (potentially) added manually, above
-            truncation=True,
+            truncation=self.truncate,
         )
 
         if self.separate_input_output:
