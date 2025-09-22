@@ -42,7 +42,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.attn_backend="sdpa" \
   training.compile_backbone=false \
   model.config.length=512 \
-  model.config.shift_logits=false \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=false \
   model.config.backbone_config.num_layers=${N_LAYERS} \

@@ -16,7 +16,6 @@ DECODER_TOP_LAYERS=false
 REINIT_ENCODER=true
 REINIT_DECODER=true
 TIE_WEIGHTS=false
-LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
@@ -41,9 +40,6 @@ fi
 RUN_NAME=wmt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 if [ "${TIE_WEIGHTS}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_tie-weights"
-fi
-if [ "${LOGIT_SHIFT}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_logit-shift"
 fi
 if [ "${ENCODER_CAUSAL_MASK}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_encoder-causal-mask"
@@ -80,7 +76,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.attn_backend="sdpa" \
   training.compile_backbone=true \
   model.config.length=256 \
-  model.config.shift_logits=${LOGIT_SHIFT} \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
   model.config.backbone_config.use_encoder_causal_mask=${ENCODER_CAUSAL_MASK} \
   model.config.backbone_config.num_encoder_layers=${N_ENCODER_LAYERS} \

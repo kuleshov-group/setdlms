@@ -14,7 +14,6 @@ DECODER_TOP_LAYERS=false
 REINIT_ENCODER=false
 REINIT_DECODER=false
 FREEZE_ENCODER=false
-LOGIT_SHIFT=false
 ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
@@ -41,9 +40,6 @@ else
   DEC_LAYERS="dec${N_DECODER_LAYERS}"
 fi
 RUN_NAME=gsm8k_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${ENC_LAYERS}_${DEC_LAYERS}_${TAG}
-if [ "${LOGIT_SHIFT}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_logit-shift"
-fi
 if [ "${ENCODER_CAUSAL_MASK}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_encoder-causal-mask"
 fi
@@ -76,7 +72,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.attn_backend="sdpa" \
   training.compile_backbone=false \
   model.config.length=768 \
-  model.config.shift_logits=${LOGIT_SHIFT} \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder_diff_models \
   model.config.backbone_config.encoder_pretrained_model_name_or_path=${ENCODER_PRETRAINED_MODEL_NAME_OR_PATH} \
   model.config.backbone_config.decoder_pretrained_model_name_or_path=${DECODER_PRETRAINED_MODEL_NAME_OR_PATH} \

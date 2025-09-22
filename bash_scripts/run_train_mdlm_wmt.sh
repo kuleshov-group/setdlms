@@ -7,10 +7,9 @@ source setup_env.sh
 # Important variables (fix during hyperparam sweep)
 HIDDEN_SIZE=512
 INTERMEDIATE_SIZE=1536 #$(( 4 * HIDDEN_SIZE ))
-N_LAYERS=32
+N_LAYERS=16
 TOP_LAYERS=false
 REINIT_MODEL=true
-LOGIT_SHIFT=false
 
 # Hyperparameters
 LR=3e-4
@@ -56,7 +55,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model=mdlm \
   training.compile_backbone=true \
   model.config.length=256 \
-  model.config.shift_logits=${LOGIT_SHIFT} \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=${REINIT_MODEL} \
   model.config.backbone_config.num_layers=${N_LAYERS} \

@@ -11,7 +11,6 @@ EVAL_BLOCK_SIZE=4
 N_LAYERS=28 #${N} #28
 TOP_LAYERS=false
 REINIT_MODEL=false
-LOGIT_SHIFT=false
 
 # Hyperparameters
 LR=1e-5
@@ -31,9 +30,6 @@ else
   LAYERS="layers${N_LAYERS}"
 fi
 RUN_NAME=gsm8k-${NUM_SHOT}shot_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
-if [ "${LOGIT_SHIFT}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_logit-shift"
-fi
 if [ "${REINIT_MODEL}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_reinit"
 fi
@@ -58,7 +54,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   training.compile_backbone=false \
   model=bd3lm \
   model.config.length=768 \
-  model.config.shift_logits=${LOGIT_SHIFT} \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=${REINIT_MODEL} \
   model.config.backbone_config.num_layers=${N_LAYERS} \

@@ -7,22 +7,22 @@ QWEN_MODEL="Qwen/Qwen3-1.7B-Base"
 NUM_FEW_SHOT=0
 
 ########### AR
-#for N in false true; do
+#for N in 1; do  # dummy loop
 #  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_lr1e-5_bsz96_warm1000ba_alphaf0.0_max-dur20000ba_amp_bf16_layers28_ar"
 #  BLOCK_SIZE=1
 #  KV_CACHING=true
 #  ALIGN_INPUTS_TO_BLOCKS=true
-#  USE_EMA=${N}
+#  USE_EMA=true
 
-########### MDLM
-#for N in 1; do
-#  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers-1_mdlm"
-#  BLOCK_SIZE=64
-#  KV_CACHING=false
-#  ALIGN_INPUTS_TO_BLOCKS=true
-#  USE_EMA=false
+########## MDLM
+for N in 1; do  # dummy loop
+  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers-1_mdlm"
+  BLOCK_SIZE=64
+  KV_CACHING=false
+  ALIGN_INPUTS_TO_BLOCKS=false
+  USE_EMA=true
 
-########### BD3LM
+############ BD3LM
 #for N in 17 21 28; do
 #  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_layers${N}_bd3lm"
 #  BLOCK_SIZE=4
@@ -31,14 +31,12 @@ NUM_FEW_SHOT=0
 #  USE_EMA=true
 
 ######### E2D2
-#for N in 14 21 24 26 27; do
-for N in 14; do
+#for N in 14 21 24; do
 #  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block4_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_enc28_TOPdec${N}_e2d2_tie-weights"
-  MODEL_PATH="${RUN_DIR}/gsm8k-0shot_block8_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur30000ba_amp_bf16_enc28_TOPdec14_e2d2_tie-weights"
-  BLOCK_SIZE=8
-  KV_CACHING=true
-  ALIGN_INPUTS_TO_BLOCKS=false
-  USE_EMA=true
+#  BLOCK_SIZE=4
+#  KV_CACHING=true
+#  ALIGN_INPUTS_TO_BLOCKS=false
+#  USE_EMA=true
 
   OUTPUT_DIR="${MODEL_PATH}/lm_eval_harness_output"
   REVISION=null
@@ -47,15 +45,16 @@ for N in 14; do
   L=512
   DO_SAMPLE=false
   SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
-  T=8 #${BLOCK_SIZE}
+  T=${BLOCK_SIZE}
   FIRST_HITTING=true
   CONFIDENCE_BASED_NOISING=true
   CONFIDENCE_MARGIN_BASED_NOISING=false
-  COHERENCE_BASED_NOISING=false
   CONFIDENCE_THRESHOLD=1e6
   CKPT="best"
 
-  OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_${NUM_FEW_SHOT}shot_L${L}_block${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hit${FIRST_HITTING}-conf_noise${CONFIDENCE_BASED_NOISING}-conf_margin_noise${CONFIDENCE_MARGIN_BASED_NOISING}-coh_noise${COHERENCE_BASED_NOISING}-conf_thold${CONFIDENCE_THRESHOLD}-align_to_blocks${ALIGN_INPUTS_TO_BLOCKS}"
+
+OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}"
+  OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_${NUM_FEW_SHOT}shot_L${L}_block${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hit${FIRST_HITTING}-conf_noise${CONFIDENCE_BASED_NOISING}-conf_margin_noise${CONFIDENCE_MARGIN_BASED_NOISING}-conf_thold${CONFIDENCE_THRESHOLD}-align_to_blocks${ALIGN_INPUTS_TO_BLOCKS}"
   mkdir -p ${OUTPUT_PATH}
 
   accelerate launch scripts/eval/harness_eval.py \
@@ -80,13 +79,10 @@ for N in 14; do
     generation_config.first_hitting=${FIRST_HITTING} \
     generation_config.confidence_based_noising=${CONFIDENCE_BASED_NOISING} \
     generation_config.confidence_margin_based_noising=${CONFIDENCE_MARGIN_BASED_NOISING} \
-    +generation_config.coherence_based_noising=${COHERENCE_BASED_NOISING} \
     generation_config.confidence_threshold=${CONFIDENCE_THRESHOLD} \
     generation_config.use_cache=${KV_CACHING} \
     generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
     ~generation/logits_processor@logits_processor_list \
     gen_kwargs.logits_processor=null \
     generation/stopping_criteria@stopping_criteria_list='[eos_token_criteria,max_length_criteria,gsm8k_regex_stopping_criteria]'
-#    ~generation/stopping_criteria@stopping_criteria_list \
-#    gen_kwargs.stopping_criteria=null
 done

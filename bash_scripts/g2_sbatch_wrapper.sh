@@ -27,7 +27,7 @@ fi
 WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
-NUM_VISIBLE_DEVICES=4
+NUM_VISIBLE_DEVICES=8
 # TODO: Remove rebuttal
 RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev/rebuttal"
 DATA_DIR="/share/kuleshov/ma2238/dllm-data"
@@ -39,7 +39,7 @@ sbatch \
   --open-mode=append \
   --get-user-env \
   --partition=kuleshov,gpu \
-  --constraint="[h100|a100|a6000|a5000|3090]" \
+  --constraint="[h100|a100|a5000|3090]" \
   --time=960:00:00 \
   --mem=128000 \
   --nodes=1 \
@@ -48,6 +48,6 @@ sbatch \
   --mail-user=${USERNAME}@cornell.edu \
   --mail-type=ALL \
   --requeue \
-  --exclude="brandal" \
+  --exclude=nikola-compute-12 \
   --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
   ${script_full_path}

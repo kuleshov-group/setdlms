@@ -10,7 +10,6 @@ INTERMEDIATE_SIZE=768 #$(( 4 * HIDDEN_SIZE ))
 N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=true
-LOGIT_SHIFT=false
 
 # Hyperparameters
 LR=3e-4
@@ -56,7 +55,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model=mdlm \
   training.compile_backbone=true \
   model.config.length=1024 \
-  model.config.shift_logits=${LOGIT_SHIFT} \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=${REINIT_MODEL} \
   model.config.backbone_config.num_layers=${N_LAYERS} \

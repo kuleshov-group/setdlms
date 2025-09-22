@@ -12,7 +12,6 @@ INTERMEDIATE_SIZE=$(( 4 * HIDDEN_SIZE ))
 N_LAYERS=12
 TOP_LAYERS=false
 REINIT_MODEL=true
-LOGIT_SHIFT=false
 
 # Hyperparameters
 LR=3e-4
@@ -29,9 +28,6 @@ else
   LAYERS="layers${N_LAYERS}"
 fi
 RUN_NAME=owt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
-if [ "${LOGIT_SHIFT}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_logit-shift"
-fi
 if [ "${REINIT_MODEL}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_reinit"
 fi
@@ -56,7 +52,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.attn_backend="sdpa" \
   training.compile_backbone=true \
   model.config.length=1024 \
-  model.config.shift_logits=${LOGIT_SHIFT} \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=${REINIT_MODEL} \
   model.config.backbone_config.num_layers=${N_LAYERS} \

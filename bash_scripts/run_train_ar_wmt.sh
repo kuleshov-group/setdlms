@@ -8,7 +8,7 @@ source setup_env.sh
 # Important variables (fix during hyperparam sweep)
 HIDDEN_SIZE=512
 INTERMEDIATE_SIZE=1536 #$(( 4 * HIDDEN_SIZE ))
-N_LAYERS=16
+N_LAYERS=32
 TOP_LAYERS=false
 REINIT_MODEL=true
 
@@ -20,7 +20,7 @@ MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG="ar"
+TAG="ar_target_prompt"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -47,6 +47,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
   dataset@train_dataset=wmt_train \
   dataset@eval_dataset=wmt_eval \
+  train_dataset.target_prompt_text="Translation: " \
+  eval_dataset.target_prompt_text="Translation: " \
   composer.optimizer.lr=${LR} \
   composer.trainer.eval_interval="5000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
