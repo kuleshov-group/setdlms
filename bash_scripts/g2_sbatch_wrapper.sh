@@ -28,8 +28,7 @@ WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
 NUM_VISIBLE_DEVICES=8
-# TODO: Remove rebuttal
-RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev/rebuttal"
+RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev"
 DATA_DIR="/share/kuleshov/ma2238/dllm-data"
 mkdir -p ${RUN_DIR}
 mkdir -p ${DATA_DIR}

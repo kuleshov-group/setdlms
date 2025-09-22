@@ -3,7 +3,7 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/rebuttal/gsm8k-bs96-keep1-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-ar_qweb2B_v1"
+MODEL_PATH="${RUN_DIR}/gsm8k-bs96-keep1-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-ar_qweb2B_v1"
 REVISION=null
 
 EVAL_DATASET="gsm8k_eval"

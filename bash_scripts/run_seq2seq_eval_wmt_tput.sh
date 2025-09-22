@@ -3,9 +3,6 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-# TODO: FOR REBUTTAL
-RUN_DIR="${RUN_DIR}/rebuttal"
-
 ########## AR
 for N in 16 32; do
   MODEL_PATH="${RUN_DIR}/wmt_block_lr3e-4_bsz128_warm1000ba_layers${N}_hidden512_inter1536_ar_reinit"
