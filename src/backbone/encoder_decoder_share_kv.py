@@ -1,3 +1,4 @@
+# TODO: combine with encoder_decoder.py; Does not need separate file
 import torch
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM

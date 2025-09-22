@@ -50,7 +50,6 @@ class DiffusionGenerationConfig(GenerationConfig):
         sampling_strategy: Literal["posterior", "predict_then_noise"] = "posterior",
         confidence_based_noising: bool = False,
         confidence_margin_based_noising: bool = False,
-        coherence_based_noising: bool = False,
         confidence_threshold: float = 1e6,
         use_model_output_cache: bool = True,
         align_inputs_to_blocks: bool = True,
@@ -130,7 +129,6 @@ class DiffusionGenerationConfig(GenerationConfig):
         )
         self.confidence_based_noising = confidence_based_noising
         self.confidence_margin_based_noising = confidence_margin_based_noising
-        self.coherence_based_noising = coherence_based_noising
         self.confidence_threshold = confidence_threshold
         self.use_model_output_cache = use_model_output_cache
         self.align_inputs_to_blocks = align_inputs_to_blocks
@@ -149,15 +147,12 @@ class D3PMConfig(DenoiserConfig):
     def __init__(
         self,
         keep_clean_bos: bool | None = None,  # Whether to enforce un-noised BOS token
-        # Logits @ position i predicts token @ position i+1 (as in AR models)
-        shift_logits: bool | None = None,
         T: int = 1000,
         diffusion_type: Literal["absorbing", "uniform"] = "absorbing",
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.keep_clean_bos = keep_clean_bos
-        self.shift_logits = shift_logits
         self.diffusion_type = diffusion_type
         self.T = T
 
@@ -318,8 +313,6 @@ class D3PM(Denoiser):
         denoiser_inputs: DenoiserInput,
         **kwargs,
     ) -> torch.FloatTensor:
-        if self.config.shift_logits:
-            backbone_output = backbone_output[:, :-1, ...]
         return torch.log_softmax(backbone_output, dim=-1)  # type: ignore
 
     def _compute_loss(
@@ -429,7 +422,6 @@ class D3PM(Denoiser):
         cache: Dict[str, Any] | None = None,
         running_generation: torch.LongTensor | None = None,
         logits_processor: LogitsProcessorList | None = None,
-        tokenizer: PreTrainedTokenizer | None = None,  # Useful for debugging
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
@@ -458,7 +450,7 @@ class D3PM(Denoiser):
         else:
             x_theta = model_output_cache["x_theta"]
         model_output_cache = {"x_theta": x_theta}
-        prob_check_denom = denoiser_inputs.xt.numel() - self.config.shift_logits
+        prob_check_denom = denoiser_inputs.xt.numel()
         if generation_config.sampling_strategy == "posterior":
             q_xs = self._compute_posterior(
                 x_theta, denoiser_inputs.xt, alpha_t, alpha_s
@@ -469,9 +461,8 @@ class D3PM(Denoiser):
             )
             assert q_xs.isnan().sum().item() == 0, "NaN found in the posterior."
             xs = self._sample_categorical(q_xs, generation_config.do_sample)
-            xs_probs = q_xs.gather(-1, xs[..., None]).squeeze(dim=-1)
             output = torch.where(
-                (denoiser_inputs.xt != self.mask_token_id).bool(),
+                (denoiser_inputs.xt != self.mask_token_id).bool(),  # type: ignore
                 denoiser_inputs.xt,
                 xs,
             )
@@ -496,118 +487,22 @@ class D3PM(Denoiser):
                 ((1 - alpha_s) * generation_config.block_size).to(torch.int),
                 (denoiser_inputs.xt == self.mask_token_id).sum() - 1,  # type: ignore
             )
-            if (
-                generation_config.confidence_based_noising
-                or generation_config.confidence_margin_based_noising
-                or generation_config.coherence_based_noising
-            ):
-                if generation_config.confidence_based_noising:
-                    conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
-                elif generation_config.confidence_margin_based_noising:
-                    top2 = torch.topk(x_theta, k=2, dim=-1).values  # shape: (B, L, 2)
-                    conf = (top2[..., 0] - top2[..., 1]).abs()
-                else:
-                    batch_size, seq_len = denoiser_inputs.xt.shape
-                    hamm_one_proposal = denoiser_inputs.xt[:, None, :].repeat(
-                        1, seq_len, 1
-                    )
-                    hamm_one_proposal[
-                        torch.arange(batch_size).unsqueeze(1),
-                        torch.arange(seq_len),
-                        torch.arange(seq_len),
-                    ] = xs
-                    # og_weighted_log_probs = torch.gather(
-                    #     log_x_theta, -1, xs[..., None]
-                    # ).squeeze(dim=-1) * xs_probs
-                    og_log_probs = log_x_theta.gather(-1, xs[..., None]).squeeze(dim=-1)
-                    cps_true = torch.zeros(
-                        (batch_size, seq_len, seq_len), device=denoiser_inputs.xt.device
-                    )
-                    # conf = torch.zeros_like(xs, dtype=torch.float)
-                    for i in range(seq_len):
-                        if denoiser_inputs.xt[0, i] != self.mask_token_id:
-                            continue
-                        z_hat_denoiser_inputs = DenoiserInput(
-                            xt=hamm_one_proposal[:, i],
-                            attention_mask=denoiser_inputs.attention_mask,
-                            context_mask=denoiser_inputs.context_mask,
-                            past_key_values=denoiser_inputs.past_key_values,
-                            backbone_kwargs=denoiser_inputs.backbone_kwargs,
-                        )
-                        backbone_output = self._backbone_forward(
-                            z_hat_denoiser_inputs,
-                            fix_cache_length=True,
-                            **kwargs,
-                        )
-                        backbone_output = {k: v for k, v in backbone_output.items()}
-                        logits = backbone_output.pop("logits")
-                        log_x_theta = self._forward(
-                            logits, z_hat_denoiser_inputs, **kwargs
-                        )
-                        # hamm_one_weighted_log_probs = log_x_theta.gather(
-                        #     -1, xs[..., None]
-                        # ).squeeze(dim=-1) * xs_probs
-                        # cps_true[:, :, i] = (
-                        #     hamm_one_weighted_log_probs - og_weighted_log_probs
-                        # )
-                        # conf[:, i] = (
-                        #     (hamm_one_weighted_log_probs - og_weighted_log_probs).sum(
-                        #         dim=-1
-                        #     )
-                        #     + og_weighted_log_probs[:, i]
-                        #     - hamm_one_weighted_log_probs[:, i]
-                        # )
-                        hamm_one_log_probs = log_x_theta.gather(
-                            -1, xs[..., None]
-                        ).squeeze(dim=-1)
-                        cps_true[:, :, i] = hamm_one_log_probs - og_log_probs
-                    # cps_true.diagonal(dim1=-2, dim2=-1).zero_()
-                    cps_true_sign = cps_true > 0.0
-                    mutual_coherence = cps_true_sign & cps_true_sign.transpose(1, 2)
-                    scores = torch.where(
-                        (denoiser_inputs.xt == self.mask_token_id).bool(),
-                        mutual_coherence.sum(dim=2),
-                        -1,
-                    )
-                    b_idx = torch.arange(batch_size, device=denoiser_inputs.xt.device)
-                    parallel_group = torch.zeros_like(
-                        denoiser_inputs.xt, dtype=torch.bool
-                    )
-
-                    # Choose node with most neighbors as the pivot
-                    pivot_idx = scores.argmax(dim=-1)
-                    parallel_group[b_idx, pivot_idx] = True
-                    scores[b_idx, pivot_idx] = -1
-                    # ignore pivot's non-neighbors
-                    scores[~mutual_coherence[b_idx, :, pivot_idx]] = -1
-                    for _ in range(seq_len - 1):
-                        if scores.max().item() == -1:
-                            break
-                        next_idx = scores.argmax(dim=-1)
-                        scores[b_idx, next_idx] = -1
-                        # Check:
-                        #   i ∈ clique implies i in neighbors(next_idx)
-                        #   equivalent to i ∉ clique OR i in neighbors(next_idx)
-                        parallel_group[b_idx, next_idx] = (
-                            ~parallel_group | mutual_coherence[b_idx, :, next_idx]
-                        ).all(dim=-1)
-                    output = denoiser_inputs.xt.clone()
-                    output[parallel_group] = xs[parallel_group]
-                    return output, model_output_cache, cache  # type: ignore
-                if self.config.shift_logits:
-                    # noinspection LongLine
-                    conf = torch.where(  # already decoded tokens have 'inf' confidence
-                        (denoiser_inputs.xt[..., 1:] == self.mask_token_id).bool(),  # type: ignore noqa: E501
-                        conf,
-                        torch.inf,
-                    )
-                else:
-                    # noinspection LongLine
-                    conf = torch.where(  # already decoded tokens have 'inf' confidence
-                        (denoiser_inputs.xt == self.mask_token_id).bool(),  # type: ignore noqa: E501
-                        conf,
-                        torch.inf,
-                    )
+            if generation_config.confidence_based_noising:
+                conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
+                conf = torch.where(  # already decoded tokens have 'inf' confidence
+                    (denoiser_inputs.xt == self.mask_token_id).bool(),  # type: ignore
+                    conf,
+                    torch.inf,
+                )
+                noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
+            elif generation_config.confidence_margin_based_noising:
+                top2 = torch.topk(x_theta, k=2, dim=-1).values  # shape: (B, L, 2)
+                conf = (top2[..., 0] - top2[..., 1]).abs()
+                conf = torch.where(  # already decoded tokens have 'inf' confidence
+                    (denoiser_inputs.xt == self.mask_token_id).bool(),  # type: ignore
+                    conf,
+                    torch.inf,
+                )
                 noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
             else:
                 # TODO: implement random noise indices selection
@@ -664,16 +559,11 @@ class D3PM(Denoiser):
         max_blocks = max_new_tokens // block_size
 
         # Sample max generation length tensor from prior
-        logit_offset = int(self.config.shift_logits)
         accumulated_samples = self._sample_prior(
             device=device,
             batch_size=batch_size,
-            length=max_blocks * block_size + logit_offset,
+            length=max_blocks * block_size,
         )
-        if self.config.shift_logits:
-            # 'Donate' last idx from inputs as first idx for the to-be-generated blocks
-            accumulated_samples[..., 0] = inputs[..., -1]
-            inputs = inputs[..., :-1]
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if generation_config.use_cache and inputs.numel() > 0:
             cache = self.update_cache(
@@ -710,8 +600,7 @@ class D3PM(Denoiser):
             xt = accumulated_samples[
                 :,
                 inputs_offset + (block_id * block_size) : inputs_offset
-                + ((block_id + 1) * block_size)
-                + logit_offset,
+                + ((block_id + 1) * block_size),
             ]
             if self.mask_token_id not in xt:
                 continue
@@ -731,9 +620,7 @@ class D3PM(Denoiser):
             # Used for logit processing
             running_generation = accumulated_samples[
                 :,
-                inputs_offset + logit_offset : inputs_offset
-                + (block_id * block_size)
-                + logit_offset,
+                inputs_offset : inputs_offset + (block_id * block_size),
             ]
             for t in step_pbar:
                 if model_output_cache is None:
@@ -761,9 +648,6 @@ class D3PM(Denoiser):
                     tokenizer=tokenizer,
                     **kwargs,
                 )
-                if self.config.shift_logits:
-                    # (re)'Donate' last idx from previous block
-                    xs = torch.cat((xt[:, :1], xs), dim=-1)
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
@@ -784,33 +668,26 @@ class D3PM(Denoiser):
                     break
             accumulated_samples[
                 :,
-                inputs_offset + (block_id * block_size) + logit_offset : inputs_offset
-                + ((block_id + 1) * block_size)
-                + logit_offset,
-            ] = xt[:, logit_offset:]
+                inputs_offset + (block_id * block_size) : inputs_offset
+                + ((block_id + 1) * block_size),
+            ] = xt
             if tokenizer is not None:  # Useful for debugging
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
                     input_ids=accumulated_samples[  # type: ignore
                         :,
-                        inputs_offset + logit_offset : inputs_offset
-                        + ((block_id + 1) * block_size)
-                        + logit_offset,
+                        inputs_offset : inputs_offset + ((block_id + 1) * block_size),
                     ],
                     scores=None,  # type: ignore
                 )
                 if torch.any(is_done):
                     accumulated_samples = accumulated_samples[
                         :,
-                        : inputs_offset + ((block_id + 1) * block_size) + logit_offset,
+                        : inputs_offset + ((block_id + 1) * block_size),
                     ]
                     break
             if generation_config.use_cache:
-                if self.config.shift_logits:
-                    # Last generated token will be provided as first token in inputs to
-                    # next block, and so we do not cache it here
-                    xt = xt[..., :-1]
                 cache = self.update_cache(
                     inputs=xt,
                     cache=cache,
@@ -844,8 +721,6 @@ class MDLM(D3PM):
         denoiser_inputs: DenoiserInput,
         **kwargs,
     ) -> torch.FloatTensor:
-        if self.config.shift_logits:
-            backbone_output = backbone_output[:, :-1, ...]
         # Zero-mask probability
         backbone_output[..., self.mask_token_id] = self.neg_infinity
         log_probs = backbone_output - torch.logsumexp(
@@ -855,8 +730,6 @@ class MDLM(D3PM):
         # to -infinity except for the indices corresponding to
         # the unmasked tokens.
         xt = denoiser_inputs.xt
-        if self.config.shift_logits:
-            xt = xt[..., 1:]
         unmasked_indices = xt != self.mask_token_id
         log_probs[unmasked_indices] = self.neg_infinity
         log_probs[unmasked_indices, xt[unmasked_indices]] = 0
@@ -868,13 +741,6 @@ class MDLM(D3PM):
         denoiser_inputs: DenoiserInput,
         **kwargs: Any,
     ) -> LossAndNllOutput:
-        if self.config.shift_logits:
-            denoiser_inputs.x0 = denoiser_inputs.x0[..., 1:]
-            denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask[..., 1:]
-            if denoiser_inputs.t.ndim > 1:
-                denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[..., 1:]
-                denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[..., 1:]
-
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
         ).squeeze(-1)
@@ -902,6 +768,8 @@ class MDLM(D3PM):
 class BD3LMConfig(MDLMConfig):
     """Configuration class for BD3LM models."""
 
+    # TODO: Make e2d2 its own class; avoids if-else on backbone_is_decoder_only
+
     model_type = "bd3lm"
     auto_map = {
         "AutoConfig": "diffusion.BD3LMConfig",
@@ -927,6 +795,8 @@ class BD3LMConfig(MDLMConfig):
 
 class BD3LM(MDLM):
     """Denoiser class for BD3LM models."""
+
+    # TODO: Make e2d2 its own class; avoids if-else on backbone_is_decoder_only
 
     config_class = BD3LMConfig
 
