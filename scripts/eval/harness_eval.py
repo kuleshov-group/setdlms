@@ -122,6 +122,7 @@ class LMEvalHarnessModel(LM):
         raise NotImplementedError
 
     def generate_until(self, requests, **generation_kwargs):
+        # TODO: Move this to utils file / perhaps use chat template
         def _tokenize(
             e,
             prefix_text: str | None = (

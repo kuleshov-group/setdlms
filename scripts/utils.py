@@ -155,7 +155,7 @@ def load_model_from_ckpt_dir_path(
     load_ema_weights: bool = False,
     verbose: bool = False,
     device: torch.device | str = torch.device("cpu"),
-    **kwargs,
+    **model_config_overrides,
 ) -> Denoiser:
     """Load a model from a checkpoint path (and file).
 
@@ -169,6 +169,11 @@ def load_model_from_ckpt_dir_path(
             e.g., step, metric values. Defaults to False.
         device (torch.device | str): Device for torch.load(map_location=).
             Defaults to torch.device("cpu").
+        model_config_overrides (dict[str, Any]): Optional overrides for
+            `config.model.config`.
+            Currently, this only supports overriding entries in config.model.config,
+            however overriding a nested entry value,
+            e.g., config.model.config.backbone_config.num_layers, will not work.
 
     Returns:
         Denoiser: The loaded denoiser model.
@@ -209,6 +214,8 @@ def load_model_from_ckpt_dir_path(
 
     with open(os.path.join(path_to_ckpt_dir, "config.yaml"), "rb") as f:
         config = yaml.safe_load(f)
+    for k, v in model_config_overrides.items():
+        config["model"]["config"][k] = v
     config = OmegaConf.create(config)
 
     model = hydra.utils.instantiate(

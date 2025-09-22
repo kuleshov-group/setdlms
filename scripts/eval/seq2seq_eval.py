@@ -84,6 +84,7 @@ def main(cfg: DictConfig) -> None:
             path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
             load_ema_weights=cfg.load_ema_weights,
             ckpt_file=cfg.ckpt_file,
+            **getattr(cfg, "model_config_overrides", {}),
         )
     except FileNotFoundError:
         try:
@@ -91,12 +92,14 @@ def main(cfg: DictConfig) -> None:
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
+                **getattr(cfg, "model_config_overrides", {}),
             )
         except ValueError:  # Model not compatible with CausalLM
             model = AutoModelForMaskedLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
+                **getattr(cfg, "model_config_overrides", {}),
             )
     model = model.to(device)
     print(f"Num. parameters: {format_number(count_parameters(model, trainable=False))}")
@@ -146,7 +149,6 @@ def main(cfg: DictConfig) -> None:
             start_event, end_event = None, None
         input_ids = elem["input_ids"].to(device)  # type: ignore
         if dataset.target_prompt_text is not None:
-            input_ids = input_ids[:, 1:]  # remove bos
             prompt_ids = (
                 torch.tensor(tokenizer.encode(dataset.target_prompt_text.strip()))
                 .to(input_ids.dtype)
@@ -176,10 +178,7 @@ def main(cfg: DictConfig) -> None:
         if stop_tokens is not None:
             for st in stop_tokens:
                 outputs = outputs.split(st)[0]
-        if dataset.target_prompt_text is not None:
-            decoded_samples = dataset.target_prompt_text + outputs.strip()
-        else:
-            decoded_samples = outputs.strip()
+        decoded_samples = outputs.strip()
         if local_rank == 0:
             print("Input:", tokenizer.decode(input_ids[0]))
             print("Output:", decoded_samples)
