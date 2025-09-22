@@ -4,3 +4,6 @@ max_length: ${model.config.length}
 dataset_path: "abisee/cnn_dailymail"
 padding: false
 add_special_tokens: true
+source_prompt_text: null
+target_prompt_text: "Summary: "
+truncate: true

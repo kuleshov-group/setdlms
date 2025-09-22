@@ -24,26 +24,31 @@ if [ ! -e "${script_full_path}" ]; then
   echo "Script '$script_full_path' not found."
 fi
 
+PARTITION="priority,cornell"  # "priority,cornell" <-- TODO: On priority weeks
 WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
-NUM_VISIBLE_DEVICES=8
-RUN_DIR="/mnt/lustre/cornell/$(whoami)/runs/dllm-dev"
+NODES=1
+NUM_DEVICES_PER_NODE=8
+NUM_VISIBLE_DEVICES=$(( NODES * NUM_DEVICES_PER_NODE ))
+RUN_DIR="/mnt/lustre/cornell/${USERNAME}/runs/dllm-dev"
+DATA_DIR="/mnt/lustre/cornell/${USERNAME}/data"
 mkdir -p ${RUN_DIR}
+mkdir -p ${DATA_DIR}
 sbatch \
   --job-name=${script_name:4:-3} \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=cornell \
+  --partition=${PARTITION} \
   --account=cornell \
-  --time=960:00:00 \
+  --time=100:00:00 \
   --mem=64000 \
-  --nodes=1 \
-  --ntasks-per-node=${NUM_VISIBLE_DEVICES} \
-  --gres=gpu:${NUM_VISIBLE_DEVICES} \
+  --nodes=${NODES} \
+  --ntasks-per-node=${NUM_DEVICES_PER_NODE} \
+  --gres=gpu:${NUM_DEVICES_PER_NODE} \
   --mail-user=${USERNAME}@cornell.edu \
-  --mail-type=END \
+  --mail-type=ALL \
   --requeue \
-  --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR}" \
+  --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
   ${script_full_path}

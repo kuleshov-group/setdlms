@@ -197,6 +197,7 @@ class EMA(Algorithm):
         smoothing: Optional[float] = None,
         ema_start: str = "0.0dur",
         update_interval: Optional[str] = None,
+        use_num_updates: bool = True,
     ):
         self.ema_model = None
         self.ema_weights_active = False
@@ -241,10 +242,13 @@ class EMA(Algorithm):
             )
 
         # Calculate the appropriate weighting for the moving average
+        self.num_updates = None
         if smoothing is None and self.half_life:
             self.smoothing = 2 ** (-(self.update_interval.value / self.half_life.value))
         else:
             self.smoothing = smoothing
+            if use_num_updates:
+                self.num_updates = 0
 
         # Construct the appropriate matching events
         self.move_device_events = [
@@ -346,8 +350,14 @@ class EMA(Algorithm):
             self._ensure_training_weights_active(state)
 
         if event in [Event.BATCH_END, Event.EPOCH_END]:
+            smoothing = self.smoothing
+            if self.num_updates is not None:
+                self.num_updates += 1
+                smoothing = min(
+                    smoothing, (1 + self.num_updates) / (10 + self.num_updates)
+                )
             # Update the ema model
-            compute_ema(state.model, self.ema_model, smoothing=self.smoothing)
+            compute_ema(state.model, self.ema_model, smoothing=smoothing)
 
         if event == Event.EVAL_START:
             # Verify that the ema params are on the correct device.

@@ -31,5 +31,9 @@ else
 fi
 export NUM_VISIBLE_DEVICES
 RUN_DIR="/share/kuleshov/$(whoami)/runs/dllm-dev"
+DATA_DIR="/share/kuleshov/ma2238/dllm-data"
+mkdir -p ${RUN_DIR}
+mkdir -p ${DATA_DIR}
 export RUN_DIR
+export DATA_DIR
 source ${script_full_path}

@@ -4,3 +4,4 @@ ema:
   smoothing: ${training.ema}
   ema_start: '0.0dur'
   update_interval: '1ba'
+  use_num_updates: true

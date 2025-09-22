@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import attr
 import hydra.utils
@@ -20,6 +20,7 @@ from transformers import (
 )
 from transformers.cache_utils import Cache
 from transformers.generation.utils import GenerateOutput
+from transformers.modeling_outputs import ModelOutput
 
 # Add the local directory (enables hydra.utils.instantiate for local imports)
 if str(Path(__file__).resolve().parent) not in sys.path:
@@ -43,19 +44,13 @@ class DenoiserInput(OrderedDict):
 
     xt: torch.LongTensor  # (B, L) token_ids
     x0: Optional[torch.LongTensor] = None  # (B, L) token_ids (not used in gen.)
-    # 1 / True indicates attention applies; 0 / False indicates ignore (e.g., padding)
     attention_mask: Optional[torch.FloatTensor] = None
-    # 1 / True indicates token is part of context; 0 / False indicates token should be
-    # generated / predicted
+    past_key_values: Optional[Union[torch.FloatTensor, Cache]] = None
     context_mask: Optional[torch.FloatTensor] = None
-    # 1 / True indicates token contributes to loss; 0 / False indicates otherwise;
-    # for most use cases, this should be `= attention_mask & ~context_mask`
     tokens_mask: Optional[torch.FloatTensor] = None  # (B, L)
-    t: Optional[torch.FloatTensor] = None  # (B,)
-    alpha_t: Optional[torch.FloatTensor] = None  # (B,) | (B, 1) | (B, 1, 1)
-    alpha_t_prime: Optional[torch.FloatTensor] = None  # (B,) | (B, 1) | (B, 1, 1)
-    past_key_values: Optional[Union[torch.FloatTensor, Cache]] = None  # (B, ctx_len, D)
-    # Placeholder in case future experiments require different inputs
+    t: Optional[torch.FloatTensor] = None  # (B,) | # (B, L)
+    alpha_t: Optional[torch.FloatTensor] = None  # (B,) | (B, 1|L) | (B, 1|L, 1)
+    alpha_t_prime: Optional[torch.FloatTensor] = None  # (B,) | (B, 1|L) | (B, 1|L, 1)
     backbone_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
@@ -118,6 +113,8 @@ class DenoiserConfig(PretrainedConfig):
         noise_config: dict[str, Any] | None = None,
         tokenization_config: dict[str, Any] | None = None,
         time_conditioned_backbone: bool | None = None,
+        attn_backend: str = "sdpa",  # "sdpa", "flash_attention_2", "flex_attention"
+        train_on_context: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -140,6 +137,8 @@ class DenoiserConfig(PretrainedConfig):
         self.tokenization_config = tokenization_config
         self.length = length
         self.time_conditioned_backbone = time_conditioned_backbone
+        self.attn_backend = attn_backend
+        self.train_on_context = train_on_context
 
 
 class Denoiser(ABC, PreTrainedModel):
@@ -153,6 +152,7 @@ class Denoiser(ABC, PreTrainedModel):
     def __init__(
         self,
         config: DenoiserConfig,
+        **kwargs,
     ):
         """
         Initialize the Denoiser with a configuration and optional dataset type.
@@ -205,6 +205,51 @@ class Denoiser(ABC, PreTrainedModel):
         """
         raise NotImplementedError("Denoiser subclasses must implement _prepare_inputs")
 
+    def _prepare_inputs_inference(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.FloatTensor | None = None,
+        context: torch.LongTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        cache: Dict[str, Any] | None = None,
+        **backbone_kwargs: Any,
+    ) -> Tuple[DenoiserInput, Dict[str, Any]]:
+        raise NotImplementedError(
+            "Denoiser subclasses must implement _prepare_inputs_inference"
+        )
+        # assert input_ids is not None or context is not None, (
+        #     "Must provide either input_ids or context."
+        # )
+        # cache = cache if cache is not None else {}
+        # past_key_values = cache.pop("past_key_values", DynamicCache())
+        # if context is not None:
+        #     if input_ids is not None:
+        #         if context_mask is None:
+        #             context_mask = torch.cat(
+        #                [torch.ones_like(context), torch.zeros_like(input_ids)], dim=-1
+        #             )
+        #         input_ids = torch.cat([context, input_ids], dim=-1)
+        #     else:
+        #         input_ids = context
+        #         context_mask = torch.ones_like(input_ids)
+        # if attention_mask is None:
+        #     cache_length = self._get_past_key_values_seq_length(past_key_values)
+        #     full_seq_length = cache_length + input_ids.shape[-1]
+        #     attention_mask = torch.ones(
+        #         (input_ids.shape[0], 1, input_ids.shape[1], full_seq_length),
+        #         device=input_ids.device,
+        #     )  # Make attention mask 4D
+        #     attention_mask = self._preprocess_attention_mask(
+        #         attention_mask, dtype=torch.float
+        #     )
+        # return DenoiserInput(
+        #     xt=input_ids,
+        #     attention_mask=attention_mask,
+        #     past_key_values=past_key_values,
+        #     context_mask=context_mask,
+        #     backbone_kwargs=backbone_kwargs,
+        # ), cache
+
     @abstractmethod
     def _compute_loss(
         self,
@@ -248,34 +293,33 @@ class Denoiser(ABC, PreTrainedModel):
     def _backbone_forward(
         self,
         denoiser_inputs: DenoiserInput,
-        return_past_key_values: bool = False,
         **backbone_kwargs: Any,
-    ) -> torch.FloatTensor | Cache:
+    ) -> ModelOutput:
         """Forward pass for the backbone model (should return logits).
 
         Some classes may need to override this method.
 
         Parameters:
             denoiser_inputs (DenoiserInput): Inputs passed to the denoiser model.
-            return_past_key_values (bool): If True, return past_key_values instead of
+            return_updated_cache (bool): If True, return past_key_values instead of
                 logits.
 
         Returns:
-            Backbone output (logits) or cache.
+            Backbone output (ModelOutput instance).
         """
         if self.time_conditioned_backbone:
             return self.backbone(
                 denoiser_inputs.xt,
                 attention_mask=denoiser_inputs.attention_mask,
+                past_key_values=denoiser_inputs.past_key_values,
                 noise=denoiser_inputs.alpha_t,
-                return_past_key_values=return_past_key_values,
                 **denoiser_inputs.backbone_kwargs,
                 **backbone_kwargs,
             )
         return self.backbone(
             denoiser_inputs.xt,
             attention_mask=denoiser_inputs.attention_mask,
-            return_past_key_values=return_past_key_values,
+            past_key_values=denoiser_inputs.past_key_values,
             **denoiser_inputs.backbone_kwargs,
             **backbone_kwargs,
         )
@@ -315,8 +359,7 @@ class Denoiser(ABC, PreTrainedModel):
 
         backbone_output = self._backbone_forward(denoiser_inputs, **kwargs)
         new_past_key_values = getattr(backbone_output, "past_key_values", None)
-        if hasattr(backbone_output, "logits"):
-            backbone_output = backbone_output.logits
+        backbone_output = getattr(backbone_output, "logits", backbone_output[0])
         denoiser_output = self._forward(
             backbone_output,
             denoiser_inputs,
@@ -356,36 +399,15 @@ class Denoiser(ABC, PreTrainedModel):
         )
         return (categorical_probs / gumbel_norm).argmax(dim=-1)
 
-    def _prepare_inputs_inference(
-        self,
-        input_ids: torch.LongTensor | None = None,
-        attention_mask: torch.FloatTensor | None = None,
-        context: torch.LongTensor | None = None,
-        context_mask: torch.FloatTensor | None = None,
-        past_key_values: Cache | None = None,
-        **kwargs: Any,
-    ) -> DenoiserInput:
-        assert input_ids is not None or context is not None, (
-            "Must provide either input_ids or context."
-        )
-        if context is not None:
-            if input_ids is not None:
-                if context_mask is None:
-                    context_mask = torch.cat(
-                        [torch.ones_like(context), torch.zeros_like(input_ids)], dim=-1
-                    )
-                input_ids = torch.cat([context, input_ids], dim=-1)
-            else:
-                input_ids = context
-                context_mask = torch.ones_like(input_ids)
-        if attention_mask is None:
-            attention_mask = torch.ones_like(input_ids, dtype=torch.float)
-        return DenoiserInput(
-            xt=input_ids,
-            attention_mask=attention_mask,
-            context_mask=context_mask,
-            past_key_values=past_key_values,
-        )
+    @staticmethod
+    def _preprocess_attention_mask(attention_mask, dtype):
+        min_dtype = torch.finfo(dtype).min
+        attention_mask = torch.where(
+            (attention_mask == 0.0).bool(),  # type: ignore
+            min_dtype,
+            0.0,
+        ).to(dtype)
+        return attention_mask
 
     @staticmethod
     def _get_past_key_values_seq_length(past_key_values: DynamicCache):
@@ -398,32 +420,32 @@ class Denoiser(ABC, PreTrainedModel):
                 )
         return seq_length
 
-    def update_past_key_values(
+    def update_cache(
         self,
         inputs: torch.LongTensor,
-        past_key_values: Cache | None = None,
+        cache: Dict[str, Any] | None = None,
         **backbone_kwargs: Any,
-    ) -> DynamicCache:
+    ) -> Dict[str, Any]:
         """
         Cache the key-value pairs for the context.
         Args:
             inputs (torch.LongTensor): The context tensor.
-            past_key_values (DynamicCache | None): Previous key-value cache.
+            cache (Dict[str, Any | None): Cache objects, e.g., past_key_values.
         Returns:
-            DynamicCache: Cached key-value pairs.
+            Dict: Updated cache objects, e.g., past_key_values.
         """
-        context_input = self._prepare_inputs_inference(
-            input_ids=inputs,
-            past_key_values=past_key_values,
-            return_past_key_values=True,
+        context_input, cache = self._prepare_inputs_inference(
+            input_ids=inputs, cache=cache, return_updated_cache=True, **backbone_kwargs
         )
-        past_key_values = self._backbone_forward(
+        backbone_output = self._backbone_forward(
             context_input,
-            past_key_values=past_key_values,
-            return_past_key_values=True,
-            **backbone_kwargs,
+            return_updated_cache=True,  # Will get absorbed in backbone_kwargs
+            **cache,
         )
-        return past_key_values
+        backbone_output = {k: v for k, v in backbone_output.items()}
+        backbone_output.pop("logits", None)  # Do not store logits in cache
+        cache = cache | backbone_output
+        return cache
 
     @torch.no_grad()
     def generate(

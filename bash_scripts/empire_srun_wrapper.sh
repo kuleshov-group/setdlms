@@ -3,7 +3,7 @@
 <<comment
 #  Usage:
 cd bash_scripts/
-source g2_run_wrapper.sh <SHELL_SCRIPT>
+source empire_run_wrapper.sh <SHELL_SCRIPT>
 comment
 
 
@@ -30,7 +30,10 @@ else
   NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 fi
 export NUM_VISIBLE_DEVICES
+DATA_DIR="/mnt/lustre/cornell/$(whoami)/data"
 RUN_DIR="/mnt/lustre/cornell/$(whoami)/runs/dllm-dev"
 mkdir -p ${RUN_DIR}
+mkdir -p ${DATA_DIR}
 export RUN_DIR
+export DATA_DIR
 source ${script_full_path}

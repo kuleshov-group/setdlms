@@ -6,23 +6,60 @@ source setup_env.sh
 
 # Important variables (fix during hyperparam sweep)
 BLOCK_SIZE=4
-USE_ENCODER_CAUSAL_MASK=false # true, false
-KEEP_BOTTOM_N_ENCODER_LAYERS=-1
-KEEP_TOP_N_DECODER_LAYERS=14
+EVAL_BLOCK_SIZE=4
+HIDDEN_SIZE=512
+INTERMEDIATE_SIZE=1536 #$(( 4 * HIDDEN_SIZE ))
+N_ENCODER_LAYERS=28
+ENCODER_TOP_LAYERS=false
+N_DECODER_LAYERS=4
+DECODER_TOP_LAYERS=false
+REINIT_ENCODER=true
+REINIT_DECODER=true
+TIE_WEIGHTS=false
+ENCODER_CAUSAL_MASK=false
 
 # Hyperparameters
-LR=1e-5 # 1e-5, 1e-4, 1e-3
-WARMUP_DURATION="1000ba" # 0.1, 0.3, 0.5
-BATCH_SIZE=128 # 96, 128, 256
-MAX_DURATION="10000ba" # 20000ba, 10000ba, 5000ba
+LR=3e-4
+WARMUP_DURATION="1000ba"
+BATCH_SIZE=128
+MAX_DURATION="500000ba"
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base # Qwen/Qwen3-0.6B-Base, Qwen/Qwen3-1.7B-Base, microsoft/Phi-4-mini-reasoning
+PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG=e2d2_qwen600M_v2
-RUN_NAME=wmt-block${BLOCK_SIZE}-keepbottomenc${KEEP_BOTTOM_N_ENCODER_LAYERS}-keeptopdec${KEEP_TOP_N_DECODER_LAYERS}-causalenc${USE_ENCODER_CAUSAL_MASK}-${TAG}
-
-MICRO_BATCH_SIZE=1
-NUM_WORKERS=8
+TAG=e2d2
+if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
+  ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
+else
+  ENC_LAYERS="enc${N_ENCODER_LAYERS}"
+fi
+if [ "${DECODER_TOP_LAYERS}" == "true" ]; then
+  DEC_LAYERS="TOPdec${N_DECODER_LAYERS}"
+else
+  DEC_LAYERS="dec${N_DECODER_LAYERS}"
+fi
+RUN_NAME=wmt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
+if [ "${TIE_WEIGHTS}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_tie-weights"
+fi
+if [ "${ENCODER_CAUSAL_MASK}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_encoder-causal-mask"
+fi
+if [ "${REINIT_ENCODER}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_reinit-encoder"
+fi
+if [ "${REINIT_DECODER}" == "true" ]; then
+  RUN_NAME="${RUN_NAME}_reinit-decoder"
+fi
+GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
+if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
+    MICRO_BATCH_SIZE=16
+elif [[ "$GPU_TYPE" == "A6000" ]]; then
+    MICRO_BATCH_SIZE=8
+else
+    MICRO_BATCH_SIZE=4
+fi
+#MICRO_BATCH_SIZE=16 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
+NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
@@ -30,28 +67,35 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=wmt_train \
   dataset@eval_dataset=wmt_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="1000ba" \
+  composer.trainer.eval_interval="5000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
-  composer.trainer.save_num_checkpoints_to_keep=-1 \
-  composer/lr_scheduler=cosine_annealing_with_warmup \
+  composer.trainer.save_num_checkpoints_to_keep=1 \
+  composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
-  model=bd3lm \
+  model=e2d2 \
+  model.config.attn_backend="sdpa" \
+  training.compile_backbone=true \
+  model.config.length=256 \
   model/backbone@model.config.backbone_config=llm_as_encoder_decoder \
-  model.config.length=1024 \
-  model.config.backbone_config.keep_bottom_n_encoder_layers=${KEEP_BOTTOM_N_ENCODER_LAYERS} \
-  model.config.backbone_config.keep_top_n_decoder_layers=${KEEP_TOP_N_DECODER_LAYERS} \
-  model.config.backbone_config.tie_encoder_decoder_weights=true \
-  model.config.backbone_config.use_encoder_causal_mask=${USE_ENCODER_CAUSAL_MASK} \
+  model.config.backbone_config.use_encoder_causal_mask=${ENCODER_CAUSAL_MASK} \
+  model.config.backbone_config.num_encoder_layers=${N_ENCODER_LAYERS} \
+  model.config.backbone_config.num_decoder_layers=${N_DECODER_LAYERS} \
+  model.config.backbone_config.tie_encoder_decoder_weights=${TIE_WEIGHTS} \
+  model.config.backbone_config.reinit_decoder=${REINIT_DECODER} \
+  model.config.backbone_config.reinit_encoder=${REINIT_ENCODER} \
+  model.config.backbone_config.keep_top_decoder_layers=${DECODER_TOP_LAYERS} \
+  model.config.backbone_config.keep_top_encoder_layers=${ENCODER_TOP_LAYERS} \
+  +model.config.backbone_config.hidden_size=${HIDDEN_SIZE} \
+  +model.config.backbone_config.intermediate_size=${INTERMEDIATE_SIZE} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
   ~composer.trainer.compile_config \
   ~composer.trainer.parallelism_config \
   block_size=${BLOCK_SIZE} \
+  eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="2000ba" \
+  composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.save_local=false \
-  composer.callbacks.hf_compatible_checkpointing.save_to_hub=true \
-  composer.callbacks.hf_compatible_checkpointing.hub_repo_id=yairschiff/${RUN_NAME}
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true

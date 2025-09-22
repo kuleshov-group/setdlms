@@ -17,7 +17,7 @@ WEIGHT_DECAY=1e-5 # 1e-5, 1e-3, 1e-1
 TAG=predict_pad-false_vdebug
 RUN_NAME=fineweb-ar-bs${BATCH_SIZE}-lr${LR}-warmup${WARMUP_DURATION}-gc${GRAD_CLIP}-wd${WEIGHT_DECAY}-${TAG}
 
-MICRO_BATCH_SIZE=1 # TODO: tune
+MICRO_BATCH_SIZE=1
 
 composer -n ${SLURM_GPUS_ON_NODE} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \

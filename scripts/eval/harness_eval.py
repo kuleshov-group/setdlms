@@ -4,10 +4,13 @@ This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 
 import json
 import os
+import re
+import sys
 from typing import Any, List, Tuple
 
 import accelerate
 import hydra
+import numpy as np
 import torch
 from lm_eval.api.model import LM
 from lm_eval.loggers.evaluation_tracker import EvaluationTracker
@@ -23,11 +26,12 @@ from transformers import (
 from datasets import Dataset
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
+    maybe_add_missing_special_tokens,
     print_and_save_config,
     register_useful_resolvers,
     set_seed,
 )
-from src.utils import fsspec_exists
+from src.utils import fsspec_exists, fsspec_mkdirs
 
 
 class LMEvalHarnessModel(LM):
@@ -41,6 +45,9 @@ class LMEvalHarnessModel(LM):
         ckpt_file: str = "best-rank0.pt",  # best-rank0.pt or latest-rank0.pt
         gen_kwargs: Any | None = None,
         accelerator: accelerate.Accelerator | None = None,
+        throughput_run: bool = False,
+        throughput_samples: int = 100,
+        throughput_warmup: int = 100,
     ):
         """
         Args:
@@ -55,11 +62,12 @@ class LMEvalHarnessModel(LM):
                 Ideally this should be passed via `lm_eval.evaluator.simple_evaluate`,
                 however this method expects `gen_kwargs` as string with comma-separated
                 arguments, which is not compatible in our hydra framework.
+            throughput_run (bool): Whether to run the evaluation throughput.
         """
         super().__init__()
-        self.generated_samples_output_path = (
-            f"{generated_samples_output_path}/lm_eval_harness_output"
-        )
+        self.generated_samples_output_path = generated_samples_output_path
+        if not fsspec_exists(self.generated_samples_output_path):
+            fsspec_mkdirs(self.generated_samples_output_path)
         self.accelerator = accelerator
         if self.accelerator is not None:
             device = self.accelerator.device
@@ -93,8 +101,11 @@ class LMEvalHarnessModel(LM):
                 )
         self.model = model.to(self.device)
         self.model.eval()
-        self.tokenizer = tokenizer
+        self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
         self.gen_kwargs = gen_kwargs
+        self.throughput_run = throughput_run
+        self.throughput_warmup = throughput_warmup
+        self.throughput_samples = throughput_samples
 
     @property
     def rank(self):
@@ -111,20 +122,24 @@ class LMEvalHarnessModel(LM):
         raise NotImplementedError
 
     def generate_until(self, requests, **generation_kwargs):
+        # TODO: Move this to utils file / perhaps use chat template
         def _tokenize(
             e,
             prefix_text: str | None = (
-                "<|im_end|>Please reason step by step, and put your "
+                f"{self.tokenizer.bos_token}Please reason step by step, and put your "
                 + "final answer within $\\boxed{}$. "
             ),
         ):
-            ctx = (prefix_text if prefix_text is not None else "") + e["prefix"]
-            # TODO: Hacks to make data look like training set
-            ctx = ctx.replace("Question: ", "")
-            ctx = ctx.replace("\nAnswer:", "<|im_end|>Answer:")
-            n_spaces = len(ctx) - len(ctx)
-            if n_spaces > 0:
-                ctx = ctx[:-n_spaces]
+            # ctx = (prefix_text if prefix_text is not None else "") + e["prefix"]
+            ctx = e["prefix"]
+            ctx = re.sub(
+                r"^####\s*(\d+)\s*$",
+                r"$\\boxed{\1}$" + self.tokenizer.eos_token,
+                ctx,
+                flags=re.MULTILINE,
+            )
+            ctx = ctx.replace("Question: ", prefix_text)
+            ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}Answer:")
             prefix_tokens = self.tokenizer(ctx)["input_ids"]
             return {
                 "prefix_text": ctx,
@@ -139,15 +154,45 @@ class LMEvalHarnessModel(LM):
         res = []
         res_for_json = []
         correct, total = 0, 0
+        tputs = []
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
         ):
+            if (
+                self.throughput_run
+                and i >= self.throughput_samples + self.throughput_warmup
+            ):
+                tputs_path = (
+                    f"{self.generated_samples_output_path}/throughput-rank{self.rank}"
+                )
+                with open(f"{tputs_path}.json", "w") as f:
+                    json.dump(
+                        {
+                            "throughput_mean": np.mean(tputs),
+                            "throughput_std": np.std(tputs),
+                            "throughput_all": tputs,
+                        },
+                        f,  # type: ignore
+                        indent=2,
+                    )
+                sys.exit(0)
+            if self.rank == 0 and i >= self.throughput_warmup:
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
+            else:
+                start_event, end_event = None, None
             sample = self.model.generate(
                 inputs=elem["prefix"][None, ...].to(self.device),
                 disable_pbar=(self.rank != 0),
                 # tokenizer=self.tokenizer,  # Uncomment for debugging
                 **self.gen_kwargs,
             )
+            if self.rank == 0 and i >= self.throughput_warmup:
+                end_event.record()
+                torch.cuda.synchronize()
+                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+                tputs.append((sample.numel() - elem["prefix"].numel()) / elapsed_time_s)
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
                 "<|eot_id|>",
@@ -178,12 +223,13 @@ class LMEvalHarnessModel(LM):
                     "result": result,
                 }
             )
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             if self.rank == 0:
                 print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
-
-        if not os.path.exists(self.generated_samples_output_path):
-            os.mkdir(self.generated_samples_output_path)
+                if i >= self.throughput_warmup:
+                    print(
+                        f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}"
+                    )
         samples_path = f"{self.generated_samples_output_path}/rank{self.rank}"
         with open(f"{samples_path}.json", "w") as f:
             json.dump(
@@ -215,7 +261,11 @@ def main(cfg: DictConfig) -> None:
                 task_name=task_name, samples=samples[task_name]
             )
         print(make_table(results))
+        metrics_f = f"{cfg.task.model.generated_samples_output_path}/metrics.txt"
+        with open(metrics_f, "w") as f:
+            f.write(make_table(results))
         if "groups" in results:
+            print_and_save_config(cfg, resolve=True, save_cfg=False)
             print(make_table(results, "groups"))
 
 

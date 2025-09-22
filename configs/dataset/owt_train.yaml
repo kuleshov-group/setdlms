@@ -1,2 +1,2 @@
 _target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
-dataset_path: /home/ubuntu/data/openwebtext-train_train_bs1024_wrapped_specialFalse.dat
+dataset_path: 'openwebtext-train_train_bs1024_wrapped_specialFalse.dat'

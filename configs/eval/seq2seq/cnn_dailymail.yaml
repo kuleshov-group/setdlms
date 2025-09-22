@@ -4,3 +4,4 @@ defaults:
 
 dataset:
   _target_: src.datasets.tokenize_on_demand.CNNDailyMailDataset
+  truncate: false

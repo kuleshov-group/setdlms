@@ -1,9 +1,11 @@
 import datetime
 import json
 import os
+import sys
 
 import evaluate
 import hydra
+import numpy as np
 import torch
 import torch.distributed as dist
 from omegaconf import DictConfig
@@ -13,12 +15,18 @@ from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 from transformers.generation import StopStringCriteria
 
 from scripts.utils import (
+    count_parameters,
+    format_number,
     load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
     print_and_save_config,
     register_useful_resolvers,
     set_seed,
 )
+from src.utils import fsspec_exists, fsspec_mkdirs
+
+THROUGHPUT_SAMPLES = 100
+THROUGHPUT_WARMUP = 100
 
 
 def gather_results(results, world_size):
@@ -76,6 +84,7 @@ def main(cfg: DictConfig) -> None:
             path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
             load_ema_weights=cfg.load_ema_weights,
             ckpt_file=cfg.ckpt_file,
+            **getattr(cfg, "model_config_overrides", {}),
         )
     except FileNotFoundError:
         try:
@@ -83,18 +92,22 @@ def main(cfg: DictConfig) -> None:
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
+                **getattr(cfg, "model_config_overrides", {}),
             )
         except ValueError:  # Model not compatible with CausalLM
             model = AutoModelForMaskedLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
+                **getattr(cfg, "model_config_overrides", {}),
             )
     model = model.to(device)
+    print(f"Num. parameters: {format_number(count_parameters(model, trainable=False))}")
+    print(f"Num. trainable parameters: {format_number(count_parameters(model))}")
     model.eval()
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
     stop_tokens = None
-    if "stopping_criteria" in gen_kwargs:
+    if getattr(gen_kwargs, "stopping_criteria", None) is not None:
         for sc in gen_kwargs["stopping_criteria"]:
             if isinstance(sc, StopStringCriteria):
                 stop_tokens = list(sc.stop_strings)
@@ -102,21 +115,47 @@ def main(cfg: DictConfig) -> None:
 
     # Iterate through the dataset and sample
     generated_samples = []
+    tputs = []
     for elem_id, elem in tqdm(
         enumerate(dataloader),
         desc="Generating",
         total=len(dataloader),
         disable=(local_rank != 0),
     ):
+        if getattr(cfg, "throughput_run", False) and elem_id >= (
+            THROUGHPUT_SAMPLES + THROUGHPUT_WARMUP
+        ):
+            if not fsspec_exists(cfg.output_path):
+                fsspec_mkdirs(cfg.output_path)
+            tputs_path = f"{cfg.output_path}/throughput-rank{local_rank}"
+            with open(f"{tputs_path}.json", "w") as f:
+                json.dump(
+                    {
+                        "throughput_mean": np.mean(tputs),
+                        "throughput_std": np.std(tputs),
+                        "throughput_all": tputs,
+                    },
+                    f,  # type: ignore
+                    indent=2,
+                )
+            if dist.is_initialized():
+                dist.destroy_process_group()
+            sys.exit(0)
+        if local_rank == 0:
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+        else:
+            start_event, end_event = None, None
         input_ids = elem["input_ids"].to(device)  # type: ignore
-        input_ids = input_ids[:, 1:]  # remove bos
-        prompt_ids = (
-            torch.tensor(tokenizer.encode(dataset.target_prompt_text.strip()))
-            .to(input_ids.dtype)
-            .to(input_ids.device)
-            .unsqueeze(0)
-        )
-        input_ids = torch.cat((input_ids, prompt_ids), dim=-1)
+        if dataset.target_prompt_text is not None:
+            prompt_ids = (
+                torch.tensor(tokenizer.encode(dataset.target_prompt_text.strip()))
+                .to(input_ids.dtype)
+                .to(input_ids.device)
+                .unsqueeze(0)
+            )
+            input_ids = torch.cat((input_ids, prompt_ids), dim=-1)
         # Generate samples
         with torch.no_grad():
             outputs = model.generate(
@@ -125,6 +164,12 @@ def main(cfg: DictConfig) -> None:
                 # tokenizer=tokenizer,  # For debugging: prints intermediate generation
                 **gen_kwargs,
             )
+            if local_rank == 0:
+                end_event.record()
+                torch.cuda.synchronize()
+                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+                if elem_id >= THROUGHPUT_WARMUP:
+                    tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
         outputs = outputs[:, input_ids.shape[-1] :]
         # Decode the generated samples
         outputs = tokenizer.decode(outputs[0])
@@ -133,9 +178,12 @@ def main(cfg: DictConfig) -> None:
         if stop_tokens is not None:
             for st in stop_tokens:
                 outputs = outputs.split(st)[0]
-        decoded_samples = dataset.target_prompt_text + outputs.strip()
+        decoded_samples = outputs.strip()
         if local_rank == 0:
+            print("Input:", tokenizer.decode(input_ids[0]))
             print("Output:", decoded_samples)
+            if elem_id >= THROUGHPUT_WARMUP:
+                print(f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
         generated_samples.append(decoded_samples)
 
     # Compute metrics
@@ -160,28 +208,29 @@ def main(cfg: DictConfig) -> None:
         )
 
         # Display results
-        print("\n=== Evaluation Metrics ===")
-        print(f"ROUGE-1: {rouge_scores['rouge1']:.4f}")
-        print(f"ROUGE-2: {rouge_scores['rouge2']:.4f}")
-        print(f"ROUGE-L: {rouge_scores['rougeL']:.4f}")
-        print(f"BLEU:    {bleu_score['score']:.4f}")
-        print(f"METEOR:  {meteor_score['meteor']:.4f}")
+        print("\n=== Evaluation Metrics ===\n")
+        print("| Metric  | Value   |")
+        print("|---------|---------|")
+        print(f"| ROUGE-1 | {rouge_scores['rouge1']:>7.4f} |")
+        print(f"| ROUGE-2 | {rouge_scores['rouge2']:>7.4f} |")
+        print(f"| ROUGE-L | {rouge_scores['rougeL']:>7.4f} |")
+        print(f"| BLEU    | {bleu_score['score']:>7.4f} |")
+        print(f"| METEOR  | {meteor_score['meteor']:>7.4f} |")
 
         res_for_json = [
             {"ground_truth": references[i], "result": generated_samples[i]}
             for i in range(len(generated_samples))
         ]
 
-        samples_path = f"{cfg.output_path}/seq2seq_eval_{cfg.task}_output"
-        if not os.path.exists(samples_path):
-            os.makedirs(samples_path)
-        with open(f"{samples_path}/all_ranks.json", "w") as f:
+        if not fsspec_exists(cfg.output_path):
+            fsspec_mkdirs(cfg.output_path)
+        with open(f"{cfg.output_path}/all_ranks.json", "w") as f:
             json.dump(
                 res_for_json,
                 f,  # type: ignore
                 indent=2,
             )
-        with open(f"{samples_path}/metrics.json", "w") as f:
+        with open(f"{cfg.output_path}/metrics.json", "w") as f:
             json.dump(
                 {
                     "ROUGE-1": rouge_scores["rouge1"],

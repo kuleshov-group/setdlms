@@ -1,0 +1,3 @@
+warmup_with_frozen_encoder:
+  _target_: src.custom_composer.callbacks.WarmupWithFrozenEncoder
+  num_warmup_steps: 1000

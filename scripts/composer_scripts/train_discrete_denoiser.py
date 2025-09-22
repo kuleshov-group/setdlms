@@ -1,5 +1,6 @@
 import logging
 
+# import time  # Use for multi-node
 import hydra
 import torch
 import torch.distributed as torch_dist
@@ -45,6 +46,7 @@ def main(cfg: DictConfig) -> None:
         model,
         tokenizer=tokenizer,
         metrics=list(hydra.utils.instantiate(cfg.metrics).values()),
+        eval_metrics=list(hydra.utils.instantiate(cfg.eval_metrics).values()),
     )
     log.info(
         f"Num. parameters: {format_number(count_parameters(model, trainable=False))}"
@@ -65,12 +67,10 @@ def main(cfg: DictConfig) -> None:
         world_size=dist.get_world_size(),
     )
     eval_collator = hydra.utils.instantiate(
-        cfg.collator,
+        cfg.eval_collator,
         tokenizer=tokenizer,
         rank=dist.get_global_rank(),
         world_size=dist.get_world_size(),
-        # Disable; this would make reproducibility per_device_batch_size dependent
-        antithetic_sampling=False,
     )
 
     # Train dataloader
@@ -152,7 +152,6 @@ def main(cfg: DictConfig) -> None:
         eval_dataloader=eval_dataloader,
         optimizers=optimizer,
         schedulers=lr_scheduler,
-        # TODO: since not using .values() view, need way to access algo.ema.ema_model
         algorithms=list(algorithms.values()),
         loggers=logger,
         callbacks=list(callbacks.values()),

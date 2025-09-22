@@ -53,9 +53,8 @@ class NLL(Metric):
     def update(self, output: Mapping | Tensor, target: Tensor) -> None:
         value = output[self.update_key]
         weight = output.get(self.weight_key, None)
-        # TODO hack for logit shifting
         if weight is not None:
-            weight = weight[:, -value.shape[1] :]
+            weight = weight[:, -value.shape[1] :]  # Logit shifting may create mismatch
 
         # broadcast weight to value shape; copied from:
         # https://github.com/Lightning-AI/torchmetrics/blob/master/src/torchmetrics/aggregation.py#L501-L625  # noqa: E501
@@ -122,3 +121,45 @@ class Perplexity(NLL):
          Perplexity
         """
         return torch.exp(self.mean_nll / self.weight)
+
+
+class MaskedTokenFrequency(Metric):
+    # Make torchmetrics call update only once
+    full_state_update = False
+
+    def __init__(
+        self,
+        name="masked_token_frequency",
+        update_key="masked_tokens",
+        weight_key="tokens_mask",
+        dist_sync_on_step=False,
+    ):
+        super().__init__(dist_sync_on_step=dist_sync_on_step)
+        self.name = name
+        self.update_key = update_key
+        self.weight_key = weight_key
+        self.add_state("masked_tokens", default=torch.tensor(0), dist_reduce_fx="sum")
+        self.add_state("weight", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    # noinspection LongLine
+    def update(self, output: Mapping | Tensor, target: Tensor) -> None:
+        value = output[self.update_key]
+        weight = output.get(self.weight_key, None)
+
+        # broadcast weight to value shape; copied from:
+        # https://github.com/Lightning-AI/torchmetrics/blob/master/src/torchmetrics/aggregation.py#L501-L625  # noqa: E501
+        if not isinstance(value, Tensor):
+            value = torch.as_tensor(value, dtype=self.dtype, device=self.device)
+        if weight is None:
+            weight = torch.ones_like(value)
+        elif not isinstance(weight, Tensor):
+            weight = torch.as_tensor(weight, dtype=self.dtype, device=self.device)
+        weight = torch.broadcast_to(weight, value.shape)
+
+        if value.numel() == 0:
+            return
+        self.masked_tokens += (value * weight).sum()
+        self.weight += weight.sum()
+
+    def compute(self) -> Tensor:
+        return self.masked_tokens / self.weight

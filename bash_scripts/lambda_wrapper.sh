@@ -25,5 +25,10 @@ if [ ! -e "${script_full_path}" ]; then
 fi
 NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 export NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES}
-export RUN_DIR="/home/ubuntu/runs/dllm-dev"
+RUN_DIR="/home/ubuntu/runs/dllm-dev"
+DATA_DIR="/home/ubuntu/data/"
+mkdir -p ${RUN_DIR}
+mkdir -p ${DATA_DIR}
+export RUN_DIR
+export DATA_DIR
 source ${script_full_path}

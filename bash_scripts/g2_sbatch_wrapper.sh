@@ -29,21 +29,24 @@ mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
 NUM_VISIBLE_DEVICES=8
 RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev"
+DATA_DIR="/share/kuleshov/ma2238/dllm-data"
+mkdir -p ${RUN_DIR}
+mkdir -p ${DATA_DIR}
 sbatch \
   --job-name=${script_name:4:-3} \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
   --partition=kuleshov,gpu \
-  --constraint="[h100|a100|a6000|a5000|3090]" \
+  --constraint="[h100|a100|a5000|3090]" \
   --time=960:00:00 \
-  --mem=64000 \
+  --mem=128000 \
   --nodes=1 \
   --ntasks-per-node=${NUM_VISIBLE_DEVICES} \
   --gres=gpu:${NUM_VISIBLE_DEVICES} \
   --mail-user=${USERNAME}@cornell.edu \
-  --mail-type=END \
+  --mail-type=ALL \
   --requeue \
-  --exclude=brandal \
-  --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR}" \
+  --exclude=nikola-compute-12 \
+  --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
   ${script_full_path}

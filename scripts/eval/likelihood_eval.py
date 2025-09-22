@@ -2,6 +2,7 @@ import logging
 import os
 
 import hydra
+import torch
 import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
@@ -50,6 +51,11 @@ def main(cfg: DictConfig) -> None:
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
             )
+    if False:  # getattr(cfg.training, "compile_backbone", False):
+        log.info("Compiling model backbone")
+        model.backbone = torch.compile(
+            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
+        )
     model = HuggingFaceModel(
         model=model,  # type: ignore
         tokenizer=tokenizer,
