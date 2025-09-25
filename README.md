@@ -6,16 +6,28 @@ Internal repo for iteration on Diffusion LLMs
 
 ### Setup environment
 
+Install mamba or conda (mamba is far faster):
+
+```bash
+# For mamba: https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html#umamba-install
+"${SHELL}" <(curl -L micro.mamba.pm/install.sh)
+
+# For conda: https://docs.conda.io/projects/conda/en/stable/user-guide/install/linux.html
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh && \
+bash miniconda.sh -b -p /opt/conda
+```
+
 Setup a conda environment and install dependencies using:
 
 ```bash
-conda env create -f requirements.yml
+micromamba env create -y -f requirements.yaml --channel-priority flexible
 ```
 
 Activate the environment:
 
 ```bash
 conda activate dllm-dev
+# OR micromamba activate dllm-dev
 ```
 
 We also include a [`setup_env.sh`](./setup_env.sh) script that can be used to set up the

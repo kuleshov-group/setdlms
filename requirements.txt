@@ -1,0 +1,17 @@
+torch==2.5.1
+accelerate
+datasets
+einops
+fire
+hydra-core
+ipdb
+lm-eval
+magic-wormhole
+# Latest mosaic version compatible with torch 2.5.1 is 0.30.0
+mosaicml==0.30.0
+mosaicml-streaming
+pre-commit
+sentencepiece
+ruff
+transformers==4.52.3
+wandb
