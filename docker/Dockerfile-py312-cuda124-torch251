@@ -1,0 +1,66 @@
+# Dockerfile for Python 3.12, CUDA 12.4, PyTorch 2.5.1
+FROM ubuntu:22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CUDA_VERSION=12.4
+ENV PYTHON_VERSION=3.12
+ENV PYTORCH_VERSION=2.5.1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    curl \
+    git \
+    build-essential \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Miniconda
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh && \
+    bash miniconda.sh -b -p /opt/conda && \
+    rm miniconda.sh
+
+# Add conda to PATH
+ENV PATH="/opt/conda/bin:${PATH}"
+
+# Initialize conda
+RUN conda init bash
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy requirements
+COPY requirements.yaml requirements.txt
+
+# Accept conda Terms of Service and create environment from requirements.yaml; use to avoid:
+# CondaToSNonInteractiveError: Terms of Service have not been accepted for the following channels. Please accept or remove them before proceeding:
+# - https://repo.anaconda.com/pkgs/main
+# - https://repo.anaconda.com/pkgs/r
+RUN conda config --set channel_priority flexible && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    conda env create -f requirements.yaml
+
+# Set environment variables for the project
+ENV HF_HOME="/workspace/.hf_cache"
+ENV PYTHONPATH="/workspace:/workspace/.hf_cache/modules"
+ENV HYDRA_FULL_ERROR=1
+ENV NCCL_P2P_LEVEL=NVL
+
+# Create entrypoint script that activates the conda environment
+RUN echo '#!/bin/bash' > /entrypoint.sh && \
+    echo 'set -e' >> /entrypoint.sh && \
+    echo 'source /opt/conda/etc/profile.d/conda.sh' >> /entrypoint.sh && \
+    echo 'conda activate dllm-dev' >> /entrypoint.sh && \
+    echo 'exec "$@"' >> /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+# Set the entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command
+CMD ["bash"]
+
+# Verify CUDA and PyTorch installation
+RUN /entrypoint.sh python -c "import torch; print(f'PyTorch version: {torch.__version__}')"

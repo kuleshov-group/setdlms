@@ -1,0 +1,37 @@
+# Dockerfile using prebuilt PyTorch 2.7.0 with CUDA 12.8
+FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
+# Use torch 2.7.0 rather than 2.7.1 as latest composer only supports up to 2.7.0:
+# https://github.com/mosaicml/composer/blob/v0.32.1/setup.py#L83
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONPATH="/workspace:/workspace/.hf_cache/modules"
+ENV HF_HOME="/workspace/.hf_cache"
+ENV HYDRA_FULL_ERROR=1
+ENV NCCL_P2P_LEVEL=NVL
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    vim \
+    build-essential \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy requirements.txt
+COPY requirements.txt .
+COPY docker/uv/uv.lock-py311-cuda128-torch270 uv.lock
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    . /root/.local/bin/env && \
+    uv pip install --no-build-isolation --system -r requirements.txt
+
+# Default command
+CMD ["bash"]
+
+# Verify PyTorch and CUDA installation
+RUN python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
