@@ -24,7 +24,7 @@ if [ ! -e "${script_full_path}" ]; then
   echo "Script '$script_full_path' not found."
 fi
 
-PARTITION="priority,cornell"  # "priority,cornell" <-- TODO: On priority weeks
+PARTITION="cornell"
 WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
