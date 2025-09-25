@@ -4,6 +4,20 @@ Internal repo for iteration on Diffusion LLMs
 
 ## 0. Setup
 
+### Provision hardware
+
+If necessary, provision accelerator-enabled VMs with [SkyPilot](https://docs.skypilot.co/en/latest/).
+
+For Lambda, e.g., this is all it takes to create a single A100 node for development:
+
+```bash
+pip install skypilot[lambda]
+sky launch --cluster dllm --gpus A100
+ssh dllm # sky creates ssh configs for you
+```
+
+SkyPilot can also provision clusters, setup environments, manage task execution and some other useful stuff.  See [docs/skypilot.md](docs/skypilot.md) for more details.
+
 ### Setup environment
 
 Install mamba or conda (mamba is far faster):
