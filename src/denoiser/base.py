@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
-import attr
 import hydra.utils
 import torch
 from transformers import (
@@ -63,38 +62,17 @@ class LossAndNllOutput(OrderedDict):
     other_loss_terms: dict = field(default_factory=dict)
 
 
-@attr.s(auto_attribs=True, init=False)
-class DenoiserOutput(OrderedDict):
+@dataclass
+class DenoiserOutput(ModelOutput):
     """Output of the denoiser model."""
 
-    denoiser_output: torch.FloatTensor
+    denoiser_output: Optional[torch.FloatTensor] = None
     logits: Optional[torch.FloatTensor] = None
     tokens_mask: Optional[torch.FloatTensor] = None  # Which tokens contribute to loss
     past_key_values: Optional[Cache] = None
     loss: Optional[torch.FloatTensor] = None
     nlls: Optional[torch.FloatTensor] = None
-
-    def __init__(
-        self,
-        denoiser_output: torch.FloatTensor,
-        logits: Optional[torch.FloatTensor] = None,
-        tokens_mask: Optional[torch.FloatTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        loss: Optional[torch.FloatTensor] = None,
-        nlls: Optional[torch.FloatTensor] = None,
-        **output_kwargs: Any,
-    ):
-        super().__init__()
-        self["denoiser_output"] = denoiser_output
-        self["logits"] = logits
-        self["tokens_mask"] = tokens_mask
-        self["past_key_values"] = past_key_values
-        self["loss"] = loss
-        self["nlls"] = nlls
-        for k, v in output_kwargs.items():
-            self[k] = v
-        for k, v in self.items():
-            setattr(self, k, v)
+    other_loss_terms: Optional[dict[str, Any]] = None
 
 
 class DenoiserConfig(PretrainedConfig):
@@ -384,7 +362,7 @@ class Denoiser(ABC, PreTrainedModel):
             tokens_mask=denoiser_inputs.tokens_mask,
             loss=loss,
             nlls=nlls,
-            **other_loss_terms,
+            other_loss_terms=other_loss_terms,
         )
 
     @staticmethod
