@@ -1,0 +1,3 @@
+defaults:
+  - owt_train_gpt2
+dataset_path: '${oc.env:DATA_DIR}/gpt2_tokenizer/openwebtext-valid_validation_bs1024_wrapped_specialFalse.dat'

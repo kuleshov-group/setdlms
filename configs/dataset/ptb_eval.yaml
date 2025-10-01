@@ -1,0 +1,2 @@
+_target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
+dataset_path: '${oc.env:DATA_DIR}/gpt2_tokenizer/zeroshot/ptb_validation_bs1024_wrapped_eosFalse.dat'
