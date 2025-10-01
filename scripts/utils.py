@@ -52,6 +52,8 @@ def maybe_add_missing_special_tokens(tokenizer: PreTrainedTokenizer):
         if hasattr(tokenizer, "get_added_vocab"):
             if "<|finetune_right_pad_id|>" in tokenizer.get_added_vocab().keys():
                 tokenizer.pad_token = "<|finetune_right_pad_id|>"
+            else:
+                tokenizer.pad_token = tokenizer.eos_token
         else:
             tokenizer.pad_token = tokenizer.eos_token
     if getattr(tokenizer, "mask_token", None) is None:
@@ -70,7 +72,9 @@ def maybe_add_missing_special_tokens(tokenizer: PreTrainedTokenizer):
                 tokenizer.mask_token = "_MASK"
                 tokenizer.mask_token_id = tokenizer.vocab["_MASK"]
             else:
-                raise ValueError("[MASK] token not specified for this tokenizer")
+                # Set mask token id == vocab size
+                special_tokens_dict = {"mask_token": "<|fim_middle|>"}
+                tokenizer.add_special_tokens(special_tokens_dict)
     return tokenizer
 
 
