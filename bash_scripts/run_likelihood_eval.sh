@@ -3,15 +3,15 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/gsm8k-bs96-keep1-max20000ba-lr1e-5-warmup1000ba-gc1.0-wd1e-5-ar_qweb2B_v1"
+MODEL_PATH="${RUN_DIR}/owt_block4_lr3e-4_bsz512_warm2000ba_max-dur1000000ba_enc20_dec4_hidden512_inter2048_e2d2_gpt2"
 REVISION=null
 
-EVAL_DATASET="gsm8k_eval"
-BLOCK_SIZE=null
+for EVAL_DATASET in "ptb_eval" "wikitext2_eval" "lm1b_eval" "lambada_eval" "ag_news_eval" "scientific_papers_arxiv_eval" "scientific_papers_pubmed_eval"; do
+BLOCK_SIZE=8
 BATCH_SIZE=32
-PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-1.7B-Base"
-CKPT_FILE="best-rank0.pt"
-USE_EMA=false
+PRETRAINED_MODEL_NAME_OR_PATH="gpt2"  # "Qwen/Qwen3-0.6B-Base"
+CKPT_FILE="ep2-ba38000-rank0.pt"
+USE_EMA=true
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \
@@ -22,7 +22,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   +dataset@task.eval_dataset=${EVAL_DATASET} \
   task.load_ema_weights=${USE_EMA} \
   task.ckpt_file=${CKPT_FILE} \
-  task.eval_dataset.max_length=null \
   seed=1 \
   batch_size=${BATCH_SIZE} \
   block_size=${BLOCK_SIZE} \
@@ -43,3 +42,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   ~generation/logits_processor@logits_processor_list \
   ~generation/stopping_criteria@stopping_criteria_list \
   gen_kwargs=null
+done
