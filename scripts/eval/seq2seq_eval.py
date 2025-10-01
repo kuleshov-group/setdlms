@@ -56,11 +56,12 @@ def setup_ddp() -> int:
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
-    print_and_save_config(cfg, resolve=True, save_cfg=False)
     set_seed(cfg.seed)
     local_rank = setup_ddp()
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     print(device)
+    if local_rank == 0:
+        print_and_save_config(cfg, resolve=True, save_cfg=False)
 
     # Load tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
@@ -102,8 +103,9 @@ def main(cfg: DictConfig) -> None:
                 **getattr(cfg, "model_config_overrides", {}),
             )
     model = model.to(device)
-    print(f"Num. parameters: {format_number(count_parameters(model, trainable=False))}")
-    print(f"Num. trainable parameters: {format_number(count_parameters(model))}")
+    if local_rank == 0:
+        print(f"Num. params: {format_number(count_parameters(model, trainable=False))}")
+        print(f"Num. trainable params: {format_number(count_parameters(model))}")
     model.eval()
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
     stop_tokens = None
