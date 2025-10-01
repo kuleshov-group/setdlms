@@ -48,6 +48,7 @@ class LMEvalHarnessModel(LM):
         throughput_run: bool = False,
         throughput_samples: int = 100,
         throughput_warmup: int = 100,
+        model_config_overrides: dict[str, Any] | None = None,
     ):
         """
         Args:
@@ -63,6 +64,7 @@ class LMEvalHarnessModel(LM):
                 however this method expects `gen_kwargs` as string with comma-separated
                 arguments, which is not compatible in our hydra framework.
             throughput_run (bool): Whether to run the evaluation throughput.
+            model_config_overrides (dict[str, Any]): Model config overrides.
         """
         super().__init__()
         self.generated_samples_output_path = generated_samples_output_path
@@ -79,12 +81,16 @@ class LMEvalHarnessModel(LM):
             self._world_size = 1
         self.device = torch.device(f"{device}")
 
+        model_config_overrides = (
+            {} if model_config_overrides is None else model_config_overrides
+        )
         if fsspec_exists(os.path.join(pretrained_model_name_or_path, "config.yaml")):
             model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=pretrained_model_name_or_path,
                 load_ema_weights=load_ema_weights,
                 ckpt_file=ckpt_file,
                 device=self.device,
+                **model_config_overrides,
             )
         else:
             try:
@@ -92,6 +98,7 @@ class LMEvalHarnessModel(LM):
                     pretrained_model_name_or_path,
                     trust_remote_code=True,
                     revision=pretrained_model_revision,
+                    **model_config_overrides,
                 )
             except ValueError:  # Model not compatible with CausalLM
                 model = AutoModelForMaskedLM.from_pretrained(
