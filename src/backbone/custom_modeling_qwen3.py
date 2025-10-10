@@ -42,7 +42,7 @@ class CustomQwen3Attention(Qwen3Attention):
         hidden_states: torch.Tensor,
         position_embeddings: Tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor],
-        past_key_value: Optional[Cache] = None,
+        past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         q_start_idx: int = 0,  # > 0: decoder pass w/encoder inputs in hidden_states
         **kwargs: Unpack[FlashAttentionKwargs],
@@ -53,7 +53,7 @@ class CustomQwen3Attention(Qwen3Attention):
         query_hidden_shape = (*query_input_shape, -1, self.head_dim)
 
         query_states = self.q_norm(
-            self.q_proj(hidden_states[:, q_start_idx:, ...]).view(query_hidden_shape)
+            self.q_proj(hidden_states[:, q_start_idx:, ...]).contiguous().view(query_hidden_shape)
         ).transpose(1, 2)
         key_states = self.k_norm(
             self.k_proj(hidden_states).view(hidden_shape)
@@ -65,11 +65,11 @@ class CustomQwen3Attention(Qwen3Attention):
             query_states, key_states, cos, sin, q_start_idx=q_start_idx
         )
 
-        if past_key_value is not None:
+        if past_key_values is not None:
             # sin and cos are specific to RoPE models
             # cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(
+            key_states, value_states = past_key_values.update(
                 key_states, value_states, self.layer_idx, cache_kwargs
             )
 
@@ -82,20 +82,9 @@ class CustomQwen3Attention(Qwen3Attention):
 
         attention_interface: Callable = eager_attention_forward
         if self.config._attn_implementation != "eager":
-            if self.config._attn_implementation == "sdpa" and kwargs.get(
-                "output_attentions", False
-            ):
-                logger.warning_once(
-                    "`torch.nn.functional.scaled_dot_product_attention`"
-                    "does not support `output_attentions=True`."
-                    " Falling back to eager attention."
-                    "This warning can be removed using the argument "
-                    '`attn_implementation="eager"` when loading the model.'
-                )
-            else:
-                attention_interface = ALL_ATTENTION_FUNCTIONS[
-                    self.config._attn_implementation
-                ]
+            attention_interface = ALL_ATTENTION_FUNCTIONS[
+                self.config._attn_implementation
+            ]
 
         attn_output, attn_weights = attention_interface(
             self,
@@ -124,7 +113,7 @@ class CustomQwen3DecoderLayer(Qwen3DecoderLayer):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
+        past_key_values: Optional[Cache] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
@@ -143,7 +132,7 @@ class CustomQwen3DecoderLayer(Qwen3DecoderLayer):
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=past_key_value,
+            past_key_values=past_key_values,
             output_attentions=output_attentions,
             use_cache=use_cache,
             cache_position=cache_position,

@@ -346,7 +346,7 @@ class LLMasEncoderDecoder(nn.Module):
                     hidden_states=decoder_hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    past_key_value=past_key_values,
+                    past_key_values=past_key_values,
                     output_attentions=False,
                     use_cache=True,
                     cache_position=cache_position,
