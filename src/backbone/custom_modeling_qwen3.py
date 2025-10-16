@@ -49,11 +49,12 @@ class CustomQwen3Attention(Qwen3Attention):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
-        query_input_shape = hidden_states[:, q_start_idx:, :].shape[:-1]
+        sa_hidden_sates = hidden_states[:, q_start_idx:, :]
+        query_input_shape = sa_hidden_sates.shape[:-1]
         query_hidden_shape = (*query_input_shape, -1, self.head_dim)
 
         query_states = self.q_norm(
-            self.q_proj(hidden_states[:, q_start_idx:, ...]).contiguous().view(query_hidden_shape)
+            self.q_proj(sa_hidden_sates).reshape(query_hidden_shape)
         ).transpose(1, 2)
         key_states = self.k_norm(
             self.k_proj(hidden_states).view(hidden_shape)
@@ -141,6 +142,7 @@ class CustomQwen3DecoderLayer(Qwen3DecoderLayer):
             **kwargs,
         )
         hidden_states = residual + hidden_states
+        # return hidden_states
 
         # Fully Connected
         residual = hidden_states

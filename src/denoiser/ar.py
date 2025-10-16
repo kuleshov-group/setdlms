@@ -71,12 +71,12 @@ class AR(Denoiser):
         # Prepare inputs for autoregressive model
         labels = copy.deepcopy(input_ids[..., 1:])[..., None]
         input_ids = input_ids[..., :-1]
-        if attention_mask is None:
-            attention_mask = torch.ones_like(input_ids)
-        elif attention_mask.shape != input_ids.shape:
+        if attention_mask is not None and attention_mask.shape != input_ids.shape:
             attention_mask = attention_mask[..., :-1]
         if context_mask is None:
-            context_mask = torch.zeros_like(attention_mask)
+            context_mask = torch.zeros_like(input_ids)
+        elif context_mask.sum() == 0 and attention_mask is None or (attention_mask == 1).all():
+            attention_mask = None
         else:
             context_mask = context_mask[..., :-1]
         if self.training and self.config.train_on_context:

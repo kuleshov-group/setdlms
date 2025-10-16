@@ -69,6 +69,8 @@ class NLL(Metric):
         if value.numel() == 0:
             return
         self.mean_nll += (value * weight).sum()
+        if self.weight.dtype != weight.dtype:
+            self.weight = self.weight.to(weight.dtype)
         self.weight += weight.sum()
 
     def compute(self) -> Tensor:
