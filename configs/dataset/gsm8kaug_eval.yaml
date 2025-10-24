@@ -1,6 +1,0 @@
-_target_: src.datasets.tokenize_on_demand.GSM8KAugDataset
-split: "test"
-max_length: ${model.config.length}
-dataset_path: "whynlp/gsm8k-aug-nl"
-padding: false
-add_special_tokens: true

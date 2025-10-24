@@ -3,34 +3,35 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-######### AR
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=true
-BLOCK_SIZE=1
-MODEL_PATH="${RUN_DIR}/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_reinit"
+# TODO: Uncomment a model and run
 
-######### MDLM
+######## AR
+#KV_CACHING=true
+#ALIGN_INPUTS_TO_BLOCKS=true
+#BLOCK_SIZE=1
+#MODEL_PATH="${RUN_DIR}/<PATH_TO_AR_SAVED_MODEL_DIR>"
+
+########### MDLM
 #KV_CACHING=false
-#ALIGN_INPUTS_TO_BLOCKS=true
-#BLOCK_SIZE=32
-#MODEL_PATH="${RUN_DIR}/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_reinit"
-
-############ BD3LM
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#BLOCK_SIZE=8
-  #MODEL_PATH="${RUN_DIR}/cnn_block8_lr3e-4_bsz128_warm1000ba_layers12_hidden256_inter768_bd3lm_reinit"
-
-############ E2D2
-#BLOCK_SIZE=8
-#MODEL_PATH="${RUN_DIR}/cnn_block8_lr3e-4_bsz128_warm1000ba_enc20_dec8_hidden256_inter768_e2d2_reinit-encoder_reinit-decoder"
-#KV_CACHING=true
 #ALIGN_INPUTS_TO_BLOCKS=false
+#BLOCK_SIZE=32
+#MODEL_PATH="${RUN_DIR}/<PATH_TO_MDLM_SAVED_MODEL_DIR>"
 
-OUTPUT_DIR="${MODEL_PATH}/cnn_dailymail"
+########### BD3LM
+#KV_CACHING=true
+#ALIGN_INPUTS_TO_BLOCKS=true
+#BLOCK_SIZE=8
+#MODEL_PATH="${RUN_DIR}/<PATH_TO_BD3LM_SAVED_MODEL_DIR>"#LEN_PENALTY=1.1
+
+########### E2D2
+BLOCK_SIZE=8
+MODEL_PATH="kuleshov-group/e2d2-cnndm"
+#MODEL_PATH="${RUN_DIR}/<PATH_TO_E2D2_SAVED_MODEL_DIR>"
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=false
+
+OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail"
 REVISION=null
-mkdir -p ${OUTPUT_DIR}
-
 mkdir -p ${OUTPUT_DIR}
 
 L=256

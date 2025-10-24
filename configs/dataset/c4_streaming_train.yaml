@@ -1,7 +1,0 @@
-_target_: src.datasets.streaming_dataset.StreamingTextDataset
-max_length: ${model.config.length}
-remote: /share/kuleshov/akg87/bioLLM/llmLib_workspace/llmlib/my-copy-c4
-predownload: 100_000
-split: "train"
-shuffle: true
-batch_size: ${train_dataloader.batch_size}

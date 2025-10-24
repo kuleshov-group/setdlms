@@ -19,7 +19,6 @@ from scripts.utils import (
     format_number,
     load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
-    print_and_save_config,
     register_useful_resolvers,
     set_seed,
 )
@@ -60,8 +59,6 @@ def main(cfg: DictConfig) -> None:
     local_rank = setup_ddp()
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     print(device)
-    if local_rank == 0:
-        print_and_save_config(cfg, resolve=True, save_cfg=False)
 
     # Load tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
@@ -95,7 +92,7 @@ def main(cfg: DictConfig) -> None:
                 revision=getattr(cfg, "pretrained_model_revision", None),
                 **getattr(cfg, "model_config_overrides", {}),
             )
-        except ValueError:  # Model not compatible with CausalLM
+        except:  # Model not compatible with CausalLM
             model = AutoModelForMaskedLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,

@@ -5,31 +5,22 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 
-# Important variables (fix during hyperparam sweep)
+# Model arch
 HIDDEN_SIZE=512
-INTERMEDIATE_SIZE=1536 #$(( 4 * HIDDEN_SIZE ))
+INTERMEDIATE_SIZE=1536
 N_LAYERS=32
-TOP_LAYERS=false
-REINIT_MODEL=true
 
 # Hyperparameters
 LR=3e-4
-WARMUP_DURATION="1000ba" # 0.1, 0.3, 0.5
+WARMUP_DURATION="1000ba"
 BATCH_SIZE=128
 MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
 TAG="ar_target_prompt"
-if [ "${TOP_LAYERS}" == "true" ]; then
-  LAYERS="TOPlayers${N_LAYERS}"
-else
-  LAYERS="layers${N_LAYERS}"
-fi
+LAYERS="layers${N_LAYERS}"
 RUN_NAME=wmt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
-if [ "${REINIT_MODEL}" == "true" ]; then
-  RUN_NAME="${RUN_NAME}_reinit"
-fi
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
@@ -39,7 +30,6 @@ elif [[ "$GPU_TYPE" == "A6000" ]]; then
 else
     MICRO_BATCH_SIZE=4
 fi
-#MICRO_BATCH_SIZE=16 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -59,17 +49,15 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   training.compile_backbone=true \
   model.config.length=256 \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
-  model.config.backbone_config.reinit_model=${REINIT_MODEL} \
+  model.config.backbone_config.reinit_model=true \
   model.config.backbone_config.num_layers=${N_LAYERS} \
-  model.config.backbone_config.keep_top_layers=${TOP_LAYERS} \
+  model.config.backbone_config.keep_top_layers=false \
   +model.config.backbone_config.hidden_size=${HIDDEN_SIZE} \
   +model.config.backbone_config.intermediate_size=${INTERMEDIATE_SIZE} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
-  ~composer.trainer.compile_config \
-  ~composer.trainer.parallelism_config \
   training.antithetic_sampling=false \
-  hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
+  hydra.run.dir=outputs/${RUN_NAME} \
   composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \

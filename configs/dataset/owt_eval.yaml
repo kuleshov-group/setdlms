@@ -1,3 +1,0 @@
-defaults:
-  - owt_train
-dataset_path: 'openwebtext-valid_validation_bs1024_wrapped_specialFalse.dat'

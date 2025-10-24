@@ -7,5 +7,3 @@ config:
   _target_: src.denoiser.diffusion.BD3LMConfig
   block_size: ${block_size}
   eval_block_size: ${block_size}
-  backbone_is_decoder_only: true  # true for BD3LM, false for E2D2
-  shift_logits: false

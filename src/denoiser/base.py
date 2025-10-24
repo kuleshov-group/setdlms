@@ -1,13 +1,14 @@
+import copy
 import inspect
 import sys
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 import hydra.utils
 import torch
+from hydra.errors import InstantiationException
 from transformers import (
     AutoTokenizer,
     DynamicCache,
@@ -21,14 +22,13 @@ from transformers.cache_utils import Cache
 from transformers.generation.utils import GenerateOutput
 from transformers.modeling_outputs import ModelOutput
 
-# Add the local directory (enables hydra.utils.instantiate for local imports)
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.append(str(Path(__file__).resolve().parent))
-
 # Local imports not used, but added here so that HF push_to_hub adds them to model repo
 # noinspection PyUnresolvedReferences
 from src.backbone.automodel import AutoModelFromPreTrained  # noqa: F401
-from src.backbone.encoder_decoder import LLMasEncoderDecoder  # noqa: F401
+from src.backbone.encoder_decoder import (  # noqa: F401
+    LLMasEncoderDecoder,
+    LLMasEncoderDecoderShareKV,
+)
 from src.noise_schedule.noise_schedules import (  # noqa: F401
     CosineNoise,
     ExponentialNoise,
@@ -86,11 +86,11 @@ class DenoiserConfig(PretrainedConfig):
 
     def __init__(
         self,
-        length: int | None = None,
-        backbone_config: dict[str, Any] | None = None,
-        noise_config: dict[str, Any] | None = None,
-        tokenization_config: dict[str, Any] | None = None,
-        time_conditioned_backbone: bool | None = None,
+        length: Optional[int] = None,
+        backbone_config: Optional[Dict[str, Any]] = None,
+        noise_config: Optional[Dict[str, Any]] = None,
+        tokenization_config: Optional[Dict[str, Any]] = None,
+        time_conditioned_backbone: Optional[bool] = None,
         attn_backend: str = "sdpa",  # "sdpa", "flash_attention_2", "flex_attention"
         train_on_context: bool = False,
         **kwargs,
@@ -145,7 +145,25 @@ class Denoiser(ABC, PreTrainedModel):
         self.pad_token_id = config.pad_token_id
         self.bos_token_id = config.bos_token_id
         self.eos_token_id = config.eos_token_id
-        self.backbone = hydra.utils.instantiate(config.backbone_config)
+        try:
+            self.backbone = hydra.utils.instantiate(config.backbone_config)
+        except InstantiationException:
+            # When using HF and `from_pretrained`, the modules specified in `_target_`
+            # fields in our configs are already being imported under a name with the
+            # following format: transformers_modules.<repo_id>.<commit_id>.
+            # When hydra attempts to instantiate and calls importlib under the hood, the
+            # desired module is not found.
+            # The snippet below aliases the desired module, enabling seamless use of
+            # `hydra.utils.instantiate`.
+            sys_modules = copy.deepcopy(list(sys.modules.keys()))
+            repo_root_module = ".".join(__name__.split(".")[:-1])
+            for name in sys_modules:
+                if name.startswith(repo_root_module):
+                    short = name.split(".")[-1]
+                    if short not in sys.modules:
+                        sys.modules[short] = sys.modules[name]
+            del sys_modules
+            self.backbone = hydra.utils.instantiate(config.backbone_config)
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.tokenizer_name,
             trust_remote_code=True,
@@ -160,15 +178,18 @@ class Denoiser(ABC, PreTrainedModel):
             if config.time_conditioned_backbone is not None
             else "noise" in inspect.getfullargspec(self.backbone.forward).args
         )
+        # List that can contain any parameters that should not be pushed to HF,
+        # e.g., registered buffers for static attention masks
+        self.skip_params_for_push = []
 
     @abstractmethod
     def _prepare_inputs(
         self,
         input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        context_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
-        past_key_values: Cache | None = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        context_mask: Optional[torch.FloatTensor] = None,
+        t: Optional[torch.FloatTensor] = None,
+        past_key_values: Optional[Cache] = None,
     ) -> DenoiserInput:
         """
         Prepare inputs for the model.
@@ -185,11 +206,11 @@ class Denoiser(ABC, PreTrainedModel):
 
     def _prepare_inputs_inference(
         self,
-        input_ids: torch.LongTensor | None = None,
-        attention_mask: torch.FloatTensor | None = None,
-        context: torch.LongTensor | None = None,
-        context_mask: torch.FloatTensor | None = None,
-        cache: Dict[str, Any] | None = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        context: Optional[torch.LongTensor] = None,
+        context_mask: Optional[torch.FloatTensor] = None,
+        cache: Optional[Dict[str, Any]] = None,
         **backbone_kwargs: Any,
     ) -> Tuple[DenoiserInput, Dict[str, Any]]:
         raise NotImplementedError(
@@ -305,11 +326,11 @@ class Denoiser(ABC, PreTrainedModel):
     def forward(
         self,
         input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        context_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
-        past_key_values: Cache | None = None,
-        compute_loss: bool | None = True,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        context_mask: Optional[torch.FloatTensor] = None,
+        t: Optional[torch.FloatTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        compute_loss: Optional[bool] = True,
         **kwargs,
     ) -> DenoiserOutput:
         """
@@ -368,7 +389,6 @@ class Denoiser(ABC, PreTrainedModel):
     @staticmethod
     def _sample_categorical(categorical_probs, do_sample=True):
         """Helper function to sample from a categorical distribution."""
-        # TODO: for greedy, can we skip fp64 casting?
         categorical_probs = categorical_probs.to(torch.float64)
         if not do_sample:
             return categorical_probs.argmax(dim=-1)
@@ -401,7 +421,7 @@ class Denoiser(ABC, PreTrainedModel):
     def update_cache(
         self,
         inputs: torch.LongTensor,
-        cache: Dict[str, Any] | None = None,
+        cache: Optional[Dict[str, Any]] = None,
         **backbone_kwargs: Any,
     ) -> Dict[str, Any]:
         """
@@ -428,16 +448,16 @@ class Denoiser(ABC, PreTrainedModel):
     @torch.no_grad()
     def generate(
         self,
-        inputs: torch.LongTensor | None = None,
-        generation_config: GenerationConfig | None = None,
-        logits_processor: LogitsProcessorList | None = None,
-        stopping_criteria: StoppingCriteriaList | None = None,
-        max_length: int | None = None,
-        max_new_tokens: int | None = None,
-        batch_size: int | None = None,
-        device: str | None = None,
+        inputs: Optional[torch.LongTensor] = None,
+        generation_config: Optional[GenerationConfig] = None,
+        logits_processor: Optional[LogitsProcessorList] = None,
+        stopping_criteria: Optional[StoppingCriteriaList] = None,
+        max_length: Optional[int] = None,
+        max_new_tokens: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        device: Optional[str] = None,
         **kwargs: Any,
-    ) -> GenerateOutput | torch.LongTensor:
+    ) -> Union[GenerateOutput, torch.LongTensor]:
         """Generates sample from denoising model.
         Follows signature of transformers.GenerationMixin.
         """

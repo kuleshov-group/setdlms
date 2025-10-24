@@ -1,5 +1,0 @@
-defaults:
-  - c4_streaming_train
-split: "val"
-shuffle: false
-batch_size: ${eval_dataloader.batch_size}

@@ -27,7 +27,6 @@ from datasets import Dataset
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
-    print_and_save_config,
     register_useful_resolvers,
     set_seed,
 )
@@ -100,11 +99,12 @@ class LMEvalHarnessModel(LM):
                     revision=pretrained_model_revision,
                     **model_config_overrides,
                 )
-            except ValueError:  # Model not compatible with CausalLM
+            except:  # Model not compatible with CausalLM
                 model = AutoModelForMaskedLM.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=True,
                     revision=pretrained_model_revision,
+                    **model_config_overrides,
                 )
         self.model = model.to(self.device)
         self.model.eval()
@@ -137,7 +137,6 @@ class LMEvalHarnessModel(LM):
                 + "final answer within $\\boxed{}$. "
             ),
         ):
-            # ctx = (prefix_text if prefix_text is not None else "") + e["prefix"]
             ctx = e["prefix"]
             ctx = re.sub(
                 r"^####\s*(\d+)\s*$",
@@ -183,7 +182,7 @@ class LMEvalHarnessModel(LM):
                         indent=2,
                     )
                 sys.exit(0)
-            if self.rank == 0 and i >= self.throughput_warmup:
+            if self.rank == 0:
                 start_event = torch.cuda.Event(enable_timing=True)
                 end_event = torch.cuda.Event(enable_timing=True)
                 start_event.record()
@@ -195,11 +194,13 @@ class LMEvalHarnessModel(LM):
                 # tokenizer=self.tokenizer,  # Uncomment for debugging
                 **self.gen_kwargs,
             )
-            if self.rank == 0 and i >= self.throughput_warmup:
+            if self.rank == 0:
                 end_event.record()
                 torch.cuda.synchronize()
                 elapsed_time_s = start_event.elapsed_time(end_event) / 1000
-                tputs.append((sample.numel() - elem["prefix"].numel()) / elapsed_time_s)
+                tput = (sample.numel() - elem["prefix"].numel()) / elapsed_time_s
+                if i >= self.throughput_warmup:
+                    tputs.append(tput)
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
                 "<|eot_id|>",
@@ -237,6 +238,8 @@ class LMEvalHarnessModel(LM):
                     print(
                         f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}"
                     )
+                else:
+                    print(f"Thput (tok/s): {tput:0.2f}")
         samples_path = f"{self.generated_samples_output_path}/rank{self.rank}"
         with open(f"{samples_path}.json", "w") as f:
             json.dump(
@@ -252,8 +255,6 @@ class LMEvalHarnessModel(LM):
 def main(cfg: DictConfig) -> None:
     accelerator = accelerate.Accelerator()
     accelerator = accelerate.Accelerator() if accelerator.num_processes > 1 else None
-    if accelerator is None or accelerator.local_process_index == 0:
-        print_and_save_config(cfg, resolve=True, save_cfg=False)
     set_seed(cfg.seed)
     model = hydra.utils.instantiate(cfg.task.model, accelerator=accelerator)
     results = hydra.utils.call(cfg.task, model=model)
@@ -272,7 +273,6 @@ def main(cfg: DictConfig) -> None:
         with open(metrics_f, "w") as f:
             f.write(make_table(results))
         if "groups" in results:
-            print_and_save_config(cfg, resolve=True, save_cfg=False)
             print(make_table(results, "groups"))
 
 

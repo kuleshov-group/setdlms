@@ -4,26 +4,25 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-#for N in 17 21 28; do
-# Important variables (fix during hyperparam sweep)
+# Model arch
 BLOCK_SIZE=4
 EVAL_BLOCK_SIZE=4
-N_LAYERS=28 #${N} #28
+N_LAYERS=17
 TOP_LAYERS=false
 REINIT_MODEL=false
 
 # Hyperparameters
 LR=1e-5
-WARMUP_DURATION="100ba" # 0.1, 0.3, 0.5
+WARMUP_DURATION="100ba"
 ALPHA_F=0.5
-BATCH_SIZE=1 # 96, 128, 256
+BATCH_SIZE=1
 MAX_DURATION="30000ba"
-PRECISION="amp_bf16" # amp_bf16 fp32
+PRECISION="amp_bf16"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG=bd3lm
+TAG="bd3lm"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -34,7 +33,7 @@ if [ "${REINIT_MODEL}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_reinit"
 fi
 
-MICRO_BATCH_SIZE=1 #$(( BATCH_SIZE / NUM_VISIBLE_DEVICES ))
+MICRO_BATCH_SIZE=1
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
@@ -60,15 +59,12 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.keep_top_layers=${TOP_LAYERS} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
-  ~composer.trainer.compile_config \
-  ~composer.trainer.parallelism_config \
   block_size=${BLOCK_SIZE} \
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
-  hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
+  hydra.run.dir=outputs/${RUN_NAME} \
   composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   eval_dataloader.batch_size=4
-#done

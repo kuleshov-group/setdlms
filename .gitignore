@@ -4,5 +4,6 @@ __pycache__/
 .ipynb_checkpoints/
 .pytest_cache/
 .ruff_cache/
+.DS_Store
 outputs/
 watch_folder

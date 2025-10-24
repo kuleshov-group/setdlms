@@ -1,6 +1,6 @@
 ## SkyPilot
 
-These examples show how to use [SkyPilot](https://docs.skypilot.co/en/latest/) to deploy development nodes or clusters.  
+These examples show how to use [SkyPilot](https://docs.skypilot.co/en/latest/) to deploy development nodes or clusters.
 
 All examples assume [Lambda](https://lambda.ai/) as the cloud provider, but many others are possible: https://docs.skypilot.co/en/latest/overview.html#cloud-vms.
 
@@ -78,7 +78,7 @@ envs:
 
 # This determines the local dir for /home/ubuntu/sky_workdir,
 # which is where `setup` runs below
-workdir: .  
+workdir: .
 
 setup: |
 
@@ -87,7 +87,7 @@ setup: |
 
   # Create local env for future jobs and ssh sessions
   > ~/.env # Clear first
-  
+
   # Add tokens/secrets from client env
   for var in HUGGING_FACE_HUB_TOKEN WANDB_API_KEY; do
     declare -n ref=$var
@@ -154,7 +154,7 @@ sky down dllm
 
 ---
 
-How do I reset SkyPilot state? 
+How do I reset SkyPilot state?
 
 This is very important when jumping around between projects or when using different versions of SkyPilot installed locally.  There is no good reason not to do this frequently, aside from certain cloud providers that require global sky configurations in `~/.sky/config.yaml` (e.g. [kubernetes](https://docs.skypilot.co/en/latest/reference/kubernetes/kubernetes-getting-started.html#launching-your-first-task)).
 

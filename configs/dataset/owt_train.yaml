@@ -1,2 +1,0 @@
-_target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
-dataset_path: 'openwebtext-train_train_bs1024_wrapped_specialFalse.dat'

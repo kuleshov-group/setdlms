@@ -1,9 +1,0 @@
-#file: noinspection LongLine
-_target_: src.datasets.tokenize_on_demand.GSM8KAugDataset
-split: "train"
-max_length: ${model.config.length}
-dataset_path: "whynlp/gsm8k-aug-nl"
-padding: false
-add_special_tokens: true
-source_prompt_text: "Please reason step by step, and put your final answer within $\\boxed{}$. "
-target_prompt_text: "Answer: "

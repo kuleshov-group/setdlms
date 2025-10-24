@@ -1,5 +1,5 @@
 import copy
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 from transformers import (
@@ -31,11 +31,11 @@ class ARConfig(DenoiserConfig):
 
     def __init__(
         self,
-        length: int | None = None,
-        backbone_config: dict[str, Any] | None = None,
-        tokenization_config: dict[str, Any] | None = None,
+        length: Optional[int] = None,
+        backbone_config: Optional[Dict[str, Any]] = None,
+        tokenization_config: Optional[Dict[str, Any]] = None,
         noise_config: None = None,
-        time_conditioned_backbone: bool | None = None,
+        time_conditioned_backbone: Optional[bool] = None,
         **kwargs,
     ):
         super().__init__(
@@ -63,10 +63,10 @@ class AR(Denoiser):
     def _prepare_inputs(
         self,
         input_ids: torch.LongTensor,
-        attention_mask: torch.FloatTensor | None = None,
-        context_mask: torch.FloatTensor | None = None,
-        t: torch.FloatTensor | None = None,
-        past_key_values: Cache | None = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        context_mask: Optional[torch.FloatTensor] = None,
+        t: Optional[torch.FloatTensor] = None,
+        past_key_values: Optional[Cache] = None,
     ) -> DenoiserInput:
         # Prepare inputs for autoregressive model
         labels = copy.deepcopy(input_ids[..., 1:])[..., None]
@@ -75,7 +75,11 @@ class AR(Denoiser):
             attention_mask = attention_mask[..., :-1]
         if context_mask is None:
             context_mask = torch.zeros_like(input_ids)
-        elif context_mask.sum() == 0 and attention_mask is None or (attention_mask == 1).all():
+        elif (
+            context_mask.sum() == 0
+            and attention_mask is None
+            or (attention_mask == 1).all()
+        ):
             attention_mask = None
         else:
             context_mask = context_mask[..., :-1]
@@ -94,11 +98,11 @@ class AR(Denoiser):
 
     def _prepare_inputs_inference(
         self,
-        input_ids: torch.LongTensor | None = None,
-        attention_mask: torch.FloatTensor | None = None,
-        context: torch.LongTensor | None = None,
-        context_mask: torch.FloatTensor | None = None,
-        cache: Dict[str, Any] | None = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        context: Optional[torch.LongTensor] = None,
+        context_mask: Optional[torch.FloatTensor] = None,
+        cache: Optional[Dict[str, Any]] = None,
         **backbone_kwargs: Any,
     ) -> Tuple[DenoiserInput, Dict[str, Any]]:
         pass  # Not used
@@ -123,18 +127,18 @@ class AR(Denoiser):
     @torch.no_grad()
     def generate(
         self,
-        inputs: torch.LongTensor | None = None,
-        generation_config: GenerationConfig | None = None,
-        logits_processor: LogitsProcessorList | None = None,
-        stopping_criteria: StoppingCriteriaList | None = None,
-        max_length: int | None = None,
-        max_new_tokens: int | None = None,
-        batch_size: int | None = None,
-        device: str | None = None,
-        tokenizer: PreTrainedTokenizer | None = None,
-        disable_pbar: bool | None = None,  # not used; compatability w/other denoisers
+        inputs: Optional[torch.LongTensor] = None,
+        generation_config: Optional[GenerationConfig] = None,
+        logits_processor: Optional[LogitsProcessorList] = None,
+        stopping_criteria: Optional[StoppingCriteriaList] = None,
+        max_length: Optional[int] = None,
+        max_new_tokens: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        device: Optional[str] = None,
+        tokenizer: Optional[PreTrainedTokenizer] = None,
+        disable_pbar: Optional[bool] = None,  # not used; compat. w/other denoisers
         **kwargs,
-    ) -> GenerateOutput | torch.LongTensor:
+    ) -> Union[GenerateOutput, torch.LongTensor]:
         outputs = self.backbone.model.generate(
             inputs=inputs,
             attention_mask=torch.ones_like(inputs),

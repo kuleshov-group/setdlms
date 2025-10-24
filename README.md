@@ -16,7 +16,9 @@ sky launch --cluster dllm --gpus A100
 ssh dllm # sky creates ssh configs for you
 ```
 
-SkyPilot can also provision clusters, setup environments, manage task execution and some other useful stuff.  See [docs/skypilot.md](docs/skypilot.md) for more details.
+SkyPilot can also provision clusters, setup environments, manage task execution and some
+other useful stuff.
+See [docs/skypilot.md](docs/skypilot.md) for more details.
 
 ### Setup environment
 
@@ -54,7 +56,7 @@ source setup_env.sh
 You can also include this snippet in shell / slurm scripts to set up the environment on
 a compute node.
 
-In this script, we setup WandB and HuggingFace tokens by sourcing a script which is
+In this script, we set up WandB and HuggingFace tokens by sourcing a script which is
 expected to be in the `/home/<YOUR_USER_NAME>/` directory.
 Copy the contents below into a shell script `/home/<YOUR_USER_NAME>/setup_discdiff.sh`
 and replace the placeholder tokens with your own:
@@ -74,7 +76,7 @@ huggingface-cli login --token ${HUGGINGFACE_TOKEN} --add-to-git-credential
 - HuggingFace token can be setup [here](https://huggingface.co/settings/tokens).
 
 ### Contributing to the repo
-We will try to use github issues to track bugs, features, and todos.
+We will try to use GitHub issues to track bugs, features, and todos.
 To contribute to the repo, please create a new issue and assign it to yourself.
 Then [create a new branch from the issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-a-branch-for-an-issue)
 and open a pull request.
@@ -90,56 +92,34 @@ On every `git commit`,
 the pre-commit hooks will run automatically and report any issues / automatic fixes that
 were applied.
 
-## 1. Training
-
-### tl;dr
-Run the composer training script using:
-```bash
-composer -n <num_devices> scripts/composer_scripts/train_discrete_denoiser.py \
-  run_name=<run_name> \
-  tokenizer.pretrained_model_name_or_path=<pretrained_tokenizer> \
-  dataset@train_dataset=<train_dataset> \
-  dataset@eval_dataset=<eval_dataset> \
-  model/backbone@model.config.backbone_config=<backbone>
-```
-Filling in the relevant variables.
-
----
-
-Experiment configs are setup
-using [Hydra](https://hydra.cc/docs/intro/) and can be found in the
-[`configs`](./configs) directory.
-
-The main config is [`configs/config.yaml`](./configs/config.yaml).
-Here we use `hydra` defaults list to setup the experiment / run, but all of these can be
-changed using `hydra`'s command line overrides.
-Any parameters
-set to `???` need to be filled in by the user via the command-line overrides.
-
-We leverage `hydra`'s useful yaml syntax to setup the config, e.g., using `@` to
-move parameters to different levels of the config hierarchy.
-
-As an example,
-if you want to change the `backbone` for the denoising model,
-to use some pre-trained HuggingFace model,
-you can do so with the following command line overrides:
-```bash
-model/backbone@model.config.backbone_config=automodel_for_masked_lm \
-pretrained_model_name_or_path=bert-base-uncased
-```
-This will set the model backbone to the one defined in
-[`automodel_for_masked_lm.yaml`](configs/model/backbone/automodel_for_masked_lm.yaml)
-which will use `hydra.utils.instantiate` tools to initialize the backbone and the `@`
-syntax will move this parameter to `config.model.config.backbone_config`
-and set the `pretrained_model_name_or_path` to `bert-base-uncased`.
-
-Another example,
-if you want to remove something from the defaults list, use `~` syntax, e.g.:
-```bash
-~composer.trainer.parallelism_config
-```
-This will remove the `parallelism_config` from the defaults defined in the composer
-config [`configs/composer/default_composer`](./configs/composer/default_composer.yaml).
-
-## Tour of the codebase
-TODO: Fill his in
+## 1. Code Organization
+1. [`bash_scripts`](bash_scripts): These shells scripts can be used to reproduce the
+experiments from our work.
+2. [`configs`](configs): We utilize hydra config files to organize experiments.
+   1. [`config.yaml`](configs/config.yaml) This config is the entry point for launching
+   training experiments.
+   2. [`eval_config.yaml`](configs/eval_config.yaml) This config is the entry point for
+   evaluations.
+3. [`scripts`](scripts): The main training and evaluation scripts
+   1. [`scripts/composer_scripts/train_discrete_denoiser.py`](scripts/composer_scripts/train_discrete_denoiser.py):
+   This script is the main training entry point.
+   2. [`scripts/evals`](scripts/eval): These scripts run the evaluation for the
+   translation, summarization, and math reasoning datasets, as well as any likelihood
+   evaluation.
+4. [`src`](src):
+   1. [`src/denoiser`](src/denoiser): During training, denoisers take in "noisy" inputs
+   and predict clean signals.
+   At inference, starting from a purely noisy signal, through iterative denoising, these
+   classes produce samples that resemble data.
+      1. `AR`: We can view autoregressive models within this paradigm.
+      Noise is applied by masking tokens one at a time from right-to-left.
+      Denoising is done one token at a time, left-to-right.
+      2. `Diffusion`: We implement masked diffusion models:
+         - `MDLM`: Standard masked diffusion.
+         - `BD3LM`: Block diffusion models.
+         - `E2D2`: Our encoder-decoder implementation.
+   2. [`src/backbone`](src/backbone): These are the underlying neural networks the take
+   in noisy inputs and produce logits.
+   Each denoiser is parameterized by a backbone.
+   The denoiser can optionally, post-process the logit outputs of the backbone to
+   produce log-probs over the clean sequence.

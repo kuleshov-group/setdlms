@@ -1,2 +1,0 @@
-_target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
-dataset_path: /share/kuleshov/ssahoo/textdiffusion/data/lm1b_train_bs128_unwrapped.dat

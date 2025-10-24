@@ -1,21 +1,6 @@
-# TODO: Not working correctly at the moment!
 cnndm_stop_string_criteria:
   _target_: transformers.generation.StopStringCriteria
   tokenizer: ${tokenizer}
   stop_strings:
     - '<|im_end|>'
     - '<|endoftext|>'
-#    - 'Summary:'
-#    - 'CLICK'
-#    - 'Click '
-#    - 'READ:'
-#    - 'READ HERE'
-#    - 'NEW:'
-#    - 'Sources:'
-#    - 'Follow '
-#    - 'Follow: '
-#    - 'Related:'
-#    - 'Source:'
-#    - 'Author:'
-#    - 'CNN.com'
-#    - 'Read:'

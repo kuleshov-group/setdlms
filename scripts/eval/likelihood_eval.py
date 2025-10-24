@@ -2,7 +2,6 @@ import logging
 import os
 
 import hydra
-import torch
 import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
@@ -13,7 +12,6 @@ from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
-    print_and_save_config,
     register_useful_resolvers,
 )
 from src.utils import fsspec_exists
@@ -23,8 +21,8 @@ log = logging.getLogger(__name__)
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
-    print_and_save_config(cfg, resolve=True, save_cfg=False)
     reproducibility.seed_all(cfg.seed)
+    reproducibility.configure_deterministic_mode()
 
     # Load tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
@@ -45,19 +43,14 @@ def main(cfg: DictConfig) -> None:
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
             )
-        except ValueError:  # Model not compatible with CausalLM
+        except:  # Model not compatible with CausalLM
             model = AutoModelForMaskedLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
             )
-    if False:  # getattr(cfg.training, "compile_backbone", False):
-        log.info("Compiling model backbone")
-        model.backbone = torch.compile(
-            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
-        )
     model = HuggingFaceModel(
-        model=model,  # type: ignore
+        model=model,
         tokenizer=tokenizer,
         metrics=list(hydra.utils.instantiate(cfg.task.metrics).values()),
     )
@@ -68,6 +61,7 @@ def main(cfg: DictConfig) -> None:
         dist.initialize_dist(timeout=600)
     log.info("All nodes connected")
 
+    print(f"Running likelihood eval for {cfg.task.eval_dataset}")
     eval_dataset = hydra.utils.instantiate(
         cfg.task.eval_dataset, tokenizer=tokenizer, max_length=model.config.length
     )

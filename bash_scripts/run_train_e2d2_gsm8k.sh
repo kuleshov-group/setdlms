@@ -4,9 +4,9 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-# Important variables (fix during hyperparam sweep)
-BLOCK_SIZE=8
-EVAL_BLOCK_SIZE=8
+# Model arch
+BLOCK_SIZE=4
+EVAL_BLOCK_SIZE=4
 N_ENCODER_LAYERS=28
 ENCODER_TOP_LAYERS=false
 N_DECODER_LAYERS=14
@@ -23,13 +23,13 @@ WARMUP_DURATION="100ba"
 ALPHA_F=0.5
 BATCH_SIZE=1
 MAX_DURATION="30000ba"
-PRECISION="amp_bf16" # amp_bf16 fp32
+PRECISION="amp_bf16"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 TRAIN_ON_CONTEXT=false
 
-TAG=e2d2
+TAG="e2d2"
 if [ "${ENCODER_TOP_LAYERS}" == "true" ]; then
   ENC_LAYERS="TOPenc${N_ENCODER_LAYERS}"
 else
@@ -85,12 +85,10 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.use_gradient_checkpointing=false \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
-  ~composer.trainer.compile_config \
-  ~composer.trainer.parallelism_config \
   block_size=${BLOCK_SIZE} \
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
-  hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
+  hydra.run.dir=outputs/${RUN_NAME} \
   composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \

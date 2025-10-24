@@ -1,3 +1,0 @@
-defaults:
-  - lm1b_preprocessed_train
-dataset_path: /share/kuleshov/ssahoo/textdiffusion/data/lm1b_test_bs128_unwrapped.dat

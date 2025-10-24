@@ -2,5 +2,6 @@ defaults:
   - bd3lm@_here_
   - _self_
 
+_target_: src.denoiser.diffusion.E2D2
 config:
-  backbone_is_decoder_only: false  # true for BD3LM, false for E2D2
+  _target_: src.denoiser.diffusion.E2D2Config

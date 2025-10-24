@@ -3,14 +3,15 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="${RUN_DIR}/owt_block4_lr3e-4_bsz512_warm2000ba_max-dur1000000ba_enc20_dec4_hidden512_inter2048_e2d2_gpt2"
+MODEL_PATH="kuleshov-group/e2d2-gsm8k-finetune-Qwen3-2B"
+# MODEL_PATH="outputs/<PATH_TO_SAVED_MODEL_DIR>"
 REVISION=null
 
-for EVAL_DATASET in "ptb_eval" "wikitext2_eval" "lm1b_eval" "lambada_eval" "ag_news_eval" "scientific_papers_arxiv_eval" "scientific_papers_pubmed_eval"; do
-BLOCK_SIZE=8
-BATCH_SIZE=32
-PRETRAINED_MODEL_NAME_OR_PATH="gpt2"  # "Qwen/Qwen3-0.6B-Base"
-CKPT_FILE="ep2-ba38000-rank0.pt"
+EVAL_DATASET="gsm8k_eval"
+BLOCK_SIZE=4  # TODO: Change as needed
+BATCH_SIZE=1
+PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-1.7B-Base"  # TODO: Change as needed
+CKPT_FILE="best-rank0.pt"
 USE_EMA=true
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
@@ -42,4 +43,3 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   ~generation/logits_processor@logits_processor_list \
   ~generation/stopping_criteria@stopping_criteria_list \
   gen_kwargs=null
-done

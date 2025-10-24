@@ -1,4 +1,4 @@
-_target_: src.backbone.encoder_decoder_share_kv.LLMasEncoderDecoderShareKV
+_target_: src.backbone.encoder_decoder.LLMasEncoderDecoderShareKV
 pretrained_model_name_or_path: ${pretrained_model_name_or_path}
 max_length: ${model.config.length}
 attn_backend: ${model.config.attn_backend}

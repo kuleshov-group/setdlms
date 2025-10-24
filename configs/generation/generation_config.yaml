@@ -1,4 +1,3 @@
 _target_: transformers.GenerationConfig
 do_sample: false
 use_cache: true
-# TODO add args here that we can use

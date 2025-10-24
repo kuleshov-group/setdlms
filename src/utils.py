@@ -7,6 +7,7 @@ import shutil
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
+from types import MethodType
 
 import fsspec
 from huggingface_hub import HfApi, file_exists, repo_exists
@@ -175,6 +176,19 @@ def _flatten_and_copy(src_path: Path, dest_path: Path, ignore: list[str]) -> Non
     _copy_file_contents_and_flatten_relative_imports(src_path, dest_path)
 
 
+def _state_dict_no_buffers(self, *args, **kwargs):
+    # Copy original state_dict
+    filtered_state_dict = {
+        k: v for k, v in super(self.__class__, self).state_dict(*args, **kwargs).items()
+    }
+    # Skip explicitly listed parameter names
+    skip_params_for_push = getattr(self, "skip_params_for_push", [])
+    for skip_name in skip_params_for_push:
+        filtered_state_dict.pop(skip_name, None)
+
+    return filtered_state_dict
+
+
 def save_pretrained_or_push_to_hub(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
@@ -236,6 +250,8 @@ def save_pretrained_or_push_to_hub(
     dest_path = Path(repo_id) if local else Path(tmp_dir.name)
     dest_path.mkdir(parents=True, exist_ok=True)
 
+    # Temporarily override state_dict() to remove buffers
+    model.state_dict = MethodType(_state_dict_no_buffers, model)
     # Save/push model and tokenizer
     log.debug(f"{'Saving' if local else 'Pushing'} model to {repo_id}")
     if local:
@@ -248,6 +264,7 @@ def save_pretrained_or_push_to_hub(
             tokenizer.push_to_hub(
                 repo_id, private=private, commit_message="Upload tokenizer"
             )
+
         model.push_to_hub(
             repo_id,
             private=private,
