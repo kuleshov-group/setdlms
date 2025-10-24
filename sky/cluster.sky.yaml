@@ -1,0 +1,44 @@
+# Generic dllm-dev skypilot cluster configuration
+envs:
+  # Require these env vars to be set in client env
+  HUGGING_FACE_HUB_TOKEN: null
+  WANDB_API_KEY: null
+workdir: .
+setup: |
+  set -exo pipefail
+
+  # Add ubuntu user to docker group to avoid needing sudo for docker commands
+  # TODO: Log SkyPilot issue to see why it doesn't already do this
+  sudo usermod -aG docker $USER
+
+  SKYPILOT_CLOUD_NAME=$( \
+    python -c "import json, sys; print(json.loads(sys.stdin.read())['cloud'])" \
+    <<< "$SKYPILOT_CLUSTER_INFO" \
+  )
+  if [ "${SKYPILOT_CLOUD_NAME}" == "Lambda" ]; then
+    # Install Lambda Guest Agent for VM metrics https://docs.lambda.ai/public-cloud/guest-agent/
+    curl -L https://lambdalabs-guest-agent.s3.us-west-2.amazonaws.com/scripts/install.sh | sudo bash
+  fi
+
+  # Create local env for future jobs and ssh sessions
+  > ~/.env # Clear first
+  
+  # Add tokens/secrets from client env
+  for var in HUGGING_FACE_HUB_TOKEN WANDB_API_KEY; do
+    declare -n ref=$var
+    echo "$var=$ref" >> ~/.env
+  done
+
+  # Add other project configurations
+  cat << EOF >> ~/.env
+  WANDB__SERVICE_WAIT=600
+  _WANDB_STARTUP_DEBUG=true
+  WANDB_ENTITY=eric-czech
+  HYDRA_FULL_ERROR=1
+  NCCL_P2P_LEVEL=NVL
+  EOF
+
+  # Source ~/.env with export conversion for bash sessions
+  if ! grep -q "set -a; source ~/.env; set +a" ~/.bashrc; then
+    echo "set -a; source ~/.env; set +a" >> ~/.bashrc
+  fi

@@ -1,4 +1,5 @@
 __pycache__/
+.venv/
 .hf_cache
 .idea
 .ipynb_checkpoints/

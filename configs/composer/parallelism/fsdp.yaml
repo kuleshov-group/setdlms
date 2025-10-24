@@ -1,11 +1,13 @@
+# References:
+# - FSDP config code model: https://github.com/mosaicml/composer/blob/v0.32.1/composer/utils/parallelism.py#L14
+# - FSDP composer guide: https://docs.mosaicml.com/projects/composer/en/stable/notes/distributed_training.html#fullyshardeddataparallel-fsdp
+# - FSDP sharding strategies: https://github.com/mosaicml/composer/blob/v0.32.1/composer/distributed/mosaic_parallelism.py#L25-L31
+#   - Several of these are undocumented anywhere else
+# - FSDP strategy overrides: https://github.com/mosaicml/composer/blob/v0.32.1/composer/distributed/dist_strategy.py#L331-L344
+#   - This all mostly undocumented as well, but is critical for using SHARD_GRAD_OP, HYBRID_SHARD_ZERO2 and HYBRID_SHARD strategies
+# - Device mesh inference: https://github.com/mosaicml/composer/blob/v0.32.1/composer/core/state.py#L175-L241
+#   - Also undocumented, this determines how the FSDP strategy overrides are set
+#   - This code is the only place that explains what `data_parallel_replicate_degree` and `data_parallel_shard_degree` actually do
 fsdp:
   sharding_strategy: "FULL_SHARD"
-  cpu_offload: null
-  mixed_precision:
-    param_dtype: ${composer.trainer.precision}
-    reduce_dtype: ${composer.trainer.precision}
-    buffer_dtype: ${composer.trainer.precision}
-  backward_prefetch: "BACKWARD_POST"
-  activation_checkpointing: false
-  activation_cpu_offload: false
   verbose: true

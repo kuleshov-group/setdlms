@@ -1,0 +1,71 @@
+# SkyPilot dllm-dev training task configuration
+#
+# Usage:
+#   TRAINING_SCRIPT=bash_scripts/run_train_e2d2_fineweb_dist.sh \
+#   WANDB_RUN_TAG=my_experiment \
+#   sky exec --num-nodes 2 -c dllm sky/train.sky.yaml --env TRAINING_SCRIPT --env WANDB_RUN_TAG
+
+workdir: .
+
+envs:
+  - TRAINING_SCRIPT: null                                  # Path to training script to execute
+  - WANDB_RUN_TAG: null                                    # Weights & Biases run tag
+  - DOCKER_IMAGE: "eczech/dllm-dev:py311-cuda128-torch270" # Docker image to use
+
+run: |
+  set -exo pipefail
+
+  # Configure distributed training environment
+  NUM_NODES=$SKYPILOT_NUM_NODES
+  NODE_RANK=$SKYPILOT_NODE_RANK
+  MASTER_ADDR=$(echo "$SKYPILOT_NODE_IPS" | head -n1)
+  MASTER_PORT=12345
+  LOCAL_WORLD_SIZE=$(nvidia-smi -L | wc -l)
+  WORLD_SIZE=$(( NUM_NODES * LOCAL_WORLD_SIZE ))
+  # Set NODENAME for composer logging at:
+  # https://github.com/mosaicml/composer/blob/v0.32.1/composer/trainer/trainer.py#L1481
+  NODENAME="sky-node-${NODE_RANK}"
+
+  # Validate required environment variables
+  required_vars=("LOCAL_WORLD_SIZE" "WORLD_SIZE" "NUM_NODES" "NODE_RANK" "MASTER_ADDR" "MASTER_PORT")
+  for var in "${required_vars[@]}"; do
+    if [ -z "${!var}" ]; then
+      echo "❌ Error: $var not set."
+      exit 1
+    fi
+  done
+  echo "✅ Environment variables validated successfully."
+
+  # Run training script
+  # - Shared memory mount (on /dev/shm) needs to be significantly increased from
+  #   default of 64M (via `--shm-size=16g`) to avoid Torch errors like:
+  #   `RuntimeError: unable to write to file </torch_3819_4141600215_6>: No space left on device (28)`
+  # - Do not forget to set --network host or processes hang at "Initializing dist"; see:
+  #   https://github.com/mosaicml/composer/blob/v0.32.1/composer/cli/launcher.py#L304
+  # - The torch inductor cache must be shared with the host to avoid long auto-tuning
+  #   initialization every time a task is run on a new node; see:
+  #   - https://github.com/triton-lang/triton/issues/6355
+  #   - https://docs.pytorch.org/tutorials/recipes/torch_compile_caching_configuration_tutorial.html
+  #   - "Note that if TRITON_CACHE_DIR is not set in the environment, Inductor sets the Triton cache directory"
+  echo "🐳 Starting training container from image: $DOCKER_IMAGE"
+  sudo docker run \
+    --env-file ~/.env \
+    -e RUN_DIR=/workspace/outputs \
+    -e DATA_DIR=/workspace/data \
+    -e NUM_NODES=$NUM_NODES \
+    -e WORLD_SIZE=$WORLD_SIZE \
+    -e NODE_RANK=$NODE_RANK \
+    -e MASTER_ADDR=$MASTER_ADDR \
+    -e MASTER_PORT=$MASTER_PORT \
+    -e NODENAME=$NODENAME \
+    -e HF_HOME=/workspace/.hf_cache \
+    -e TORCHINDUCTOR_CACHE_DIR=/workspace/.ti_cache \
+    -e TORCHINDUCTOR_AUTOGRAD_CACHE=1 \
+    -e TORCHINDUCTOR_FX_GRAPH_CACHE=1 \
+    -e PYTHONPATH=/workspace:/workspace/.hf_cache/modules \
+    -e TAG=$WANDB_RUN_TAG \
+    --network host \
+    --shm-size=16g \
+    --gpus all --rm -v $(pwd):/workspace \
+    $DOCKER_IMAGE \
+    bash $TRAINING_SCRIPT
