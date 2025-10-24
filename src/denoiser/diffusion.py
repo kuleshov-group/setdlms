@@ -202,8 +202,8 @@ class D3PM(Denoiser):
                 xt[..., 0] = x0[..., 0]
             return xt  # type: ignore
         if self.diffusion_type == "uniform":
-            xt = torch.randint(0, self.vocab_size, x0.shape, device=x0.device)
-            xt = torch.where(context_mask.bool(), x0, xt)
+            prior = torch.randint(0, self.vocab_size, x0.shape, device=x0.device)
+            xt = torch.where((move_indices * (1 - context_mask)).bool(), prior, x0)
             if self.config.keep_clean_bos:
                 xt[..., 0] = x0[..., 0]
             return xt  # type: ignore
