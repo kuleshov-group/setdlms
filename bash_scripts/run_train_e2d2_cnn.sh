@@ -67,7 +67,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   block_size=${BLOCK_SIZE} \
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
-  hydra.run.dir=outputs/${RUN_NAME} \
+  hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
   composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
