@@ -10,5 +10,4 @@ sampling_strategy: "predict_and_noise"
 confidence_based_noising: true
 confidence_margin_based_noising: false
 confidence_threshold: 1.0
-use_model_output_cache: true
 align_inputs_to_blocks: false

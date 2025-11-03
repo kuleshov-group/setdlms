@@ -23,7 +23,6 @@ except ImportError:
 
 from src.denoiser.base import (
     Denoiser,
-    DenoiserConfig,
     DenoiserInput,
     LossAndNllOutput,
 )
@@ -48,7 +47,6 @@ class DiffusionGenerationConfig(GenerationConfig):
         confidence_based_noising: bool = False,
         confidence_margin_based_noising: bool = False,
         confidence_threshold: float = 1e6,
-        use_model_output_cache: bool = True,
         align_inputs_to_blocks: bool = True,
         **kwargs,
     ):
@@ -99,11 +97,6 @@ class DiffusionGenerationConfig(GenerationConfig):
                 Any tokens that exceed threshold are decoded.
                 See https://arxiv.org/abs/2505.22618 for details.
                 Defaults to 1e6.
-            use_model_output_cache (bool): Whether to re-use model's output, if sequence
-                is unchanged, because if xt == xs, we can simply re-use the denoising
-                model's outputs and save a function evaluation.
-                Relevant if model.backbone is not time/noise-conditioned.
-                Defaults to True.
             align_inputs_to_blocks (bool): Whether to align input tokens to block size,
                 e.g., for an input of length C and block size S, context will be C // S,
                 and generation will begin with a block whose first C % S tokens come
@@ -127,46 +120,40 @@ class DiffusionGenerationConfig(GenerationConfig):
         self.confidence_based_noising = confidence_based_noising
         self.confidence_margin_based_noising = confidence_margin_based_noising
         self.confidence_threshold = confidence_threshold
-        self.use_model_output_cache = use_model_output_cache
         self.align_inputs_to_blocks = align_inputs_to_blocks
 
 
-class D3PMConfig(DenoiserConfig):
-    """Configuration class for D3PM models."""
+class MDLMConfig(DenoiserConfig):
+    """Configuration class for MDLM models."""
 
-    model_type = "d3pm"
+    model_type = "mdlm"
     auto_map = {
-        "AutoConfig": "diffusion.D3PMConfig",
-        "AutoModel": "diffusion.D3PM",
-        "AutoModelForMaskedLM": "diffusion.D3PM",
+        "AutoConfig": "diffusion.MDLMConfig",
+        "AutoModel": "diffusion.MDLM",
+        "AutoModelForMaskedLM": "diffusion.MDLM",
     }
 
     def __init__(
         self,
         keep_clean_bos: Optional[bool] = None,  # Whether to enforce un-noised BOS token
-        T: int = 1000,
-        diffusion_type: Literal["absorbing", "uniform"] = "absorbing",
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.keep_clean_bos = keep_clean_bos
-        self.diffusion_type = diffusion_type
-        self.T = T
 
 
-class D3PM(Denoiser):
-    """Denoiser class for D3PM models.
+class MDLM(Denoiser):
+    """Denoiser class for MDLM models.
 
-    This class implements the Denoiser interface for D3PM models.
+    This class implements the Denoiser interface for MDLM models.
     """
 
-    config_class = D3PMConfig
+    config_class = MDLMConfig
 
-    def __init__(self, config: D3PMConfig, **kwargs):
+    def __init__(self, config: MDLMConfig, **kwargs):
         super().__init__(config, **kwargs)
-        self.T = config.T
-        self.diffusion_type = config.diffusion_type
         self._create_static_mask()
+        self.neg_infinity = -1e12
 
     def _create_static_mask(self) -> None:
         static_mask = torch.ones(
@@ -194,22 +181,12 @@ class D3PM(Denoiser):
                 unchanged).
         """
         move_indices = torch.rand(*x0.shape, device=x0.device) < (1.0 - alpha_t)
-        if self.diffusion_type == "absorbing":
-            xt = torch.where(
-                (move_indices * (1 - context_mask)).bool(), self.mask_token_id, x0
-            )
-            if self.config.keep_clean_bos:
-                xt[..., 0] = x0[..., 0]
-            return xt  # type: ignore
-        if self.diffusion_type == "uniform":
-            prior = torch.randint(0, self.vocab_size, x0.shape, device=x0.device)
-            xt = torch.where((move_indices * (1 - context_mask)).bool(), prior, x0)
-            if self.config.keep_clean_bos:
-                xt[..., 0] = x0[..., 0]
-            return xt  # type: ignore
-        raise NotImplementedError(
-            f"Diffusion type '{self.diffusion_type}' not implemented."
+        xt = torch.where(
+            (move_indices * (1 - context_mask)).bool(), self.mask_token_id, x0
         )
+        if self.config.keep_clean_bos:
+            xt[..., 0] = x0[..., 0]
+        return xt  # type: ignore
 
     def _prepare_inputs(
         self,
@@ -318,7 +295,19 @@ class D3PM(Denoiser):
         denoiser_inputs: DenoiserInput,
         **kwargs,
     ) -> torch.FloatTensor:
-        return torch.log_softmax(backbone_output, dim=-1)  # type: ignore
+        # Zero-mask probability
+        backbone_output[..., self.mask_token_id] = self.neg_infinity
+        log_probs = backbone_output - torch.logsumexp(
+            backbone_output, dim=-1, keepdim=True
+        )
+        # Copy-over unmasked: For the log_probs of the unmasked tokens, set all values
+        # to -infinity except for the indices corresponding to
+        # the unmasked tokens.
+        xt = denoiser_inputs.xt
+        unmasked_indices = xt != self.mask_token_id
+        log_probs[unmasked_indices] = self.neg_infinity
+        log_probs[unmasked_indices, xt[unmasked_indices]] = 0
+        return log_probs  # type: ignore
 
     def _compute_loss(
         self,
@@ -326,24 +315,27 @@ class D3PM(Denoiser):
         denoiser_inputs: DenoiserInput,
         **kwargs: Any,
     ) -> LossAndNllOutput:
-        raise NotImplementedError
-
-    def _sample_prior(self, device, batch_size, length):
-        """Samples from prior / limiting distribution."""
-        if self.diffusion_type == "absorbing":
-            return self.mask_token_id * torch.ones(
-                (batch_size, length), dtype=torch.int64, device=device
-            )
-        if self.diffusion_type == "uniform":
-            return torch.randint(
-                0,
-                self.vocab_size,
-                (batch_size, length),
-                device=device,
-                dtype=torch.int64,
-            )
-        raise NotImplementedError(
-            f"Diffusion type '{self.diffusion_type}' not implemented."
+        log_p_theta = torch.gather(
+            input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
+        ).squeeze(-1)
+        nlls = (
+            log_p_theta
+            * denoiser_inputs.alpha_t_prime
+            / (1 - denoiser_inputs.alpha_t)
+            * denoiser_inputs.tokens_mask
+        )
+        if self.training:
+            batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
+        else:
+            batch_nll = nlls.sum(dim=-1)
+        count = denoiser_inputs.tokens_mask.sum(dim=-1)
+        token_nll = (batch_nll / count).mean()
+        return LossAndNllOutput(
+            loss=token_nll,  # type: ignore
+            nlls=nlls,
+            other_loss_terms={
+                "masked_tokens": (denoiser_inputs.xt == self.mask_token_id).int()
+            },
         )
 
     def _compute_posterior(
@@ -363,29 +355,10 @@ class D3PM(Denoiser):
             alpha_t (Tensor): Noise schedule parameter at time t (B, 1, 1).
             alpha_s (Tensor): Noise schedule parameter at time s (B, 1, 1).
         """
-        if self.diffusion_type == "absorbing":
-            q_xs = x * (alpha_s - alpha_t)
-            q_xs[..., self.mask_token_id] = 1 - alpha_s[..., 0]
-            q_xs /= 1 - alpha_t
-            return q_xs  # type: ignore
-
-        alpha_ts = alpha_t / alpha_s
-        d_alpha = alpha_s - alpha_t
-        xt_one_hot = torch.nn.functional.one_hot(x, self.vocab_size)
-        limiting_distribution = torch.ones_like(xt_one_hot) / self.vocab_size
-        if self.diffusion_type == "uniform":
-            return (
-                alpha_t * self.vocab_size * x * xt_one_hot
-                + (alpha_ts - alpha_t) * xt_one_hot
-                + d_alpha * x
-                + (1 - alpha_ts) * (1 - alpha_s) * limiting_distribution
-            ) / (
-                alpha_t * self.vocab_size * torch.gather(x, -1, xt[..., None])
-                + (1 - alpha_t)
-            )
-        raise NotImplementedError(
-            f"Diffusion type {self.diffusion_type} not implemented."
-        )
+        q_xs = x * (alpha_s - alpha_t)
+        q_xs[..., self.mask_token_id] = 1 - alpha_s[..., 0]
+        q_xs /= 1 - alpha_t
+        return q_xs  # type: ignore
 
     @staticmethod
     def _sample_generation_timesteps(
@@ -564,10 +537,8 @@ class D3PM(Denoiser):
         max_blocks = max_new_tokens // block_size
 
         # Sample max generation length tensor from prior
-        accumulated_samples = self._sample_prior(
-            device=device,
-            batch_size=batch_size,
-            length=max_blocks * block_size,
+        accumulated_samples = self.mask_token_id * torch.ones(
+            (batch_size, max_blocks * block_size), dtype=torch.int64, device=device
         )
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if generation_config.use_cache and inputs.numel() > 0:
@@ -658,18 +629,13 @@ class D3PM(Denoiser):
                     block_NFEs=block_NFEs,
                 )
 
-                if (
-                    not torch.allclose(xs, denoiser_inputs.xt)
-                    or not generation_config.use_model_output_cache
-                ):
+                if not torch.allclose(xs, denoiser_inputs.xt):
                     model_output_cache = None
                 if not generation_config.use_cache:
                     xt[..., -block_size:] = xs[..., -block_size:]
                 else:
                     xt = xs
-                if (
-                    xt == self.mask_token_id
-                ).sum().item() == 0 and self.config.diffusion_type == "absorbing":
+                if (xt == self.mask_token_id).sum().item() == 0:
                     break
             accumulated_samples[
                 :,
@@ -698,76 +664,6 @@ class D3PM(Denoiser):
                     cache=cache,
                 )
         return accumulated_samples  # type: ignore
-
-
-class MDLMConfig(D3PMConfig):
-    """Configuration class for MDLM models."""
-
-    model_type = "mdlm"
-    auto_map = {
-        "AutoConfig": "diffusion.MDLMConfig",
-        "AutoModel": "diffusion.MDLM",
-        "AutoModelForMaskedLM": "diffusion.MDLM",
-    }
-
-
-class MDLM(D3PM):
-    """Denoiser class for MDLM models."""
-
-    config_class = MDLMConfig
-
-    def __init__(self, config: MDLMConfig, **kwargs):
-        super().__init__(config, **kwargs)
-        self.neg_infinity = -1e12
-
-    def _forward(
-        self,
-        backbone_output: torch.FloatTensor,
-        denoiser_inputs: DenoiserInput,
-        **kwargs,
-    ) -> torch.FloatTensor:
-        # Zero-mask probability
-        backbone_output[..., self.mask_token_id] = self.neg_infinity
-        log_probs = backbone_output - torch.logsumexp(
-            backbone_output, dim=-1, keepdim=True
-        )
-        # Copy-over unmasked: For the log_probs of the unmasked tokens, set all values
-        # to -infinity except for the indices corresponding to
-        # the unmasked tokens.
-        xt = denoiser_inputs.xt
-        unmasked_indices = xt != self.mask_token_id
-        log_probs[unmasked_indices] = self.neg_infinity
-        log_probs[unmasked_indices, xt[unmasked_indices]] = 0
-        return log_probs  # type: ignore
-
-    def _compute_loss(
-        self,
-        model_output: torch.FloatTensor,
-        denoiser_inputs: DenoiserInput,
-        **kwargs: Any,
-    ) -> LossAndNllOutput:
-        log_p_theta = torch.gather(
-            input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
-        ).squeeze(-1)
-        nlls = (
-            log_p_theta
-            * denoiser_inputs.alpha_t_prime
-            / (1 - denoiser_inputs.alpha_t)
-            * denoiser_inputs.tokens_mask
-        )
-        if self.training:
-            batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
-        else:
-            batch_nll = nlls.sum(dim=-1)
-        count = denoiser_inputs.tokens_mask.sum(dim=-1)
-        token_nll = (batch_nll / count).mean()
-        return LossAndNllOutput(
-            loss=token_nll,  # type: ignore
-            nlls=nlls,
-            other_loss_terms={
-                "masked_tokens": (denoiser_inputs.xt == self.mask_token_id).int()
-            },
-        )
 
 
 class BD3LMConfig(MDLMConfig):

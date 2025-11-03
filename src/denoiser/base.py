@@ -1,5 +1,4 @@
 import copy
-import inspect
 import sys
 from abc import ABC, abstractmethod
 from collections import OrderedDict
@@ -90,7 +89,6 @@ class DenoiserConfig(PretrainedConfig):
         backbone_config: Optional[Dict[str, Any]] = None,
         noise_config: Optional[Dict[str, Any]] = None,
         tokenization_config: Optional[Dict[str, Any]] = None,
-        time_conditioned_backbone: Optional[bool] = None,
         attn_backend: str = "sdpa",  # "sdpa", "flash_attention_2", "flex_attention"
         train_on_context: bool = False,
         **kwargs,
@@ -114,7 +112,6 @@ class DenoiserConfig(PretrainedConfig):
         self.noise_config = noise_config
         self.tokenization_config = tokenization_config
         self.length = length
-        self.time_conditioned_backbone = time_conditioned_backbone
         self.attn_backend = attn_backend
         self.train_on_context = train_on_context
 
@@ -172,11 +169,6 @@ class Denoiser(ABC, PreTrainedModel):
             hydra.utils.instantiate(config.noise_config)
             if config.noise_config is not None
             else None
-        )
-        self.time_conditioned_backbone = (
-            config.time_conditioned_backbone
-            if config.time_conditioned_backbone is not None
-            else "noise" in inspect.getfullargspec(self.backbone.forward).args
         )
         # List that can contain any parameters that should not be pushed to HF,
         # e.g., registered buffers for static attention masks
@@ -306,15 +298,6 @@ class Denoiser(ABC, PreTrainedModel):
         Returns:
             Backbone output (ModelOutput instance).
         """
-        if self.time_conditioned_backbone:
-            return self.backbone(
-                denoiser_inputs.xt,
-                attention_mask=denoiser_inputs.attention_mask,
-                past_key_values=denoiser_inputs.past_key_values,
-                noise=denoiser_inputs.alpha_t,
-                **denoiser_inputs.backbone_kwargs,
-                **backbone_kwargs,
-            )
         return self.backbone(
             denoiser_inputs.xt,
             attention_mask=denoiser_inputs.attention_mask,

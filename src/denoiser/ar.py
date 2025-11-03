@@ -35,7 +35,6 @@ class ARConfig(DenoiserConfig):
         backbone_config: Optional[Dict[str, Any]] = None,
         tokenization_config: Optional[Dict[str, Any]] = None,
         noise_config: None = None,
-        time_conditioned_backbone: Optional[bool] = None,
         **kwargs,
     ):
         super().__init__(
@@ -43,7 +42,6 @@ class ARConfig(DenoiserConfig):
             backbone_config=backbone_config,
             noise_config=noise_config,
             tokenization_config=tokenization_config,
-            time_conditioned_backbone=time_conditioned_backbone,
             **kwargs,
         )
 

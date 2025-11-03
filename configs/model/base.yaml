@@ -7,7 +7,6 @@ config:
   # These should be instantiated by in model init.
   _recursive_: false
   length: ???
-  time_conditioned_backbone: null
   # OmegaConf resolver creates the dictionary that contains tokenizer config params
   tokenization_config: ${oc.create:${make_tokenization_config:${tokenizer}}}
   tokenizer_name: ${tokenizer.pretrained_model_name_or_path}

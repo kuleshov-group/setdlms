@@ -1,10 +1,8 @@
 defaults:
-  - d3pm@_here_
+  - base@_here_
   - _self_
 
 _target_: src.denoiser.diffusion.MDLM
 config:
   _target_: src.denoiser.diffusion.MDLMConfig
-  T: 0  # 0 indicates continuous time vs. finite-time (D3PM), i.e., T > 0.
-  diffusion_type: absorbing
-  time_conditioned_backbone: false
+  keep_clean_bos: true
