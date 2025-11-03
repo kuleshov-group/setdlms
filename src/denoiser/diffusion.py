@@ -23,6 +23,7 @@ except ImportError:
 
 from src.denoiser.base import (
     Denoiser,
+    DenoiserConfig,
     DenoiserInput,
     LossAndNllOutput,
 )
