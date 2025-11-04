@@ -1,0 +1,4 @@
+log_gradient_norms:
+  _target_: src.custom_composer.callbacks.LogGradientNorms
+  log_frequency: 1
+  include_embedding_params: false
