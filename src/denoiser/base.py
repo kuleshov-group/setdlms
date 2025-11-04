@@ -338,15 +338,15 @@ class Denoiser(ABC, PreTrainedModel):
             past_key_values=past_key_values,
             t=t,
         )
-
-        backbone_output = self._backbone_forward(denoiser_inputs, **kwargs)
-        new_past_key_values = getattr(backbone_output, "past_key_values", None)
-        backbone_output = getattr(backbone_output, "logits", backbone_output[0])
-        denoiser_output = self._forward(
-            backbone_output,
-            denoiser_inputs,
-            **kwargs,
-        )
+        with torch.amp.autocast(input_ids.device.type, dtype=torch.float32):
+            backbone_output = self._backbone_forward(denoiser_inputs, **kwargs)
+            new_past_key_values = getattr(backbone_output, "past_key_values", None)
+            backbone_output = getattr(backbone_output, "logits", backbone_output[0])
+            denoiser_output = self._forward(
+                backbone_output,
+                denoiser_inputs,
+                **kwargs,
+            )
 
         if compute_loss:
             loss_and_nll = self._compute_loss(
@@ -418,11 +418,12 @@ class Denoiser(ABC, PreTrainedModel):
         context_input, cache = self._prepare_inputs_inference(
             input_ids=inputs, cache=cache, return_updated_cache=True, **backbone_kwargs
         )
-        backbone_output = self._backbone_forward(
-            context_input,
-            return_updated_cache=True,  # Will get absorbed in backbone_kwargs
-            **cache,
-        )
+        with torch.amp.autocast(inputs.device.type, dtype=torch.float32):
+            backbone_output = self._backbone_forward(
+                context_input,
+                return_updated_cache=True,  # Will get absorbed in backbone_kwargs
+                **cache,
+            )
         backbone_output = {k: v for k, v in backbone_output.items()}
         backbone_output.pop("logits", None)  # Do not store logits in cache
         cache = cache | backbone_output

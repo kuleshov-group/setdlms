@@ -1,7 +1,6 @@
 ema:
-  _target_: src.custom_composer.algorithms.EMA
+  _target_: composer.algorithms.EMA
   half_life: null
   smoothing: ${training.ema}
   ema_start: '0.0dur'
   update_interval: '1ba'
-  use_num_updates: true
