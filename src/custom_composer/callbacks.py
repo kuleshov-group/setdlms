@@ -20,7 +20,7 @@ from src.utils import (
 )
 
 log = logging.getLogger(__name__)
-__all__ = ["DataloaderSpeedMonitor"]
+__all__ = ["DataloaderSpeedMonitor", "LogGradientNorms"]
 
 
 class DataloaderSpeedMonitor(Callback):
@@ -414,6 +414,64 @@ class LogSampledTimestep(Callback):
                 f"sampled_t/{state.dataloader_label}/min": sampled_t.min().item(),
             },
         )
+
+
+class LogGradientNorms(Callback):
+    """Log gradient norms of non-embedding parameters.
+
+    This callback computes and logs the L2 norm of gradients for all parameters
+    that are not embeddings (i.e., parameters whose name does not contain "embed").
+    """
+
+    def __init__(
+        self,
+        log_frequency: int = 1,
+        include_embedding_params: bool = False,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        super().__init__(*args, **kwargs)
+        self.log_frequency = log_frequency
+        self.include_embedding_params = include_embedding_params
+        self.step_count = 0
+
+    def _is_embedding_param(self, param_name: str) -> bool:
+        """Check if a parameter is an embedding parameter."""
+        return "embed" in param_name.lower()
+
+    def _get_model(self, state: State):
+        """Get the model, handling wrapped models."""
+        if hasattr(state.model, "module"):
+            return state.model.module.model
+        return state.model.model
+
+    def after_backward(self, state: State, logger: Logger) -> None:
+        """Log gradient norms after backward pass."""
+        self.step_count += 1
+        if self.step_count % self.log_frequency != 0:
+            return
+
+        model = self._get_model(state)
+        metrics = {}
+
+        total_norm = 0.0
+
+        for name, param in model.named_parameters():
+            if param.grad is not None and (
+                self.include_embedding_params or not self._is_embedding_param(name)
+            ):
+                param_norm = param.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+
+        # Log total gradient norm across all non-embedding parameters
+        total_norm = total_norm ** (1.0 / 2)
+        if self.include_embedding_params:
+            metrics["grad_norm/total"] = total_norm
+        else:
+            metrics["grad_norm/total_non_embedding"] = total_norm
+
+        if metrics:
+            logger.log_metrics(metrics)
 
 
 class WarmupWithFrozenEncoder(Callback):
