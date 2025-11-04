@@ -46,7 +46,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=aoarm_efficient \
   model.config.attn_backend="sdpa" \
-  training.compile_backbone=true \
+  training.compile_backbone=false \
   model.config.length=256 \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=true \
