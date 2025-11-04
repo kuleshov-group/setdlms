@@ -487,7 +487,7 @@ class LLMasEncoderDecoderShareKV(nn.Module):
                     attn_implementation=attn_backend,
                     **llm_init_kwargs,
                 )
-                self.decoder = AutoModelForCausalLM(decoder_config)
+                self.decoder = AutoModelForCausalLM.from_config(decoder_config)
             else:
                 self.decoder = AutoModelForCausalLM.from_pretrained(
                     pretrained_model_name_or_path,
