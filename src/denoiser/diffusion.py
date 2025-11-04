@@ -1360,3 +1360,398 @@ class E2D2(BD3LM):
             denoiser_inputs=denoiser_inputs,
             **kwargs,
         )
+
+
+class AnyOrderBD3LM(BD3LM):
+    """Denoiser class for AnyOrderBD3LM models."""
+
+    def __init__(self, config: BD3LMConfig):
+        super().__init__(config)
+        self.block_size = config.block_size
+        if config.attn_backend == "flex_attention":
+            self.static_attention_mask = None
+            self.encoder_static_attention_mask = None
+        self._create_static_mask()
+
+    def _create_static_mask(self) -> None:
+        encoder_static_mask = torch.tril(
+            torch.ones(
+                (self.config.length, self.config.length),
+                dtype=torch.bool,
+            ),
+            diagonal=-1,
+        )
+        decoder_static_mask = torch.cat(
+            (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
+        )
+        encoder_static_mask = torch.cat(
+            (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
+        )
+        self.register_buffer("static_attention_mask", 
+            torch.cat(
+                (encoder_static_mask, decoder_static_mask), dim=0
+            )
+        )
+
+    def _compute_loss(
+        self,
+        model_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs: Any,
+    ) -> LossAndNllOutput:
+        input_length = denoiser_inputs.x0.shape[1]
+        model_output = model_output[:, input_length:, ...]
+        log_p_theta = torch.gather(
+            input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
+        ).squeeze(-1)
+        loss = -log_p_theta
+        if not self.training:
+            denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask * (
+                denoiser_inputs.x0 != self.pad_token_id
+            )
+        nlls = loss * denoiser_inputs.tokens_mask
+        count = denoiser_inputs.tokens_mask.sum()
+        batch_nll = nlls.sum()
+        token_nll = batch_nll / count
+        return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
+
+    def _prepare_inputs(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.FloatTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        t: torch.FloatTensor | None = None,
+        past_key_values: Cache | None = None,
+    ):
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+        if context_mask is None:
+            context_mask = torch.zeros_like(attention_mask)
+
+        if torch.is_floating_point(attention_mask):
+            attention_mask = attention_mask.to(torch.int)
+            context_mask = context_mask.to(torch.int)
+
+        if t is None:
+            t = torch.rand(
+                input_ids.shape[0],
+                input_ids.shape[1] // self.config.block_size,
+                device=input_ids.device,
+            ).repeat_interleave(self.config.block_size, dim=-1)
+        alpha_t, alpha_t_prime = self.noise_schedule(t)
+        while alpha_t.ndim < 2:
+            alpha_t = alpha_t[..., None]
+            alpha_t_prime = alpha_t_prime[..., None]
+
+        # permute input ids (where context_mask > 0 and attention_mask > 0)
+        permute_flag = (context_mask != 1).bool() & (attention_mask > 0).bool()
+        perm_indices = None
+        xt = input_ids.clone()
+
+        batch_size, context_len = input_ids.shape
+        if permute_flag.any():
+            n_blocks = context_len // self.block_size
+
+            to_permute = permute_flag.view(batch_size, n_blocks, self.block_size)
+            rand = torch.rand(
+                batch_size, n_blocks, self.block_size, device=input_ids.device
+            )
+            rand = torch.where(to_permute, rand, float("inf"))
+            # sort is stable on cpu
+            perm_indices = torch.argsort(rand.cpu(), dim=-1, descending=True).to(
+                rand.device
+            )
+            block_offset = (
+                torch.arange(n_blocks, device=input_ids.device)[None, :, None]
+                * self.block_size
+            )
+            perm_indices = block_offset + perm_indices
+            perm_indices = perm_indices.view(batch_size, n_blocks * self.block_size)
+        decoder_attention_mask = (
+            self.static_attention_mask[None, ...]
+            & attention_mask.repeat(1, 2)[:, None, :]
+            & attention_mask.repeat(1, 2)[..., None]
+        )
+        if permute_flag.any():
+            seq_len = input_ids.shape[1]
+
+            perm_indices_cols = perm_indices.repeat(1, 2)
+            perm_indices_cols[:, seq_len:] += seq_len  # shift indices for context
+
+            seq_indices = torch.arange(seq_len, device=input_ids.device)
+
+            # permute rows
+            decoder_attention_mask_perm = decoder_attention_mask[
+                torch.arange(batch_size).unsqueeze(1), perm_indices_cols.argsort(dim=-1)]
+
+            # permute columns
+            decoder_attention_mask_perm = torch.gather(
+                decoder_attention_mask_perm,
+                dim=-1,
+                index=perm_indices_cols.argsort(dim=-1)[:, None, :].expand(
+                    batch_size, seq_len * 2, decoder_attention_mask.shape[-1]
+                )
+            )
+
+            # self-attention
+            decoder_attention_mask_perm[:, torch.arange(seq_len), torch.arange(seq_len)] = 1
+            decoder_attention_mask_perm[:, torch.arange(seq_len, seq_len*2), torch.arange(seq_len, seq_len*2)] = 1
+            decoder_attention_mask = decoder_attention_mask_perm
+
+        decoder_attention_mask = self._preprocess_attention_mask(
+            decoder_attention_mask[:, None], dtype=torch.float
+        )
+        xt = torch.where(
+            (attention_mask == 1) & (context_mask == 0), self.mask_token_id, xt
+        )
+        xt = torch.cat((input_ids, xt), dim=-1)
+        position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, 2).to(input_ids.device)
+        return DenoiserInput(
+            xt=xt,  # type: ignore
+            x0=input_ids,
+            attention_mask=decoder_attention_mask,  # type: ignore
+            tokens_mask=attention_mask * (1 - context_mask),
+            t=t,
+            alpha_t=alpha_t,
+            alpha_t_prime=alpha_t_prime,
+            backbone_kwargs={
+                "position_ids": position_ids,
+            },
+        )
+
+    def _prepare_inputs_inference(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.FloatTensor | None = None,
+        context: torch.LongTensor | None = None,
+        context_mask: torch.FloatTensor | None = None,
+        cache: Optional[Dict[str, Any]] = None,
+        return_updated_cache: bool = False,
+        position_ids: torch.LongTensor | None = None,
+        **backbone_kwargs: Any,
+    ) -> DenoiserInput:
+        assert (
+            input_ids is not None or context is not None or new_context_ids is not None
+        ), "Must provide either input_ids or context."
+        batch_size = input_ids.shape[0]
+        decoder_attention_mask_context = None
+        device = input_ids.device
+        seq_len = input_ids.shape[1]
+        cache = cache if cache is not None else {}
+        past_key_values = cache.pop("past_key_values", DynamicCache())
+        cache_len = self._get_past_key_values_seq_length(past_key_values)
+        full_seq_length = cache_len + seq_len
+        if self.mask_token_id not in input_ids: # Caching
+            attention_mask = torch.tril(
+                torch.ones(
+                    (full_seq_length, full_seq_length),
+                    dtype=torch.bool,
+                ),
+            )[-seq_len:].to(device)
+            attention_mask = self._preprocess_attention_mask(
+                attention_mask[None, None, ...], dtype=torch.float
+            )
+        else:
+            attention_mask = torch.tril(
+                torch.ones(
+                    (full_seq_length, full_seq_length),
+                    dtype=torch.bool,
+                ),
+            )[-seq_len:].to(device)
+            attention_mask[:, -seq_len:] = 0
+            attention_mask[-torch.arange(seq_len), -torch.arange(seq_len)] = 1
+            attention_mask = self._preprocess_attention_mask(attention_mask[None, None, ...], dtype=torch.float)
+        return DenoiserInput(
+            xt=input_ids,
+            attention_mask=attention_mask,
+            context_mask=context_mask,
+            past_key_values=past_key_values,
+            backbone_kwargs={
+                "position_ids": position_ids,
+            }
+            | backbone_kwargs,
+        ), cache
+
+    @torch.no_grad()
+    def generate(
+        self,
+        inputs: torch.LongTensor | None = None,
+        generation_config: DiffusionGenerationConfig | None = None,
+        logits_processor: LogitsProcessorList | None = None,
+        stopping_criteria: StoppingCriteriaList | None = None,
+        max_length: int | None = None,
+        max_new_tokens: int | None = None,
+        batch_size: int | None = None,
+        device: str | None = None,
+        tokenizer: PreTrainedTokenizer | None = None,
+        disable_pbar: bool = False,
+        **kwargs: Any,
+    ) -> torch.LongTensor:
+        assert generation_config.use_cache, (
+            "Generation with AO-ARM requires use_cache=True."
+        )
+        # Setup sampling variables
+        if generation_config is None:
+            assert getattr(self, "generation_config", None) is not None, (
+                "Generation config must be provided if not present in the model."
+            )
+            generation_config = self.generation_config
+        if inputs is None:
+            inputs = torch.ones((batch_size, 1), device=device) * self.bos_token_id
+        if max_length is None:
+            if hasattr(generation_config, "max_length"):
+                max_length = generation_config.max_length
+            else:
+                max_length = self.max_length
+        if max_new_tokens is None:
+            if hasattr(generation_config, "max_new_tokens"):
+                max_new_tokens = generation_config.max_new_tokens
+            else:
+                max_new_tokens = max_length - inputs.shape[-1]
+        batch_size = batch_size if batch_size is not None else inputs.shape[0]
+        assert batch_size == 1, "Batched sampling not supported yet"
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        block_size = generation_config.block_size
+        max_blocks = max_new_tokens // block_size
+        all_position_ids = torch.arange(
+            inputs.shape[-1] + max_blocks * block_size, device=device
+        )[None, :]
+
+        # Sample max generation length tensor from prior
+        accumulated_samples = self._sample_prior(
+            device=device,
+            batch_size=batch_size,
+            length=max_blocks * block_size,
+        )
+        accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
+        if generation_config.use_cache and inputs.numel() > 0:
+            cache = self.update_cache(
+                inputs=inputs,
+                position_ids=all_position_ids[:, :inputs.shape[-1]],
+                cache={},
+            )
+            inputs_offset = inputs.shape[-1]
+        else:
+            cache = None
+            inputs_offset = 0
+
+        total_NFEs = 0
+        block_pbar = tqdm(
+            range(max_blocks),
+            desc="Blocks",
+            leave=True,
+            disable=disable_pbar,
+        )
+        for block_id in block_pbar:
+            block_NFEs = 0
+            xt = accumulated_samples[
+                :,
+                inputs_offset + (block_id * block_size) : inputs_offset
+                + ((block_id + 1) * block_size)
+            ]
+            timesteps = self._sample_generation_timesteps(
+                generation_config, max_length=block_size, device=device
+            )
+            step_pbar = tqdm(
+                timesteps,
+                desc="T",
+                total=timesteps.shape[0],
+                leave=False,
+                disable=disable_pbar,
+            )
+            dt = (1 - generation_config.min_t) / len(timesteps)
+            cache = None
+            xt_position_ids = all_position_ids[
+                :,
+                inputs_offset + (block_id * block_size) : inputs_offset
+                + ((block_id + 1) * block_size)
+            ]
+            for t in step_pbar:
+                block_NFEs += 1
+                total_NFEs += 1
+                # t is 0-dim tensor, reshape to (1, 1, 1) for broadcasting
+                alpha_t, _ = self.noise_schedule(t)
+                alpha_s, _ = self.noise_schedule(t - dt)
+                alpha_t = alpha_t[None, None, None]
+                alpha_s = alpha_s[None, None, None]
+
+                # Only decode masked tokens
+                denoiser_inputs, cache = self._prepare_inputs_inference(
+                    input_ids=xt[xt == self.mask_token_id].unsqueeze(0),
+                    cache=cache,
+                    position_ids=xt_position_ids[xt == self.mask_token_id].unsqueeze(0),
+                )
+
+                # Used for logit processing
+                running_generation = accumulated_samples[
+                    :,
+                    inputs.shape[-1] : inputs.shape[-1]
+                    + (block_id * block_size)
+                ]
+
+                xs, model_output_cache, cache = self._generate_unconditional(
+                    generation_config=generation_config,
+                    alpha_t=alpha_t,
+                    alpha_s=alpha_s,
+                    denoiser_inputs=denoiser_inputs,
+                    cache=cache,
+                    xt=xt,
+                    running_generation=running_generation,
+                    logits_processor=logits_processor,
+                    **kwargs,
+                )
+                block_pbar.set_postfix(
+                    NFEs=total_NFEs,
+                    block_NFEs=block_NFEs,
+                )
+
+                if (
+                    not torch.allclose(xs, xt[xt == self.mask_token_id].unsqueeze(0))
+                ):
+                    cache = None
+                accumulated_samples[:, xt_position_ids[xt == self.mask_token_id]] = xs
+                if generation_config.use_cache:
+                    # Enode unmasked tokens only
+                    cache = self.update_cache(
+                        inputs=xs[xs != self.mask_token_id].unsqueeze(0),
+                        position_ids=xt_position_ids[xs != self.mask_token_id].unsqueeze(0),
+                        cache=cache,
+                    )
+                # Update position IDs for next tokens to decode
+                xt = xs[xs == self.mask_token_id].unsqueeze(0)
+                xt_position_ids = xt_position_ids[xs == self.mask_token_id].unsqueeze(0)
+
+                if (xt == self.mask_token_id).sum().item() == 0:
+                    break
+            if tokenizer is not None:
+                print(tokenizer.batch_decode(accumulated_samples))
+            if stopping_criteria is not None:
+                is_done = stopping_criteria(
+                    input_ids=accumulated_samples[  # type: ignore
+                        :,
+                        inputs_offset : inputs_offset
+                        + ((block_id + 1) * block_size)
+                    ],
+                    scores=None,  # type: ignore
+                )
+                if torch.any(is_done):
+                    accumulated_samples = accumulated_samples[
+                        :,
+                        : inputs_offset + ((block_id + 1) * block_size),
+                    ]
+                    break
+        return accumulated_samples  # type: ignore
+
+    def _forward(
+        self,
+        backbone_output: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs,
+    ) -> torch.FloatTensor:
+        # Zero-mask probability
+        backbone_output[..., self.mask_token_id] = self.neg_infinity
+        log_probs = backbone_output - torch.logsumexp(
+            backbone_output, dim=-1, keepdim=True
+        )
+        return log_probs  # type: ignore
