@@ -1619,10 +1619,8 @@ class AnyOrderBD3LM(BD3LM):
         )[None, :]
 
         # Sample max generation length tensor from prior
-        accumulated_samples = self._sample_prior(
-            device=device,
-            batch_size=batch_size,
-            length=max_blocks * block_size,
+        accumulated_samples = self.mask_token_id * torch.ones(
+            (batch_size, max_blocks * block_size), dtype=torch.int64, device=device
         )
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if generation_config.use_cache and inputs.numel() > 0:
