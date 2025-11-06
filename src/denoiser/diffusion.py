@@ -449,9 +449,6 @@ class MDLM(Denoiser):
                 xs,
             )
         elif generation_config.sampling_strategy == "predict_and_noise":
-            assert self.config.diffusion_type == "absorbing", (
-                "predict_and_noise decoding strategy only supports absorbing diffusion."
-            )
             # assert (
             #     abs((x_theta.sum() / prob_check_denom).item() - 1.0) < 1e-6
             # ), "Denoising output probabilities not summing to 1."
