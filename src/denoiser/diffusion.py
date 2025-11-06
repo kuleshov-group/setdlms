@@ -1479,16 +1479,15 @@ class AnyOrderBD3LM(BD3LM):
             perm_indices_cols[:, seq_len:] += seq_len  # shift indices for context
 
             seq_indices = torch.arange(seq_len, device=input_ids.device)
-
             # permute rows
             decoder_attention_mask_perm = decoder_attention_mask[
-                torch.arange(batch_size).unsqueeze(1), perm_indices_cols.argsort(dim=-1)]
+                torch.arange(batch_size).unsqueeze(1), perm_indices_cols]
 
             # permute columns
             decoder_attention_mask_perm = torch.gather(
                 decoder_attention_mask_perm,
                 dim=-1,
-                index=perm_indices_cols.argsort(dim=-1)[:, None, :].expand(
+                index=perm_indices_cols[:, None, :].expand(
                     batch_size, seq_len * 2, decoder_attention_mask.shape[-1]
                 )
             )
@@ -1506,6 +1505,7 @@ class AnyOrderBD3LM(BD3LM):
         )
         xt = torch.cat((input_ids, xt), dim=-1)
         position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, 2).to(input_ids.device)
+        import ipdb ; ipdb.set_trace()
         return DenoiserInput(
             xt=xt,  # type: ignore
             x0=input_ids,
@@ -1559,8 +1559,9 @@ class AnyOrderBD3LM(BD3LM):
                 ),
             )[-seq_len:].to(device)
             attention_mask[:, -seq_len:] = 0
-            attention_mask[-torch.arange(seq_len), -torch.arange(seq_len)] = 1
+            attention_mask[-torch.arange(1, seq_len+1), -torch.arange(1, seq_len+1)] = 1
             attention_mask = self._preprocess_attention_mask(attention_mask[None, None, ...], dtype=torch.float)
+        # import ipdb ; ipdb.set_trace()
         return DenoiserInput(
             xt=input_ids,
             attention_mask=attention_mask,
@@ -1619,10 +1620,8 @@ class AnyOrderBD3LM(BD3LM):
         )[None, :]
 
         # Sample max generation length tensor from prior
-        accumulated_samples = self._sample_prior(
-            device=device,
-            batch_size=batch_size,
-            length=max_blocks * block_size,
+        accumulated_samples = self.mask_token_id * torch.ones(
+            (batch_size, max_blocks * block_size), dtype=torch.int64, device=device
         )
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if generation_config.use_cache and inputs.numel() > 0:
@@ -1661,7 +1660,6 @@ class AnyOrderBD3LM(BD3LM):
                 disable=disable_pbar,
             )
             dt = (1 - generation_config.min_t) / len(timesteps)
-            cache = None
             xt_position_ids = all_position_ids[
                 :,
                 inputs_offset + (block_id * block_size) : inputs_offset
