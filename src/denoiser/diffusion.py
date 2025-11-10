@@ -1588,6 +1588,9 @@ class AnyOrderBD3LM(BD3LM):
         assert generation_config.use_cache, (
             "Generation with AO-ARM requires use_cache=True."
         )
+        assert ~generation_config.align_inputs_to_blocks, (
+            "Alignment of inputs to blocks not supported."
+        )
         # Setup sampling variables
         if generation_config is None:
             assert getattr(self, "generation_config", None) is not None, (
@@ -1704,7 +1707,7 @@ class AnyOrderBD3LM(BD3LM):
                 if (
                     not torch.allclose(xs, xt[xt == self.mask_token_id].unsqueeze(0))
                 ):
-                    cache = None
+                    model_output_cache = None
                 accumulated_samples[:, xt_position_ids[xt == self.mask_token_id]] = xs
                 if generation_config.use_cache:
                     # Enode unmasked tokens only
