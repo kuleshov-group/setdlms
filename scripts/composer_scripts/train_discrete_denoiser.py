@@ -34,6 +34,7 @@ def main(cfg: DictConfig) -> None:
     # Model
     model = hydra.utils.instantiate(
         cfg.model,
+        tokenizer=tokenizer,
         _convert_="all",  # required to enable json-serialization when saving checkpoint
     )
     print(model)

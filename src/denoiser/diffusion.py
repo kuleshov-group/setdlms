@@ -151,8 +151,8 @@ class MDLM(Denoiser):
 
     config_class = MDLMConfig
 
-    def __init__(self, config: MDLMConfig, **kwargs):
-        super().__init__(config, **kwargs)
+    def __init__(self, config: MDLMConfig, tokenizer: Optional[PreTrainedTokenizer] = None, **kwargs):
+        super().__init__(config, tokenizer, **kwargs)
         self._create_static_mask()
         self.neg_infinity = -1e12
 
@@ -319,13 +319,16 @@ class MDLM(Denoiser):
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
         ).squeeze(-1)
-        nlls = (
-            log_p_theta
-            * denoiser_inputs.alpha_t_prime
-            / (1 - denoiser_inputs.alpha_t)
-            * denoiser_inputs.tokens_mask
-        )
-        block_size = getattr(self.config, "block_size", nlls.shape[-1])
+        block_size = getattr(self.config, "block_size", denoiser_inputs.x0.shape[-1])
+        if block_size > 1:
+            nlls = (
+                log_p_theta
+                * denoiser_inputs.alpha_t_prime
+                / (1 - denoiser_inputs.alpha_t)
+                * denoiser_inputs.tokens_mask
+            )
+        else:
+            nlls = - log_p_theta * denoiser_inputs.tokens_mask
         if self.training or block_size == 1:
             batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
         else:
@@ -696,8 +699,8 @@ class BD3LM(MDLM):
 
     config_class = BD3LMConfig
 
-    def __init__(self, config: BD3LMConfig, **kwargs):
-        super().__init__(config, **kwargs)
+    def __init__(self, config: BD3LMConfig, tokenizer: Optional[PreTrainedTokenizer] = None, **kwargs):
+        super().__init__(config, tokenizer, **kwargs)
 
     # noinspection PyUnusedLocal
     @staticmethod
@@ -986,8 +989,8 @@ class E2D2(BD3LM):
 
     config_class = E2D2Config
 
-    def __init__(self, config: E2D2Config, **kwargs):
-        super().__init__(config, **kwargs)
+    def __init__(self, config: E2D2Config, tokenizer: Optional[PreTrainedTokenizer] = None, **kwargs):
+        super().__init__(config, tokenizer, **kwargs)
 
     # noinspection PyUnusedLocal
     @staticmethod
@@ -1363,8 +1366,8 @@ class E2D2(BD3LM):
 class AnyOrderBD3LM(BD3LM):
     """Denoiser class for AnyOrderBD3LM models."""
 
-    def __init__(self, config: BD3LMConfig):
-        super().__init__(config)
+    def __init__(self, config: BD3LMConfig, tokenizer: Optional[PreTrainedTokenizer] = None, **kwargs):
+        super().__init__(config, tokenizer, **kwargs)
         self.block_size = config.block_size
         if config.attn_backend == "flex_attention":
             self.static_attention_mask = None
@@ -1503,7 +1506,6 @@ class AnyOrderBD3LM(BD3LM):
         )
         xt = torch.cat((input_ids, xt), dim=-1)
         position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, 2).to(input_ids.device)
-        import ipdb ; ipdb.set_trace()
         return DenoiserInput(
             xt=xt,  # type: ignore
             x0=input_ids,
@@ -1559,7 +1561,6 @@ class AnyOrderBD3LM(BD3LM):
             attention_mask[:, -seq_len:] = 0
             attention_mask[-torch.arange(1, seq_len+1), -torch.arange(1, seq_len+1)] = 1
             attention_mask = self._preprocess_attention_mask(attention_mask[None, None, ...], dtype=torch.float)
-        # import ipdb ; ipdb.set_trace()
         return DenoiserInput(
             xt=input_ids,
             attention_mask=attention_mask,

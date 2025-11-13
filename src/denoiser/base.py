@@ -16,6 +16,7 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
     StoppingCriteriaList,
+    PreTrainedTokenizer,
 )
 from transformers.cache_utils import Cache
 from transformers.generation.utils import GenerateOutput
@@ -127,6 +128,7 @@ class Denoiser(ABC, PreTrainedModel):
     def __init__(
         self,
         config: DenoiserConfig,
+        tokenizer: Optional[PreTrainedTokenizer] = None,
         **kwargs,
     ):
         """
@@ -161,7 +163,7 @@ class Denoiser(ABC, PreTrainedModel):
                         sys.modules[short] = sys.modules[name]
             del sys_modules
             self.backbone = hydra.utils.instantiate(config.backbone_config)
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.tokenizer = tokenizer if tokenizer is not None else AutoTokenizer.from_pretrained(
             config.tokenizer_name,
             trust_remote_code=True,
         )

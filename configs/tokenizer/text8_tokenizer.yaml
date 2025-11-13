@@ -1,0 +1,2 @@
+_target_: src.datasets.custom_tokenizers.Text8Tokenizer
+pretrained_model_name_or_path: null # We use a custom tokenizer, so we don't need a pretrained model
