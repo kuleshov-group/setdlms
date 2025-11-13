@@ -325,7 +325,8 @@ class MDLM(Denoiser):
             / (1 - denoiser_inputs.alpha_t)
             * denoiser_inputs.tokens_mask
         )
-        if self.training:
+        block_size = getattr(self.config, "block_size", nlls.shape[-1])
+        if self.training or block_size == 1:
             batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
         else:
             batch_nll = nlls.sum(dim=-1)
@@ -837,7 +838,7 @@ class BD3LM(MDLM):
             alpha_t_prime = alpha_t_prime[..., None]
         xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, context_mask=context_mask)
         # Ensure each block has at least 1 masked token
-        if self.training:
+        if self.training or self.config.block_size == 1:
             xt = self._ensure_no_unmasked_blocks(
                 input_ids,
                 xt,
@@ -1141,7 +1142,7 @@ class E2D2(BD3LM):
             alpha_t_prime = alpha_t_prime[..., None]
         xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, context_mask=context_mask)
         # Ensure each block has at least 1 masked token
-        if self.training:
+        if self.training or self.config.block_size == 1:
             xt = self._ensure_no_unmasked_blocks(
                 input_ids,
                 xt,
