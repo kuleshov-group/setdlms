@@ -4,6 +4,7 @@ import logging
 import hydra
 import torch
 import torch.distributed as torch_dist
+import os
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
 from omegaconf import DictConfig, OmegaConf
@@ -18,6 +19,8 @@ from scripts.utils import (
 )
 from src.datasets.streaming_dataset_hf import StreamingHFDataset
 
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "ERROR"))
 log = logging.getLogger(__name__)
 
 

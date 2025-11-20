@@ -44,6 +44,7 @@ class AutoModelFromPreTrained(nn.Module):
         keep_top_layers: bool = False,
         reinit_model: bool = False,
         use_causal_mask: bool = False,
+        add_position_embeddings_additional: bool = False,
         **automodel_init_kwargs,
     ):
         super().__init__()
@@ -56,13 +57,24 @@ class AutoModelFromPreTrained(nn.Module):
                 **automodel_init_kwargs,
             )
             self.model = CustomQwen3ForCausalLM(auto_config)
+            if add_position_embeddings_additional:
+                # add a linear layer to the model
+                self.model.model.position_embeddings_additional = nn.Linear(self.model.model.config.head_dim * 2, self.model.model.config.head_dim)
             # self.model = AUTO_MODEL_CLS[automodel_cls].from_config(auto_config)
         else:
-            self.model = AUTO_MODEL_CLS[automodel_cls].from_pretrained(
+            # self.model = AUTO_MODEL_CLS[automodel_cls].from_pretrained(
+            #     pretrained_model_name_or_path,
+            #     trust_remote_code=trust_remote_code,
+            #     **automodel_init_kwargs,
+            # )
+            self.model = CustomQwen3ForCausalLM.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=trust_remote_code,
                 **automodel_init_kwargs,
             )
+            if add_position_embeddings_additional:
+                # add a linear layer to the model
+                self.model.model.position_embeddings_additional = nn.Linear(self.model.model.config.head_dim * 2, self.model.model.config.head_dim)
             num_layers = (
                 len(self.model.model.layers) if num_layers == -1 else num_layers
             )

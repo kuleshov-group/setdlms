@@ -339,7 +339,8 @@ class MDLM(Denoiser):
             loss=token_nll,  # type: ignore
             nlls=nlls,
             other_loss_terms={
-                "masked_tokens": (denoiser_inputs.xt == self.mask_token_id).int()
+                "masked_tokens": (denoiser_inputs.xt == self.mask_token_id).int(),
+                "log_p_theta": - log_p_theta * denoiser_inputs.tokens_mask
             },
         )
 
@@ -1375,6 +1376,12 @@ class AnyOrderBD3LM(BD3LM):
         self._create_static_mask()
 
     def _create_static_mask(self) -> None:
+        self.mask_to_mask_interaction = True
+        self.clean_block_caching = False
+        self.mask_attends_to_clean = False
+        block_diagonal_mask =((torch.arange(self.config.length)[..., None] // self.config.block_size) == (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
+        block_causal_mask = ((torch.arange(self.config.length)[..., None] // self.config.block_size) >= (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
+        offset_block_causal_mask = ((torch.arange(self.config.length)[..., None] // self.config.block_size) > (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
         encoder_static_mask = torch.tril(
             torch.ones(
                 (self.config.length, self.config.length),
@@ -1382,6 +1389,8 @@ class AnyOrderBD3LM(BD3LM):
             ),
             diagonal=-1,
         )
+        if self.clean_block_caching:
+            encoder_static_mask *= block_diagonal_mask
         decoder_static_mask = torch.cat(
             (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
         )
@@ -1393,6 +1402,44 @@ class AnyOrderBD3LM(BD3LM):
                 (encoder_static_mask, decoder_static_mask), dim=0
             )
         )
+        import torch.nn.functional as F
+        # import ipdb ; ipdb.set_trace()
+        # -- Attention to clean tokens --
+        if self.clean_block_caching:
+            self.static_attention_mask = F.pad(self.static_attention_mask, (0, self.config.length, 0, self.config.length), value=False)
+
+            # "caching"
+            self.static_attention_mask[-self.config.length:, -self.config.length:] = block_causal_mask
+
+            # clean tokens can attend to offset blocks
+            self.static_attention_mask[:self.config.length, -self.config.length:] = offset_block_causal_mask
+
+            # masked tokens can attend to clean blocks
+            self.static_attention_mask[self.config.length:-self.config.length, -self.config.length:] = offset_block_causal_mask
+
+
+        # -- Attention to masked tokens --
+        if self.mask_to_mask_interaction:
+            self.static_attention_mask = F.pad(self.static_attention_mask, (0, self.config.length, 0, self.config.length), value=False)
+
+            # "caching"
+            if self.mask_attends_to_clean:
+                self.static_attention_mask[-self.config.length:, -self.config.length:] = torch.triu(torch.ones((self.config.length, self.config.length), dtype=torch.bool), diagonal=1) * block_diagonal_mask
+            else:
+                self.static_attention_mask[-self.config.length:, -self.config.length:] = block_diagonal_mask
+
+            # can attend to previous clean blocks
+            if self.clean_block_caching:
+                self.static_attention_mask[-self.config.length:, self.config.length*2:-self.config.length] = offset_block_causal_mask
+            else:
+                self.static_attention_mask[-self.config.length:, :self.config.length] = offset_block_causal_mask
+
+            # mask tokens can attend to offset blocks
+            self.static_attention_mask[self.config.length:self.config.length*2, -self.config.length:] = torch.triu(torch.ones((self.config.length, self.config.length), dtype=torch.bool), diagonal=1) * block_diagonal_mask
+        
+            # mask tokens can attend to previously decoded tokens
+            self.static_attention_mask[-self.config.length:, :self.config.length] = torch.tril(torch.ones((self.config.length, self.config.length), dtype=torch.bool), diagonal=-1) * block_diagonal_mask
+
 
     def _compute_loss(
         self,
@@ -1401,7 +1448,7 @@ class AnyOrderBD3LM(BD3LM):
         **kwargs: Any,
     ) -> LossAndNllOutput:
         input_length = denoiser_inputs.x0.shape[1]
-        model_output = model_output[:, input_length:, ...]
+        model_output = model_output[:, input_length:input_length*2, ...]
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
         ).squeeze(-1)
@@ -1411,10 +1458,109 @@ class AnyOrderBD3LM(BD3LM):
                 denoiser_inputs.x0 != self.pad_token_id
             )
         nlls = loss * denoiser_inputs.tokens_mask
-        count = denoiser_inputs.tokens_mask.sum()
+        
+        # Apply random dropout to nlls during training
+        # dropout_rate = kwargs.get("nll_dropout_rate", (self.config.block_size - 1) / self.config.block_size)
+        # block_wise_dropout = kwargs.get("nll_block_wise_dropout", True)
+        dropout_rate = 0.0
+        block_wise_dropout = False
+        if self.training and dropout_rate > 0.0:
+            if block_wise_dropout:
+                # Block-wise dropout: randomly drop dropout% tokens in each block
+                batch_size, seq_len = denoiser_inputs.tokens_mask.shape
+                n_blocks = seq_len // self.block_size
+                if n_blocks > 0:
+                    # Reshape into blocks: [batch_size, n_blocks, block_size]
+                    tokens_mask_blocks = denoiser_inputs.tokens_mask[:, :n_blocks * self.block_size].view(
+                        batch_size, n_blocks, self.block_size
+                    )
+                    
+                    # Initialize dropout mask with all ones
+                    dropout_mask_blocks = torch.ones_like(tokens_mask_blocks)
+                    
+                    # Generate random values for each position in each block
+                    rand_vals = torch.rand_like(tokens_mask_blocks.float())
+                    # Only consider valid tokens for dropout
+                    rand_vals = torch.where(tokens_mask_blocks.bool(), rand_vals, float('inf'))
+                    
+                    # Count valid tokens per block and calculate how many to drop
+                    valid_tokens_per_block = tokens_mask_blocks.sum(dim=-1, keepdim=True)  # [batch_size, n_blocks, 1]
+                    num_tokens_to_drop = (valid_tokens_per_block * dropout_rate).long()  # [batch_size, n_blocks, 1]
+                    
+                    # For each block, select the top-k (by random value) valid tokens to drop
+                    # We use k smallest random values to determine which tokens to drop
+                    for block_idx in range(n_blocks):
+                        block_rand = rand_vals[:, block_idx, :]  # [batch_size, block_size]
+                        block_mask = tokens_mask_blocks[:, block_idx, :]  # [batch_size, block_size]
+                        n_to_drop = num_tokens_to_drop[:, block_idx, 0]  # [batch_size]
+                        
+                        # For each batch, select tokens to drop
+                        for b in range(batch_size):
+                            if n_to_drop[b].item() > 0 and block_mask[b].any():
+                                # Get valid indices in this block
+                                valid_indices = torch.where(block_mask[b])[0]
+                                if len(valid_indices) > 0:
+                                    # Get random values for valid tokens
+                                    valid_rand = block_rand[b, valid_indices]
+                                    # Select tokens with smallest random values to drop
+                                    n_drop = min(n_to_drop[b].item(), len(valid_indices))
+                                    _, drop_relative_indices = torch.topk(valid_rand, n_drop, largest=False)
+                                    drop_absolute_indices = valid_indices[drop_relative_indices]
+                                    dropout_mask_blocks[b, block_idx, drop_absolute_indices] = 0.0
+                    
+                    # Only apply dropout to valid tokens
+                    dropout_mask_blocks = dropout_mask_blocks * tokens_mask_blocks
+                    
+                    # Reshape back to original shape
+                    dropout_mask = dropout_mask_blocks.view(batch_size, n_blocks * self.block_size)
+                    # Handle remaining tokens (if seq_len is not divisible by block_size)
+                    if seq_len > n_blocks * self.block_size:
+                        remaining_tokens = denoiser_inputs.tokens_mask[:, n_blocks * self.block_size:]
+                        remaining_mask = torch.bernoulli(
+                            torch.ones_like(remaining_tokens) * (1.0 - dropout_rate)
+                        ).to(remaining_tokens.dtype) * remaining_tokens
+                        dropout_mask = torch.cat([dropout_mask, remaining_mask], dim=-1)
+                    else:
+                        # Pad to original length if needed (shouldn't happen, but just in case)
+                        if dropout_mask.shape[1] < seq_len:
+                            padding = denoiser_inputs.tokens_mask[:, dropout_mask.shape[1]:]
+                            dropout_mask = torch.cat([dropout_mask, padding], dim=-1)
+                else:
+                    # Fallback to regular dropout if no blocks
+                    dropout_mask = torch.bernoulli(
+                        torch.ones_like(denoiser_inputs.tokens_mask) * (1.0 - dropout_rate)
+                    ).to(denoiser_inputs.tokens_mask.dtype)
+                    dropout_mask = dropout_mask * denoiser_inputs.tokens_mask
+            else:
+                # Regular dropout: drop tokens independently across entire sequence
+                dropout_mask = torch.bernoulli(
+                    torch.ones_like(denoiser_inputs.tokens_mask) * (1.0 - dropout_rate)
+                ).to(denoiser_inputs.tokens_mask.dtype)
+                # Only apply dropout to valid tokens (where tokens_mask is True)
+                dropout_mask = dropout_mask * denoiser_inputs.tokens_mask
+            
+            # Apply dropout to nlls
+            nlls = nlls * dropout_mask
+            # Update count to only include non-dropped tokens
+            count = dropout_mask.sum()
+        else:
+            count = denoiser_inputs.tokens_mask.sum()
+
         batch_nll = nlls.sum()
         token_nll = batch_nll / count
-        return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
+        
+        # Extract permutation order from backbone_kwargs
+        permutation_order = denoiser_inputs.backbone_kwargs.get("permutation_order")
+        other_loss_terms = {}
+        if permutation_order is not None:
+            other_loss_terms["permutation_order"] = permutation_order
+            other_loss_terms["attention_mask"] = denoiser_inputs.attention_mask
+            other_loss_terms["log_p_theta"] = - log_p_theta * denoiser_inputs.tokens_mask
+        return LossAndNllOutput(
+            loss=token_nll,
+            nlls=nlls,
+            other_loss_terms=other_loss_terms,
+        )  # type: ignore
 
     def _prepare_inputs(
         self,
@@ -1457,9 +1603,9 @@ class AnyOrderBD3LM(BD3LM):
             rand = torch.rand(
                 batch_size, n_blocks, self.block_size, device=input_ids.device
             )
-            rand = torch.where(to_permute, rand, float("inf"))
-            # sort is stable on cpu
-            perm_indices = torch.argsort(rand.cpu(), dim=-1, descending=True).to(
+            rand = torch.where(to_permute, rand, 1e9)
+            # Use stable sort to preserve sequential ordering for ties
+            perm_indices = torch.argsort(rand.cpu(), dim=-1, descending=True, stable=True).to(
                 rand.device
             )
             block_offset = (
@@ -1468,34 +1614,44 @@ class AnyOrderBD3LM(BD3LM):
             )
             perm_indices = block_offset + perm_indices
             perm_indices = perm_indices.view(batch_size, n_blocks * self.block_size)
+
+        num_repetitions = self.static_attention_mask.shape[1] // input_ids.shape[1]
         decoder_attention_mask = (
             self.static_attention_mask[None, ...]
-            & attention_mask.repeat(1, 2)[:, None, :]
-            & attention_mask.repeat(1, 2)[..., None]
+            & attention_mask.repeat(1, num_repetitions)[:, None, :]
+            & attention_mask.repeat(1, num_repetitions)[..., None]
         )
         if permute_flag.any():
             seq_len = input_ids.shape[1]
 
-            perm_indices_cols = perm_indices.repeat(1, 2)
-            perm_indices_cols[:, seq_len:] += seq_len  # shift indices for context
+            perm_indices_cols = perm_indices.repeat(1, num_repetitions)
+            # perm_indices_cols = torch.cat((perm_indices_cols, torch.arange(seq_len, seq_len*2).repeat(batch_size, 1).to(input_ids.device)), dim=-1)
 
-            seq_indices = torch.arange(seq_len, device=input_ids.device)
+            perm_indices_cols[:, seq_len:seq_len*2] += seq_len
+            if num_repetitions > 2:
+                perm_indices_cols[:, seq_len*2:] += seq_len * 2
+            if num_repetitions > 3:
+                perm_indices_cols[:, seq_len*3:] += seq_len * 3
+
             # permute rows
             decoder_attention_mask_perm = decoder_attention_mask[
-                torch.arange(batch_size).unsqueeze(1), perm_indices_cols]
-
+                torch.arange(batch_size).unsqueeze(1), perm_indices_cols.argsort(-1)]
             # permute columns
             decoder_attention_mask_perm = torch.gather(
                 decoder_attention_mask_perm,
                 dim=-1,
-                index=perm_indices_cols[:, None, :].expand(
-                    batch_size, seq_len * 2, decoder_attention_mask.shape[-1]
+                index=perm_indices_cols[:, None, :].argsort(-1).expand(
+                    batch_size, seq_len * num_repetitions, decoder_attention_mask.shape[-1]
                 )
             )
 
             # self-attention
             decoder_attention_mask_perm[:, torch.arange(seq_len), torch.arange(seq_len)] = 1
             decoder_attention_mask_perm[:, torch.arange(seq_len, seq_len*2), torch.arange(seq_len, seq_len*2)] = 1
+            if num_repetitions > 2:
+                decoder_attention_mask_perm[:, torch.arange(seq_len*2, seq_len*3), torch.arange(seq_len*2, seq_len*3)] = 1
+            if num_repetitions > 3:
+                decoder_attention_mask_perm[:, torch.arange(seq_len*3, seq_len*4), torch.arange(seq_len*3, seq_len*4)] = 1
             decoder_attention_mask = decoder_attention_mask_perm
 
         decoder_attention_mask = self._preprocess_attention_mask(
@@ -1505,7 +1661,12 @@ class AnyOrderBD3LM(BD3LM):
             (attention_mask == 1) & (context_mask == 0), self.mask_token_id, xt
         )
         xt = torch.cat((input_ids, xt), dim=-1)
-        position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, 2).to(input_ids.device)
+        if self.clean_block_caching:
+            xt = torch.cat((xt, input_ids), dim=-1)
+        if self.mask_to_mask_interaction:
+            xt = torch.cat((xt, torch.full_like(input_ids, self.mask_token_id)), dim=-1)
+
+        position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, num_repetitions).to(input_ids.device)
         return DenoiserInput(
             xt=xt,  # type: ignore
             x0=input_ids,
@@ -1516,6 +1677,7 @@ class AnyOrderBD3LM(BD3LM):
             alpha_t_prime=alpha_t_prime,
             backbone_kwargs={
                 "position_ids": position_ids,
+                "permutation_order": perm_indices.argsort(-1).repeat(1, 2),
             },
         )
 
@@ -1548,6 +1710,11 @@ class AnyOrderBD3LM(BD3LM):
                     dtype=torch.bool,
                 ),
             )[-seq_len:].to(device)
+            # randomly permute rows and cols
+            perm_indices = torch.randperm(seq_len, device=device)
+            attention_mask = attention_mask[perm_indices]
+            attention_mask = torch.gather(
+                attention_mask, dim=-1, index=perm_indices.unsqueeze(0).expand(seq_len, seq_len))
             attention_mask = self._preprocess_attention_mask(
                 attention_mask[None, None, ...], dtype=torch.float
             )
