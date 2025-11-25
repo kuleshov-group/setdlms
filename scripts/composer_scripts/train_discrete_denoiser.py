@@ -20,7 +20,7 @@ from scripts.utils import (
 from src.datasets.streaming_dataset_hf import StreamingHFDataset
 
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "ERROR"))
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 log = logging.getLogger(__name__)
 
 
