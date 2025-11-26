@@ -1,0 +1,6 @@
+_target_: src.noise_schedule.noise_schedules.StaggeredNoise
+eps: 1e-3
+plot_schedule: true
+scale_conf: 1.0
+block_size: ${block_size}
+length: ${model.config.length}

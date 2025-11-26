@@ -78,3 +78,90 @@ class LinearNoise(Noise):
         alpha_t_prime = -torch.ones_like(t)
         move_chance = t
         return 1 - move_chance, alpha_t_prime
+
+
+class StaggeredNoise(Noise):
+    def __init__(self, eps=1e-3, scale_conf=1.0, block_size=1, length=1, plot_schedule=False):
+        super().__init__()
+        self.eps = eps
+        self.scale_conf = scale_conf
+        self.block_size = block_size
+        self.length = length
+        self.init_schedule()
+        
+        if plot_schedule and self.length < 128:
+            figdir = f"/share/kuleshov/ma2238/dllm-dev-new-/dllm-devnoise_schedules/ar_step/bs{self.block_size}/"
+            figdir += f'scale{self.scale_conf}'
+            figdir += '/'
+            if not os.path.exists(figdir):
+                os.makedirs(figdir)
+            self._plot_schedule(figdir)
+
+    def inverse(self, alpha_t):
+        raise NotImplementedError("Inverse function not implemented")
+
+    def init_schedule(self, scale_conf=None, block_size=None):
+        if block_size is None:
+            block_size = self.block_size
+        if scale_conf is None:
+            scale_conf = self.scale_conf
+        num_blocks = self.length // block_size
+        self.scale_conf = scale_conf
+        self.scale = torch.ones(1, block_size).repeat(1, num_blocks) * scale_conf
+        self.loc =  - torch.linspace(0, 1 - 1 / scale_conf, block_size).flip(0)
+        self.loc = self.loc[None, :].repeat(1, num_blocks)
+
+        last_token_max_t = 1 / scale_conf
+        self.max_lookahead = (-self.loc < last_token_max_t).sum().item()
+    
+    def _plot_schedule(self, figdir):
+        num_blocks = self.length // self.block_size
+        t = torch.linspace(0, 1, 1000).unsqueeze(-1).repeat(1, self.length).repeat_interleave(num_blocks, dim=1)
+        move_chance = self.total_noise(t)
+        move_chance = move_chance.cpu().numpy()
+
+        colors = n_colors('rgb(68, 1, 84)', 'rgb(253, 231, 37)', self.length, colortype='rgb')
+        fig = go.Figure()
+        for i in range(self.length):
+            fig.add_trace(go.Scatter(
+                x=np.linspace(0, 1, 1000),
+                y=move_chance[:, i],
+                mode='lines',
+                line=dict(color=colors[i]),
+                name=str(i) if self.length <= 8 else None
+            ))
+        fig.update_layout(
+            title="Line Plot with Colormap",
+            xaxis_title="X-axis",
+            yaxis_title="Y-axis",
+            showlegend=(self.length <= 8),
+            template="plotly"
+        )
+        plt.savefig(f'{figdir}{self.length}schedule.jpg')
+        print('min move chance', move_chance[0].max())
+        print('max move chance', move_chance[-1].min())
+        print('saved to ', f'{figdir}{self.length}schedule.jpg')
+
+    def total_noise(self, t):
+        scale, loc = self.scale.to(t.device)[:, :t.shape[-1]], self.loc.to(t.device)[:, :t.shape[-1]]
+        t_ = (t + loc) * scale
+        t_ = torch.clamp(t_, 0, 1)
+        return t_
+
+    def rate_noise(self, t):
+        scale, loc = self.scale.to(t.device)[:, :t.shape[-1]], self.loc.to(t.device)[:, :t.shape[-1]]
+        t_ = (t + loc) * scale
+        t_ = torch.clamp(t_, 0, 1)
+        at_prime = (((t_ != 0) * (t_ != 1)) * scale)
+
+        # edge case 1: token at min masking prob
+        # at_prime += (t == -loc) * scale
+
+        # edge case 2: token at max masking prob
+        at_prime += (t == (1/scale - loc)) * scale
+        at_prime = torch.clamp(at_prime, max=scale)
+        return at_prime
+
+    def __call__(self, t):
+        t = t.to(torch.float32)
+        return self.total_noise(t), self.rate_noise(t)
