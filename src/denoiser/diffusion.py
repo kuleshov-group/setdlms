@@ -885,23 +885,26 @@ class BD3LM(MDLM):
                 # Keep self-attention
                 decoder_attention_mask[:, :, self.config.length:, self.config.length:] |= torch.eye(self.config.length, device=xt.device)[None, None, :, :].to(xt.device).to(decoder_attention_mask.dtype)
             if getattr(self.config, "attend_to_dummy_tokens", False):
-                num_dummy_tokens = xt.shape[-1]
+                num_dummy_tokens = getattr(self.config, "num_dummy_tokens", xt.shape[-1])
                 dummy_token = self.tokenizer.unk_token_id
                 xt = torch.cat((xt, torch.full((xt.shape[0], num_dummy_tokens), dummy_token, device=xt.device)), dim=-1)
+
                 # pad attention mask on bottom and right
                 decoder_attention_mask = F.pad(decoder_attention_mask, (0, num_dummy_tokens, 0, num_dummy_tokens), value=False)
                                 
                 # zero out rows and columns according to attention mask
                 padding_attn_mask = torch.ones((num_dummy_tokens, num_dummy_tokens), device=xt.device).int()
-                padding_attn_mask = padding_attn_mask & attention_mask[:, None, :] & attention_mask[..., None]
+                padding_attn_mask = padding_attn_mask & attention_mask[:, None, :num_dummy_tokens] & attention_mask[:, :num_dummy_tokens, None]
                 padding_attn_mask = padding_attn_mask[:, None, ...]
                 
                 # allow masked tokens to attend to dummy tokens
-                decoder_attention_mask[:, :, self.config.length:self.config.length*2, -num_dummy_tokens:] = padding_attn_mask
+                decoder_attention_mask[:, :, self.config.length:self.config.length*2, -num_dummy_tokens:] = attention_mask[:, None, None, :num_dummy_tokens]
                 # allow clean tokens to attend to dummy tokens
-                decoder_attention_mask[:, :, :self.config.length, -num_dummy_tokens:] = padding_attn_mask
-                # allow dummy tokens to attend to each other
+                decoder_attention_mask[:, :, :self.config.length, -num_dummy_tokens:] = attention_mask[:, None, None, :num_dummy_tokens]
+
+                # # allow dummy tokens to attend to each other
                 # decoder_attention_mask[:, :, -num_dummy_tokens:, -num_dummy_tokens:] = padding_attn_mask
+                decoder_attention_mask[:, :, -num_dummy_tokens:, -num_dummy_tokens:] = torch.eye(num_dummy_tokens, device=xt.device).to(decoder_attention_mask.dtype)[None, None, ...]
                 
             decoder_attention_mask = self._preprocess_attention_mask(
                 decoder_attention_mask, dtype=torch.float
@@ -941,7 +944,7 @@ class BD3LM(MDLM):
             torch.arange(input_ids.shape[1]).repeat(2).to(input_ids.device)[None, :]
         )
         if getattr(self.config, "attend_to_dummy_tokens", False):
-            position_ids = torch.cat((position_ids, torch.arange(input_ids.shape[1]).to(input_ids.device)[None, :]), dim=-1)
+            position_ids = torch.cat((position_ids, torch.arange(num_dummy_tokens).to(input_ids.device)[None, :]), dim=-1)
         if self.training and self.config.train_on_context:
             tokens_mask = attention_mask
         else:
@@ -1433,7 +1436,9 @@ class AnyOrderBD3LM(BD3LM):
         block_size: int,
         permute_mask: Optional[torch.Tensor] = None,
         device: Optional[torch.device] = None,
+        staggered=False,
     ) -> torch.Tensor:
+        # TODO: put this in the noise schedule
         """Sample a random permutation order for tokens within blocks.
         
         Args:
@@ -1456,9 +1461,12 @@ class AnyOrderBD3LM(BD3LM):
         
         n_blocks = seq_len // block_size
         to_permute = permute_mask.view(batch_size, n_blocks, block_size)
-        ranking = torch.rand(batch_size, n_blocks, block_size, device=device)
-        ranking = torch.where(to_permute, ranking, float('inf'))
-        perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
+        if not staggered:
+            ranking = torch.rand(batch_size, n_blocks, block_size, device=device)
+            ranking = torch.where(to_permute, ranking, float('inf'))
+            perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
+        else:
+            pass
         block_offset = (
             torch.arange(n_blocks, device=device)[None, :, None] * block_size
         )

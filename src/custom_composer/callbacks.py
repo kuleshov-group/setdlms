@@ -781,6 +781,31 @@ class MaskingPatternLossAnalysis(Callback):
             pattern_avg_losses.items(),
             key=lambda x: (sum(x[0]), x[0]),  # First by number of masked tokens, then by pattern (0's on left rank higher)
         )
+
+        # If there are many patterns, restrict plots to top-k by highest loss
+        if len(sorted_patterns) > 50:
+            # Select top 20 patterns by highest average loss
+            top_k = 20
+            top_patterns = sorted(
+                pattern_avg_losses.items(), key=lambda x: x[1], reverse=True
+            )[:top_k]
+            top_pattern_keys = {p for p, _ in top_patterns}
+
+            # Filter dictionaries down to top patterns only
+            pattern_avg_losses = {
+                p: v for p, v in pattern_avg_losses.items() if p in top_pattern_keys
+            }
+            pattern_std_losses = {
+                p: v for p, v in pattern_std_losses.items() if p in top_pattern_keys
+            }
+            pattern_counts = {
+                p: v for p, v in pattern_counts.items() if p in top_pattern_keys
+            }
+
+            # Recreate sorted_patterns ordered by descending loss
+            sorted_patterns = sorted(
+                pattern_avg_losses.items(), key=lambda x: x[1], reverse=True
+            )
         
         # Log metrics for each pattern
         # Convert pattern tuple to string for logging
@@ -1210,6 +1235,28 @@ class PermutationOrderLossAnalysis(Callback):
             permutation_avg_losses.items(),
             key=lambda x: x[0],  # Sort by permutation tuple
         )
+
+        # If there are many permutation orders, restrict plots to top-k by highest loss
+        if len(sorted_permutations) > 50:
+            top_k = 20
+            top_perms = sorted(
+                permutation_avg_losses.items(), key=lambda x: x[1], reverse=True
+            )[:top_k]
+            top_perm_keys = {p for p, _ in top_perms}
+
+            permutation_avg_losses = {
+                p: v for p, v in permutation_avg_losses.items() if p in top_perm_keys
+            }
+            permutation_std_losses = {
+                p: v for p, v in permutation_std_losses.items() if p in top_perm_keys
+            }
+            permutation_counts = {
+                p: v for p, v in permutation_counts.items() if p in top_perm_keys
+            }
+
+            sorted_permutations = sorted(
+                permutation_avg_losses.items(), key=lambda x: x[1], reverse=True
+            )
         
         # Log metrics for each permutation order
         metrics = {}
@@ -1701,6 +1748,28 @@ class PermutationToMaskingPatternAnalysis(Callback):
             pattern_avg_losses.items(),
             key=lambda x: (sum(x[0]), x[0]),  # First by number of masked tokens, then by pattern (0's on left rank higher)
         )
+
+        # If there are many patterns, restrict plots to top-k by highest loss
+        if len(sorted_patterns) > 50:
+            top_k = 20
+            top_patterns = sorted(
+                pattern_avg_losses.items(), key=lambda x: x[1], reverse=True
+            )[:top_k]
+            top_pattern_keys = {p for p, _ in top_patterns}
+
+            pattern_avg_losses = {
+                p: v for p, v in pattern_avg_losses.items() if p in top_pattern_keys
+            }
+            pattern_std_losses = {
+                p: v for p, v in pattern_std_losses.items() if p in top_pattern_keys
+            }
+            pattern_counts = {
+                p: v for p, v in pattern_counts.items() if p in top_pattern_keys
+            }
+
+            sorted_patterns = sorted(
+                pattern_avg_losses.items(), key=lambda x: x[1], reverse=True
+            )
         
         # Log metrics for each pattern
         metrics = {}

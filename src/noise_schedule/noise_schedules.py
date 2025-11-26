@@ -1,4 +1,10 @@
 from abc import ABC, abstractmethod
+from typing import Optional
+import os
+import numpy as np
+import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+import torch
 
 import torch
 
@@ -78,6 +84,13 @@ class LinearNoise(Noise):
         alpha_t_prime = -torch.ones_like(t)
         move_chance = t
         return 1 - move_chance, alpha_t_prime
+
+    def sample_permutation_order(self, batch_size: int, seq_len: int, block_size: int, device: Optional[torch.device] = None) -> torch.Tensor:
+        num_blocks = seq_len // block_size
+        ranking = torch.rand(batch_size, n_blocks, block_size, device=device)
+        ranking = torch.where(to_permute, ranking, float('inf'))
+        perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
+        return perm_indices
 
 
 class StaggeredNoise(Noise):
@@ -165,3 +178,12 @@ class StaggeredNoise(Noise):
     def __call__(self, t):
         t = t.to(torch.float32)
         return self.total_noise(t), self.rate_noise(t)
+
+    
+    def sample_permutation_order(self, batch_size: int, seq_len: int, block_size: int, device: Optional[torch.device] = None) -> torch.Tensor:
+        raise NotImplementedError("Sample permutation order not implemented")
+        num_blocks = seq_len // block_size
+        ranking = torch.rand(batch_size, n_blocks, block_size, device=device)
+        ranking = torch.where(to_permute, ranking, float('inf'))
+        perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
+        return perm_indices
