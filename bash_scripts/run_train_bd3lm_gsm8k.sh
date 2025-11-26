@@ -5,30 +5,33 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=4
-EVAL_BLOCK_SIZE=4
-N_LAYERS=17
+BLOCK_SIZE=32
+EVAL_BLOCK_SIZE=32
+N_LAYERS=28
 TOP_LAYERS=false
-REINIT_MODEL=false
+REINIT_MODEL=true
 
 # Hyperparameters
 LR=1e-5
 WARMUP_DURATION="100ba"
 ALPHA_F=0.5
 BATCH_SIZE=1
-MAX_DURATION="30000ba"
+MAX_DURATION="75000ba"
 PRECISION="amp_bf16"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="bd3lm"
+TRAIN_COMPLEMENT=false
+RM_ATTN_TO_MASKED_TOKENS=true
+ATTEND_TO_DUMMY_TOKENS=true
+TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_v3"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
   LAYERS="layers${N_LAYERS}"
 fi
-RUN_NAME=gsm8k-${NUM_SHOT}shot_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
+RUN_NAME=gsm8k-shot_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
 if [ "${REINIT_MODEL}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_reinit"
 fi
@@ -63,8 +66,11 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="1000ba" \
+  composer.trainer.save_interval="2000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  eval_dataloader.batch_size=4
+  eval_dataloader.batch_size=4 \
+  +model.config.train_complement=${TRAIN_COMPLEMENT} \
+  +model.config.rm_attn_to_masked_tokens=${RM_ATTN_TO_MASKED_TOKENS} \
+  +model.config.attend_to_dummy_tokens=${ATTEND_TO_DUMMY_TOKENS}

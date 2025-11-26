@@ -864,6 +864,45 @@ class BD3LM(MDLM):
                 & attention_mask.repeat(1, 2)[:, None, :]
                 & attention_mask.repeat(1, 2)[..., None]
             )[:, None, ...]  # Make attention mask 4D
+            if getattr(self.config, "train_complement", False):
+                block_causal = torch.arange(self.config.length)[..., None] // self.config.block_size >= torch.arange(self.config.length)[None, :] // self.config.block_size
+                block_causal = block_causal[None, None, ...].to(xt.device)
+                offset_block_causal = torch.arange(self.config.length)[..., None] // self.config.block_size > torch.arange(self.config.length)[None, :] // self.config.block_size
+                offset_block_causal = offset_block_causal[None, None, ...].to(xt.device)
+                masked_tokens = xt == self.mask_token_id
+                attn_allowed = masked_tokens[..., None] == masked_tokens[..., None, :]
+                attn_allowed = attn_allowed[:, None, ...]
+                decoder_attention_mask[:, :, :self.config.length, :self.config.length] = (attn_allowed | offset_block_causal) & block_causal
+                decoder_attention_mask[:, :, self.config.length:, :self.config.length] = (~attn_allowed | offset_block_causal) & block_causal
+                decoder_attention_mask[:, :, self.config.length:, self.config.length:] = (attn_allowed & block_causal) & ~offset_block_causal
+                if self.training:
+                    xt = torch.where(noise_mask == 1, xt, self.mask_token_id)
+            if getattr(self.config, "rm_attn_to_masked_tokens", False):
+                masked_tokens = xt == self.mask_token_id
+                padded_masked_tokens = F.pad(masked_tokens, (masked_tokens.shape[1], 0), value=False)
+                # Zero out columns
+                decoder_attention_mask = decoder_attention_mask & (~padded_masked_tokens[:, None, None, :]).to(decoder_attention_mask.dtype)
+                # Keep self-attention
+                decoder_attention_mask[:, :, self.config.length:, self.config.length:] |= torch.eye(self.config.length, device=xt.device)[None, None, :, :].to(xt.device).to(decoder_attention_mask.dtype)
+            if getattr(self.config, "attend_to_dummy_tokens", False):
+                num_dummy_tokens = xt.shape[-1]
+                dummy_token = self.tokenizer.unk_token_id
+                xt = torch.cat((xt, torch.full((xt.shape[0], num_dummy_tokens), dummy_token, device=xt.device)), dim=-1)
+                # pad attention mask on bottom and right
+                decoder_attention_mask = F.pad(decoder_attention_mask, (0, num_dummy_tokens, 0, num_dummy_tokens), value=False)
+                                
+                # zero out rows and columns according to attention mask
+                padding_attn_mask = torch.ones((num_dummy_tokens, num_dummy_tokens), device=xt.device).int()
+                padding_attn_mask = padding_attn_mask & attention_mask[:, None, :] & attention_mask[..., None]
+                padding_attn_mask = padding_attn_mask[:, None, ...]
+                
+                # allow masked tokens to attend to dummy tokens
+                decoder_attention_mask[:, :, self.config.length:self.config.length*2, -num_dummy_tokens:] = padding_attn_mask
+                # allow clean tokens to attend to dummy tokens
+                decoder_attention_mask[:, :, :self.config.length, -num_dummy_tokens:] = padding_attn_mask
+                # allow dummy tokens to attend to each other
+                # decoder_attention_mask[:, :, -num_dummy_tokens:, -num_dummy_tokens:] = padding_attn_mask
+                
             decoder_attention_mask = self._preprocess_attention_mask(
                 decoder_attention_mask, dtype=torch.float
             )
@@ -901,6 +940,8 @@ class BD3LM(MDLM):
         position_ids = (
             torch.arange(input_ids.shape[1]).repeat(2).to(input_ids.device)[None, :]
         )
+        if getattr(self.config, "attend_to_dummy_tokens", False):
+            position_ids = torch.cat((position_ids, torch.arange(input_ids.shape[1]).to(input_ids.device)[None, :]), dim=-1)
         if self.training and self.config.train_on_context:
             tokens_mask = attention_mask
         else:
@@ -969,8 +1010,8 @@ class BD3LM(MDLM):
         denoiser_inputs: DenoiserInput,
         **kwargs: Any,
     ) -> LossAndNllOutput:
-        input_length = denoiser_inputs.xt.shape[1] // 2
-        model_output = model_output[:, input_length:, ...]
+        input_length = denoiser_inputs.x0.shape[1]
+        model_output = model_output[:, input_length:input_length*2, ...]
         return super()._compute_loss(
             model_output=model_output,  # type: ignore
             denoiser_inputs=denoiser_inputs,
@@ -1386,6 +1427,44 @@ class AnyOrderBD3LM(BD3LM):
             self.encoder_static_attention_mask = None
         self._create_static_mask()
 
+    @staticmethod
+    def sample_permutation_order(
+        seq_len: int,
+        block_size: int,
+        permute_mask: Optional[torch.Tensor] = None,
+        device: Optional[torch.device] = None,
+    ) -> torch.Tensor:
+        """Sample a random permutation order for tokens within blocks.
+        
+        Args:
+            seq_len: Sequence length.
+            block_size: Block size for block-wise permutation.
+            permute_mask: Optional mask indicating which tokens to permute (batch_size, seq_len).
+                         If None, all tokens are permuted.
+            device: Device for the output tensor.
+        
+        Returns:
+            Permutation indices of shape (batch_size, seq_len).
+        """
+        if permute_mask is None:
+            batch_size = 1
+            permute_mask = torch.ones(1, seq_len, dtype=torch.bool, device=device)
+        else:
+            batch_size = permute_mask.shape[0]
+            if device is None:
+                device = permute_mask.device
+        
+        n_blocks = seq_len // block_size
+        to_permute = permute_mask.view(batch_size, n_blocks, block_size)
+        ranking = torch.rand(batch_size, n_blocks, block_size, device=device)
+        ranking = torch.where(to_permute, ranking, float('inf'))
+        perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
+        block_offset = (
+            torch.arange(n_blocks, device=device)[None, :, None] * block_size
+        )
+        perm_indices = block_offset + perm_indices
+        return perm_indices.view(batch_size, n_blocks * block_size)
+
     def _create_static_mask(self) -> None:
         # self.mask_to_mask_interaction = False
         # self.clean_block_caching = False
@@ -1627,23 +1706,12 @@ class AnyOrderBD3LM(BD3LM):
 
         batch_size, context_len = input_ids.shape
         if permute_flag.any():
-            n_blocks = context_len // self.block_size
-
-            to_permute = permute_flag.view(batch_size, n_blocks, self.block_size)
-            rand = torch.rand(
-                batch_size, n_blocks, self.block_size, device=input_ids.device
+            perm_indices = self.sample_permutation_order(
+                seq_len=context_len,
+                block_size=self.block_size,
+                permute_mask=permute_flag,
+                device=input_ids.device,
             )
-            rand = torch.where(to_permute, rand, float('inf'))
-            # Use stable sort to preserve sequential ordering for ties
-            perm_indices = torch.argsort(rand.cpu(), dim=-1, descending=True).to(
-                rand.device
-            )
-            block_offset = (
-                torch.arange(n_blocks, device=input_ids.device)[None, :, None]
-                * self.block_size
-            )
-            perm_indices = block_offset + perm_indices
-            perm_indices = perm_indices.view(batch_size, n_blocks * self.block_size)
         # if self.attn_sink_only:
         #     num_repetitions = 2
         #     attention_mask_padded = F.pad(attention_mask.repeat(1, 2), (0, 1, 0, 1), value=True)
@@ -1674,12 +1742,12 @@ class AnyOrderBD3LM(BD3LM):
                 perm_indices_cols[:, seq_len*3:] += seq_len * 3
             # permute rows
             decoder_attention_mask_perm = decoder_attention_mask[
-                torch.arange(batch_size).unsqueeze(1), perm_indices_cols]
+                torch.arange(batch_size).unsqueeze(1), perm_indices_cols.argsort(dim=-1)]
             # permute columns
             decoder_attention_mask_perm = torch.gather(
                 decoder_attention_mask_perm,
                 dim=-1,
-                index=perm_indices_cols[:, None, :].expand(
+                index=perm_indices_cols.argsort(dim=-1)[:, None, :].expand(
                     batch_size, decoder_attention_mask_perm.shape[-1], decoder_attention_mask.shape[-1]
                 )
             )

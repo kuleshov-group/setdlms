@@ -167,6 +167,9 @@ class Denoiser(ABC, PreTrainedModel):
             config.tokenizer_name,
             trust_remote_code=True,
         )
+        if getattr(self.config, "attend_to_dummy_tokens", False):
+            # add dummy token to tokenizer
+            self.tokenizer.add_special_tokens({"unk_token": "<unk>"})
         self.noise_schedule = (
             hydra.utils.instantiate(config.noise_config)
             if config.noise_config is not None
