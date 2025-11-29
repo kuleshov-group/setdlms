@@ -1463,7 +1463,12 @@ class AnyOrderBD3LM(BD3LM):
         to_permute = permute_mask.view(batch_size, n_blocks, block_size)
         if not staggered:
             ranking = torch.rand(batch_size, n_blocks, block_size, device=device)
-            ranking = torch.where(to_permute, ranking, float('inf'))
+            position_indices = torch.arange(block_size, device=device)[None, None, :]
+            is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :, :1] == False)
+            is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, :, -1:] == False))
+
+            ranking = torch.where(is_beginning, float('inf'), ranking)
+            ranking = torch.where(is_end, float('-inf'), ranking)
             perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
         else:
             pass

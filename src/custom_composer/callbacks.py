@@ -25,7 +25,7 @@ from src.utils import (
     snapshot_repo_to_tmp_dir,
 )
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "ERROR"))
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 log = logging.getLogger(__name__)
 __all__ = [
     "DataloaderSpeedMonitor",
@@ -792,20 +792,17 @@ class MaskingPatternLossAnalysis(Callback):
             pattern_avg_losses.items(), key=lambda x: x[1]
         )
 
-        # Sort patterns by number of masked tokens (ascending: least masking to most masking)
-        # Then by position of 0's (more 0's on the left ranked higher)
-        sorted_patterns = sorted(
+        # Sort patterns by loss (highest first) for the "highest" plot, similar to permutations
+        sorted_patterns_by_loss = sorted(
             pattern_avg_losses.items(),
-            key=lambda x: (sum(x[0]), x[0]),  # First by number of masked tokens, then by pattern (0's on left rank higher)
+            key=lambda x: x[1], reverse=True  # Sort by loss, highest first
         )
 
         # If there are many patterns, restrict plots to top-k by highest loss
-        if len(sorted_patterns) > 50:
-            # Select top 20 patterns by highest average loss
+        plot_all_threshold = 50
+        if len(sorted_patterns_by_loss) > plot_all_threshold:
             top_k = 20
-            top_patterns = sorted(
-                pattern_avg_losses.items(), key=lambda x: x[1], reverse=True
-            )[:top_k]
+            top_patterns = sorted_patterns_by_loss[:top_k]
             top_pattern_keys = {p for p, _ in top_patterns}
 
             # Filter dictionaries down to top patterns only
@@ -823,16 +820,24 @@ class MaskingPatternLossAnalysis(Callback):
             sorted_patterns = sorted(
                 pattern_avg_losses.items(), key=lambda x: x[1], reverse=True
             )
+        else:
+            # Use all patterns for the "highest" plot, sorted by loss (highest first)
+            sorted_patterns = sorted_patterns_by_loss
         
-        # Log metrics for each pattern
+        # Log metrics for each pattern (log all, not just filtered)
         # Convert pattern tuple to string for logging
         metrics = {}
-        for pattern, avg_loss in sorted_patterns:
+        # Use lexicographic order for logging all patterns
+        sorted_patterns_lex = sorted(
+            full_pattern_avg_losses.items(),
+            key=lambda x: x[0],  # Sort by pattern tuple
+        )
+        for pattern, avg_loss in sorted_patterns_lex:
             # Convert pattern to a readable string
             # Pattern is a tuple of 0s and 1s, where 1 = masked
             pattern_str = "".join(str(int(x)) for x in pattern)
-            count = pattern_counts[pattern]
-            std_loss = pattern_std_losses[pattern]
+            count = full_pattern_counts[pattern]
+            std_loss = full_pattern_std_losses[pattern]
             metrics[f"masking_pattern_loss/{pattern_str}"] = avg_loss
             metrics[f"masking_pattern_loss_std/{pattern_str}"] = std_loss
             metrics[f"masking_pattern_count/{pattern_str}"] = count
@@ -875,30 +880,37 @@ class MaskingPatternLossAnalysis(Callback):
                     plot_suffix="_lowest",
                     show_error_bars=self.show_error_bars,
                 )
+            # For frequency plot, use lexicographic order
+            sorted_patterns_lex_for_freq = sorted(
+                full_pattern_avg_losses.items(),
+                key=lambda x: x[0],  # Sort by pattern tuple
+            )
             self._plot_masking_pattern_frequencies(
-                sorted_patterns, pattern_counts, logger
+                sorted_patterns_lex_for_freq, full_pattern_counts, logger
             )
             
             # Also log a summary
             log.info("=" * 80)
             log.info("Masking Pattern Loss Analysis Summary")
             log.info("=" * 80)
-            log.info(f"Total unique patterns: {len(pattern_avg_losses)}")
-            log.info(f"Total blocks analyzed: {sum(pattern_counts.values())}")
+            log.info(f"Total unique patterns: {len(full_pattern_avg_losses)}")
+            log.info(f"Total blocks analyzed: {sum(full_pattern_counts.values())}")
             log.info("\nTop 10 patterns by average loss:")
-            for i, (pattern, avg_loss) in enumerate(sorted_patterns[:10], 1):
+            # Use full sorted list by loss for top/bottom reporting
+            sorted_all_by_loss = sorted_patterns_by_loss
+            for i, (pattern, avg_loss) in enumerate(sorted_all_by_loss[:10], 1):
                 pattern_str = "".join(str(int(x)) for x in pattern)
-                count = pattern_counts[pattern]
-                std_loss = pattern_std_losses[pattern]
+                count = full_pattern_counts[pattern]
+                std_loss = full_pattern_std_losses[pattern]
                 log.info(
                     f"  {i}. Pattern {pattern_str}: "
                     f"avg_loss={avg_loss:.4f}±{std_loss:.4f}, count={count}"
                 )
             log.info("\nBottom 10 patterns by average loss:")
-            for i, (pattern, avg_loss) in enumerate(sorted_patterns[-10:], 1):
+            for i, (pattern, avg_loss) in enumerate(sorted_all_by_loss[-10:], 1):
                 pattern_str = "".join(str(int(x)) for x in pattern)
-                count = pattern_counts[pattern]
-                std_loss = pattern_std_losses[pattern]
+                count = full_pattern_counts[pattern]
+                std_loss = full_pattern_std_losses[pattern]
                 log.info(
                     f"  {i}. Pattern {pattern_str}: "
                     f"avg_loss={avg_loss:.4f}±{std_loss:.4f}, count={count}"
@@ -1886,19 +1898,17 @@ class PermutationToMaskingPatternAnalysis(Callback):
             pattern_avg_losses.items(), key=lambda x: x[1]
         )
 
-        # Sort patterns by number of masked tokens (ascending: least masking to most masking)
-        # Then by position of 0's (more 0's on the left ranked higher)
-        sorted_patterns = sorted(
+        # Sort patterns by loss (highest first) for the "highest" plot, similar to permutations
+        sorted_patterns_by_loss = sorted(
             pattern_avg_losses.items(),
-            key=lambda x: (sum(x[0]), x[0]),  # First by number of masked tokens, then by pattern (0's on left rank higher)
+            key=lambda x: x[1], reverse=True  # Sort by loss, highest first
         )
 
         # If there are many patterns, restrict plots to top-k by highest loss
-        if len(sorted_patterns) > 50:
+        plot_all_threshold = 50
+        if len(sorted_patterns_by_loss) > plot_all_threshold:
             top_k = 20
-            top_patterns = sorted(
-                pattern_avg_losses.items(), key=lambda x: x[1], reverse=True
-            )[:top_k]
+            top_patterns = sorted_patterns_by_loss[:top_k]
             top_pattern_keys = {p for p, _ in top_patterns}
 
             pattern_avg_losses = {
@@ -1914,13 +1924,21 @@ class PermutationToMaskingPatternAnalysis(Callback):
             sorted_patterns = sorted(
                 pattern_avg_losses.items(), key=lambda x: x[1], reverse=True
             )
+        else:
+            # Use all patterns for the "highest" plot, sorted by loss (highest first)
+            sorted_patterns = sorted_patterns_by_loss
         
-        # Log metrics for each pattern
+        # Log metrics for each pattern (log all, not just filtered)
         metrics = {}
-        for pattern, avg_loss in sorted_patterns:
+        # Use lexicographic order for logging all patterns
+        sorted_patterns_lex = sorted(
+            full_pattern_avg_losses.items(),
+            key=lambda x: x[0],  # Sort by pattern tuple
+        )
+        for pattern, avg_loss in sorted_patterns_lex:
             pattern_str = "".join(str(int(x)) for x in pattern)
-            count = pattern_counts[pattern]
-            std_loss = pattern_std_losses[pattern]
+            count = full_pattern_counts[pattern]
+            std_loss = full_pattern_std_losses[pattern]
             metrics[f"permutation_derived_pattern_loss/{pattern_str}"] = avg_loss
             metrics[f"permutation_derived_pattern_loss_std/{pattern_str}"] = std_loss
             metrics[f"permutation_derived_pattern_count/{pattern_str}"] = count
@@ -1963,30 +1981,35 @@ class PermutationToMaskingPatternAnalysis(Callback):
                     plot_suffix="_lowest",
                     show_error_bars=self.show_error_bars,
                 )
-            self._plot_pattern_frequencies(
-                sorted_patterns, pattern_counts, logger
+            # For frequency plot, use lexicographic order
+            sorted_patterns_lex_for_freq = sorted(
+                full_pattern_avg_losses.items(),
+                key=lambda x: x[0],  # Sort by pattern tuple
             )
-            
-            # Also log a summary
+            self._plot_pattern_frequencies(
+                sorted_patterns_lex_for_freq, full_pattern_counts, logger
+            )
+            # Also log a summary (use full sorted list by loss for top/bottom)
+            sorted_all_by_loss = sorted_patterns_by_loss
             log.info("=" * 80)
             log.info("Permutation-Derived Masking Pattern Loss Analysis Summary")
             log.info("=" * 80)
-            log.info(f"Total unique patterns: {len(pattern_avg_losses)}")
-            log.info(f"Total tokens analyzed: {sum(pattern_counts.values())}")
+            log.info(f"Total unique patterns: {len(full_pattern_avg_losses)}")
+            log.info(f"Total tokens analyzed: {sum(full_pattern_counts.values())}")
             log.info("\nTop 10 patterns by average loss:")
-            for i, (pattern, avg_loss) in enumerate(sorted_patterns[:10], 1):
+            for i, (pattern, avg_loss) in enumerate(sorted_all_by_loss[:10], 1):
                 pattern_str = "".join(str(int(x)) for x in pattern)
-                count = pattern_counts[pattern]
-                std_loss = pattern_std_losses[pattern]
+                count = full_pattern_counts[pattern]
+                std_loss = full_pattern_std_losses[pattern]
                 log.info(
                     f"  {i}. Pattern {pattern_str}: "
                     f"avg_loss={avg_loss:.4f}±{std_loss:.4f}, count={count}"
                 )
             log.info("\nBottom 10 patterns by average loss:")
-            for i, (pattern, avg_loss) in enumerate(sorted_patterns[-10:], 1):
+            for i, (pattern, avg_loss) in enumerate(sorted_all_by_loss[-10:], 1):
                 pattern_str = "".join(str(int(x)) for x in pattern)
-                count = pattern_counts[pattern]
-                std_loss = pattern_std_losses[pattern]
+                count = full_pattern_counts[pattern]
+                std_loss = full_pattern_std_losses[pattern]
                 log.info(
                     f"  {i}. Pattern {pattern_str}: "
                     f"avg_loss={avg_loss:.4f}±{std_loss:.4f}, count={count}"

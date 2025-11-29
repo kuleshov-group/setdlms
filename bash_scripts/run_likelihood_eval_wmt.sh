@@ -4,11 +4,11 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 OUTPUT_DIR="/share/kuleshov/ma2238/runs/dllm-dev"
-MODEL_NAME="wmt_block4_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient_v2"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block1_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm_baseline"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient_v5"
+# MODEL_NAME="wmt_block4_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient_v2"
+MODEL_NAME="wmt_block1_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm"
+# MODEL_NAME="wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient"
+# MODEL_NAME="wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm_baseline"
+# MODEL_NAME="wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient_v5"
 MODEL_PATH="${OUTPUT_DIR}/${MODEL_NAME}"
 REVISION=null
 

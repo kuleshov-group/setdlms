@@ -5,8 +5,8 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=32
-EVAL_BLOCK_SIZE=32
+BLOCK_SIZE=4
+EVAL_BLOCK_SIZE=4
 HIDDEN_SIZE=512
 INTERMEDIATE_SIZE=1536
 N_LAYERS=16  # 12 or 16
@@ -20,7 +20,7 @@ MAX_DURATION="500000ba"
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
 
-TAG="aoarm_efficient_v5"
+TAG="aoarm_efficient_v6"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=wmt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 

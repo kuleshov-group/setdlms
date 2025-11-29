@@ -5,8 +5,8 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=32
-EVAL_BLOCK_SIZE=32
+BLOCK_SIZE=4
+EVAL_BLOCK_SIZE=4
 N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=true
@@ -19,10 +19,14 @@ BATCH_SIZE=1
 MAX_DURATION="75000ba"
 PRECISION="amp_bf16"
 
+# Debug: Limit training/eval samples per epoch (set to null or remove to use full dataset)
+MAX_TRAIN_SAMPLES=null  # Set to null or remove this line to use full dataset
+MAX_EVAL_SAMPLES=null  # Set to null or remove this line to use full dataset
+
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="aoarm_og_test_v4"
+TAG="aoarm_og_test_v5"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -42,6 +46,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=gsm8k_train \
   dataset@eval_dataset=gsm8k_eval \
   train_dataset.num_shot=${NUM_SHOT} \
+  +train_dataset.max_samples=${MAX_TRAIN_SAMPLES} \
+  +eval_dataset.max_samples=${MAX_EVAL_SAMPLES} \
   composer.optimizer.lr=${LR} \
   composer.trainer.precision=${PRECISION} \
   composer.trainer.eval_interval="1000ba" \

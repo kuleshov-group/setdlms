@@ -30,6 +30,7 @@ class GSM8KDataset(Dataset):
         source_key: str = "question",
         target_key: str = "answer",
         num_shot: int = 0,
+        max_samples: int | None = None,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -38,6 +39,10 @@ class GSM8KDataset(Dataset):
         self.dataset = load_dataset(
             dataset_path, config_name, split=split, trust_remote_code=True
         )
+        # Limit dataset size if max_samples is specified
+        if max_samples is not None and max_samples > 0:
+            max_samples = min(max_samples, len(self.dataset))
+            self.dataset = self.dataset.select(range(max_samples))
         self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
@@ -143,12 +148,17 @@ class GSM8KAugDataset(GSM8KDataset):
         steps_key: str = "steps",
         target_key: str = "answer",
         num_shot: int = 0,
+        max_samples: int | None = None,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
         self.tokenizer = tokenizer
         self.split = split
         self.dataset = load_dataset(dataset_path, split=split, trust_remote_code=True)
+        # Limit dataset size if max_samples is specified
+        if max_samples is not None and max_samples > 0:
+            max_samples = min(max_samples, len(self.dataset))
+            self.dataset = self.dataset.select(range(max_samples))
         self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
@@ -261,6 +271,7 @@ class HendrycksMathDataset(GSM8KDataset):
         source_key: str = "problem",
         target_key: str = "solution",
         num_shot: int = 0,
+        max_samples: int | None = None,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -277,6 +288,7 @@ class HendrycksMathDataset(GSM8KDataset):
             source_key=source_key,
             target_key=target_key,
             num_shot=num_shot,
+            max_samples=max_samples,
         )
 
 
@@ -296,6 +308,7 @@ class CNNDailyMailDataset(Dataset):
         target_key: str = "highlights",
         separate_input_output: bool = False,
         truncate: bool = True,
+        max_samples: int | None = None,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -303,6 +316,10 @@ class CNNDailyMailDataset(Dataset):
         self.dataset = load_dataset(
             dataset_path, config_name, split=split, trust_remote_code=True
         )
+        # Limit dataset size if max_samples is specified
+        if max_samples is not None and max_samples > 0:
+            max_samples = min(max_samples, len(self.dataset))
+            self.dataset = self.dataset.select(range(max_samples))
         self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
@@ -399,11 +416,16 @@ class WMTDataset(Dataset):
         source_key: str = "translation",
         target_key: str = "translation",
         separate_input_output: bool = False,
+        max_samples: int | None = None,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
         self.tokenizer = tokenizer
         self.dataset = load_dataset(dataset_path, subset, split=split)
+        # Limit dataset size if max_samples is specified
+        if max_samples is not None and max_samples > 0:
+            max_samples = min(max_samples, len(self.dataset))
+            self.dataset = self.dataset.select(range(max_samples))
         self.source = subset.split("-")[0]
         self.target = subset.split("-")[1]
         self.max_length = max_length

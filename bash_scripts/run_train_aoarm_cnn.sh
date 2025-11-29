@@ -5,8 +5,7 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=32
-EVAL_BLOCK_SIZE=32
+BLOCK_SIZE=4
 HIDDEN_SIZE=256
 INTERMEDIATE_SIZE=768
 N_LAYERS=12
@@ -18,7 +17,7 @@ BATCH_SIZE=128
 MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
-TAG="aoarm_v11"
+TAG="aoarm_v12"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -43,7 +42,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
-  model=bd3lm \
+  model=aoarm_efficient \
   model.config.attn_backend="sdpa" \
   training.compile_backbone=false \
   model.config.length=1024 \
