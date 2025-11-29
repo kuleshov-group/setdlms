@@ -1666,16 +1666,16 @@ class AnyOrderBD3LM(BD3LM):
         ).mean()
         
         # Extract permutation order from backbone_kwargs
-        # permutation_order = denoiser_inputs.backbone_kwargs.get("permutation_order")
-        # other_loss_terms = {}
-        # if permutation_order is not None:
-        #     other_loss_terms["permutation_order"] = permutation_order
-        #     other_loss_terms["attention_mask"] = denoiser_inputs.attention_mask
-        #     other_loss_terms["log_p_theta"] = - log_p_theta * denoiser_inputs.tokens_mask
+        permutation_order = denoiser_inputs.backbone_kwargs.get("permutation_order")
+        other_loss_terms = {}
+        if permutation_order is not None:
+            other_loss_terms["permutation_order"] = permutation_order
+            other_loss_terms["attention_mask"] = denoiser_inputs.attention_mask
+            other_loss_terms["log_p_theta"] = - log_p_theta * denoiser_inputs.tokens_mask
         return LossAndNllOutput(
             loss=token_nll,
             nlls=nlls,
-            # other_loss_terms=other_loss_terms,
+            other_loss_terms=other_loss_terms,
         )  # type: ignore
 
     def _prepare_inputs(
@@ -1801,6 +1801,7 @@ class AnyOrderBD3LM(BD3LM):
             alpha_t_prime=alpha_t_prime,
             backbone_kwargs={
                 "position_ids": position_ids,
+                "permutation_order": perm_indices.argsort(dim=-1),
             },
         )
 

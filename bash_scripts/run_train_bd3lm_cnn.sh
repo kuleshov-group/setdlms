@@ -21,19 +21,19 @@ PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
 TRAIN_COMPLEMENT=false
 RM_ATTN_TO_MASKED_TOKENS=true
-ATTEND_TO_DUMMY_TOKENS=true
+ATTEND_TO_DUMMY_TOKENS=false
 
-TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_v1"
+TAG="bd3lm_v4"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
-    MICRO_BATCH_SIZE=8
-elif [[ "$GPU_TYPE" == "A6000" ]]; then
     MICRO_BATCH_SIZE=4
-else
+elif [[ "$GPU_TYPE" == "A6000" ]]; then
     MICRO_BATCH_SIZE=2
+else
+    MICRO_BATCH_SIZE=1
 fi
 NUM_WORKERS=0
 

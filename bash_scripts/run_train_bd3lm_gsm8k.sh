@@ -25,7 +25,7 @@ NUM_SHOT=0
 TRAIN_COMPLEMENT=false
 RM_ATTN_TO_MASKED_TOKENS=true
 ATTEND_TO_DUMMY_TOKENS=true
-TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_v3"
+TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_4dummy_v4"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -73,4 +73,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   eval_dataloader.batch_size=4 \
   +model.config.train_complement=${TRAIN_COMPLEMENT} \
   +model.config.rm_attn_to_masked_tokens=${RM_ATTN_TO_MASKED_TOKENS} \
-  +model.config.attend_to_dummy_tokens=${ATTEND_TO_DUMMY_TOKENS}
+  +model.config.attend_to_dummy_tokens=${ATTEND_TO_DUMMY_TOKENS} \
+  +model.config.num_dummy_tokens=4

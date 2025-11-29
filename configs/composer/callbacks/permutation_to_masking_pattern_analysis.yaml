@@ -1,0 +1,4 @@
+permutation_to_masking_pattern_analysis:
+  _target_: src.custom_composer.callbacks.PermutationToMaskingPatternAnalysis
+  show_error_bars: false
+  output_dir: ${output_path}

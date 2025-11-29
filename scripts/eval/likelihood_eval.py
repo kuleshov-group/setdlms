@@ -87,11 +87,14 @@ def main(cfg: DictConfig) -> None:
         sampler=eval_sampler,
     )
 
+    callbacks = hydra.utils.instantiate(cfg.composer.callbacks)
+
     trainer = hydra.utils.instantiate(
         cfg.task.trainer,
         _convert_="all",
         model=model,
         eval_dataloader=eval_dataloader,
+        callbacks=list(callbacks.values()),
     )
     trainer.eval()
     print(

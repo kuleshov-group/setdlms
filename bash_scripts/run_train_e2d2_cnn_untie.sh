@@ -5,11 +5,13 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=32
-EVAL_BLOCK_SIZE=32
-HIDDEN_SIZE=512
-INTERMEDIATE_SIZE=1536
-N_LAYERS=16  # 12 or 16
+BLOCK_SIZE=8
+EVAL_BLOCK_SIZE=8
+HIDDEN_SIZE=256
+INTERMEDIATE_SIZE=768
+N_ENCODER_LAYERS=20
+N_DECODER_LAYERS=8
+
 
 # Hyperparameters
 LR=3e-4
@@ -19,43 +21,45 @@ MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TRAIN_COMPLEMENT=false
-RM_ATTN_TO_MASKED_TOKENS=false
-ATTEND_TO_DUMMY_TOKENS=false
-
-TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_v1"
-LAYERS="layers${N_LAYERS}"
-RUN_NAME=wmt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
+TAG="e2d2_sharedkv_untied_v7"
+ENC_LAYERS="enc${N_ENCODER_LAYERS}"
+DEC_LAYERS="dec${N_DECODER_LAYERS}"
+RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${ENC_LAYERS}_${DEC_LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
-    MICRO_BATCH_SIZE=16
-elif [[ "$GPU_TYPE" == "A6000" ]]; then
     MICRO_BATCH_SIZE=8
-else
+elif [[ "$GPU_TYPE" == "A6000" ]]; then
     MICRO_BATCH_SIZE=4
+else
+    MICRO_BATCH_SIZE=2
 fi
 NUM_WORKERS=0
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
-  dataset@train_dataset=wmt_train \
-  dataset@eval_dataset=wmt_eval \
+  dataset@train_dataset=cnn_dailymail_train \
+  dataset@eval_dataset=cnn_dailymail_eval \
   composer.optimizer.lr=${LR} \
   composer.trainer.eval_interval="5000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
-  model=bd3lm \
+  model=e2d2 \
   model.config.attn_backend="sdpa" \
   training.compile_backbone=false \
-  model.config.length=256 \
-  model/backbone@model.config.backbone_config=automodel_for_causal_lm \
-  model.config.backbone_config.reinit_model=true \
-  model.config.backbone_config.num_layers=${N_LAYERS} \
-  model.config.backbone_config.keep_top_layers=${TOP_LAYERS} \
+  model.config.length=1024 \
+  model/backbone@model.config.backbone_config=llm_as_encoder_decoder_share_kv \
+  model.config.backbone_config.use_encoder_causal_mask=false \
+  model.config.backbone_config.num_encoder_layers=${N_ENCODER_LAYERS} \
+  model.config.backbone_config.num_decoder_layers=${N_DECODER_LAYERS} \
+  model.config.backbone_config.tie_encoder_decoder_weights=false \
+  model.config.backbone_config.reinit_decoder=true \
+  model.config.backbone_config.reinit_encoder=true \
+  model.config.backbone_config.keep_top_decoder_layers=false \
+  model.config.backbone_config.keep_top_encoder_layers=false \
   +model.config.backbone_config.hidden_size=${HIDDEN_SIZE} \
   +model.config.backbone_config.intermediate_size=${INTERMEDIATE_SIZE} \
   training.global_batch_size=${BATCH_SIZE} \
@@ -67,8 +71,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  +model.config.train_complement=${TRAIN_COMPLEMENT} \
-  +model.config.rm_attn_to_masked_tokens=${RM_ATTN_TO_MASKED_TOKENS} \
-  +model.config.attend_to_dummy_tokens=${ATTEND_TO_DUMMY_TOKENS} \
-  +model.config.num_dummy_tokens=4
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true

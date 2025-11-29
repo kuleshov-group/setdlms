@@ -14,7 +14,7 @@ N_LAYERS=12  # 12 or 16
 # Hyperparameters
 LR=3e-4
 WARMUP_DURATION="1000ba"
-BATCH_SIZE=128
+BATCH_SIZE=16
 MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
@@ -25,11 +25,11 @@ RUN_NAME=text8_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
-    MICRO_BATCH_SIZE=16
+    MICRO_BATCH_SIZE=2
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=8
+    MICRO_BATCH_SIZE=2
 else
-    MICRO_BATCH_SIZE=4
+    MICRO_BATCH_SIZE=2
 fi
 NUM_WORKERS=0
 
@@ -66,4 +66,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="250ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  noise@model.config.noise_config=staggered \
+  +model.config.train_complement=false \
+  +model.config.rm_attn_to_masked_tokens=true \
+  +model.config.attend_to_dummy_tokens=true

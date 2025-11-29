@@ -606,16 +606,25 @@ class MaskingPatternLossAnalysis(Callback):
     for each masking pattern across all examples and blocks.
     """
 
-    def __init__(self, *args: Any, **kwargs: Any):
+    def __init__(self, show_error_bars: bool = False, output_dir: str | None = None, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         # Store all loss values for each masking pattern
         self.pattern_stats: dict[tuple, list[float]] = {}
+        self.show_error_bars = show_error_bars
+        self.output_dir = output_dir
 
     def _get_model(self, state: State):
         """Get the model, handling wrapped models."""
         if hasattr(state.model, "module"):
             return state.model.module.model
         return state.model.model
+
+    def _get_output_path(self, filename: str) -> str:
+        """Get the full path for saving a file, creating output directory if needed."""
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
+            return os.path.join(self.output_dir, filename)
+        return filename
 
     def eval_batch_end(self, state: State, logger: Logger) -> None:
         """Record masking patterns and losses for each block."""
@@ -774,7 +783,15 @@ class MaskingPatternLossAnalysis(Callback):
             else:
                 pattern_std_losses[pattern] = 0.0
             pattern_counts[pattern] = len(loss_values)
-        
+
+        # Keep full copies around for lowest-loss plotting later
+        full_pattern_avg_losses = pattern_avg_losses.copy()
+        full_pattern_std_losses = pattern_std_losses.copy()
+        full_pattern_counts = pattern_counts.copy()
+        full_sorted_patterns_by_loss = sorted(
+            pattern_avg_losses.items(), key=lambda x: x[1]
+        )
+
         # Sort patterns by number of masked tokens (ascending: least masking to most masking)
         # Then by position of 0's (more 0's on the left ranked higher)
         sorted_patterns = sorted(
@@ -825,8 +842,39 @@ class MaskingPatternLossAnalysis(Callback):
         # Create bar chart with error bars and log summary (only on rank 0)
         if dist.get_global_rank() == 0:
             self._plot_masking_patterns(
-                pattern_avg_losses, pattern_std_losses, sorted_patterns, pattern_counts, logger
+                pattern_avg_losses,
+                pattern_std_losses,
+                sorted_patterns,
+                pattern_counts,
+                logger,
+                plot_suffix="_highest",
+                show_error_bars=self.show_error_bars,
             )
+            # Also plot the lowest-loss patterns
+            if len(full_sorted_patterns_by_loss) > 0:
+                bottom_k = 20 if len(full_sorted_patterns_by_loss) > 50 else len(
+                    full_sorted_patterns_by_loss
+                )
+                lowest_patterns = full_sorted_patterns_by_loss[:bottom_k]
+                low_pattern_keys = {p for p, _ in lowest_patterns}
+                low_pattern_avg_losses = {
+                    p: v for p, v in full_pattern_avg_losses.items() if p in low_pattern_keys
+                }
+                low_pattern_std_losses = {
+                    p: v for p, v in full_pattern_std_losses.items() if p in low_pattern_keys
+                }
+                low_pattern_counts = {
+                    p: v for p, v in full_pattern_counts.items() if p in low_pattern_keys
+                }
+                self._plot_masking_patterns(
+                    low_pattern_avg_losses,
+                    low_pattern_std_losses,
+                    lowest_patterns,
+                    low_pattern_counts,
+                    logger,
+                    plot_suffix="_lowest",
+                    show_error_bars=self.show_error_bars,
+                )
             self._plot_masking_pattern_frequencies(
                 sorted_patterns, pattern_counts, logger
             )
@@ -866,8 +914,10 @@ class MaskingPatternLossAnalysis(Callback):
         sorted_patterns: list[tuple[tuple, float]],
         pattern_counts: dict[tuple, int],
         logger: Logger,
+        plot_suffix: str = "",
+        show_error_bars: bool = False,
     ) -> None:
-        """Create and log a bar chart of masking pattern losses with error bars."""
+        """Create and log a bar chart of masking pattern losses with optional error bars."""
         # Prepare data for plotting
         pattern_strings = []
         avg_losses = []
@@ -881,20 +931,16 @@ class MaskingPatternLossAnalysis(Callback):
             std_losses.append(pattern_std_losses[pattern])
             counts.append(pattern_counts[pattern])
         
-        # Compute overall mean and std across all patterns
-        total_count = sum(pattern_counts.values())
-        if total_count > 0:
-            overall_mean = sum(
-                avg_loss * pattern_counts[pattern]
-                for pattern, avg_loss in pattern_avg_losses.items()
-            ) / total_count
-            
-            # Compute overall std from all values
-            all_losses = []
-            for pattern, loss_values in self.pattern_stats.items():
-                all_losses.extend(loss_values)
+        # Compute overall mean and std from all individual loss values (fair average)
+        all_losses = []
+        for pattern, loss_values in self.pattern_stats.items():
+            all_losses.extend(loss_values)
+        
+        if len(all_losses) > 0:
+            all_losses_array = np.array(all_losses)
+            overall_mean = float(np.mean(all_losses_array))
             if len(all_losses) > 1:
-                overall_std = float(np.std(all_losses, ddof=1))
+                overall_std = float(np.std(all_losses_array, ddof=1))
             else:
                 overall_std = 0.0
         else:
@@ -906,17 +952,17 @@ class MaskingPatternLossAnalysis(Callback):
         fig_width = max(12, min(n_patterns * 0.5, 30))  # Cap width at 30 inches
         fig, ax = plt.subplots(figsize=(fig_width, 8))
         
-        # Create bar chart with error bars
+        # Create bar chart with optional error bars
         x_pos = np.arange(n_patterns)
-        bars = ax.bar(
-            x_pos,
-            avg_losses,
-            yerr=std_losses,
-            capsize=5,
-            alpha=0.7,
-            edgecolor="black",
-            linewidth=0.5,
-        )
+        bar_kwargs = {
+            "alpha": 0.7,
+            "edgecolor": "black",
+            "linewidth": 0.5,
+        }
+        if show_error_bars:
+            bar_kwargs["yerr"] = std_losses
+            bar_kwargs["capsize"] = 5
+        bars = ax.bar(x_pos, avg_losses, **bar_kwargs)
         
         # Customize plot
         ax.set_xlabel("Masking Pattern (1=masked, 0=unmasked)", fontsize=12)
@@ -957,9 +1003,10 @@ class MaskingPatternLossAnalysis(Callback):
         # Add bar height annotations on bars
         for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
             height = bar.get_height()
+            y_offset = std_losses[i] if show_error_bars else 0
             ax.text(
                 bar.get_x() + bar.get_width() / 2.0,
-                height + std_losses[i] + 0.01 * max(avg_losses),
+                height + y_offset + 0.01 * max(avg_losses),
                 f"{avg_loss:.3f}",
                 ha="center",
                 va="bottom",
@@ -967,7 +1014,9 @@ class MaskingPatternLossAnalysis(Callback):
                 rotation=90,
             )
         plt.tight_layout()
-        plt.savefig("masking_pattern_loss_analysis.png")
+        filename = f"masking_pattern_loss_analysis{plot_suffix}.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
         
         # Close figure to free memory
         plt.close(fig)
@@ -1059,13 +1108,15 @@ class MaskingPatternLossAnalysis(Callback):
                 rotation=90,
             )
         plt.tight_layout()
-        plt.savefig("masking_pattern_frequency_analysis.png")
+        filename = "masking_pattern_frequency_analysis.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
         
         # Log to wandb if available
         if wandb.run is not None:
-            wandb.log({"masking_pattern_frequency_analysis": wandb.Image("masking_pattern_frequency_analysis.png")})
+            wandb.log({"masking_pattern_frequency_analysis": wandb.Image(filepath)})
         else:
-            logger.log_images({"masking_pattern_frequency_analysis": "masking_pattern_frequency_analysis.png"})
+            logger.log_images({"masking_pattern_frequency_analysis": filepath})
         
         # Close figure to free memory
         plt.close(fig)
@@ -1079,16 +1130,25 @@ class PermutationOrderLossAnalysis(Callback):
     for each permutation order across all examples and blocks.
     """
 
-    def __init__(self, *args: Any, **kwargs: Any):
+    def __init__(self, show_error_bars: bool = False, output_dir: str | None = None, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         # Store all loss values for each permutation order
         self.permutation_stats: dict[tuple, list[float]] = {}
+        self.show_error_bars = show_error_bars
+        self.output_dir = output_dir
 
     def _get_model(self, state: State):
         """Get the model, handling wrapped models."""
         if hasattr(state.model, "module"):
             return state.model.module.model
         return state.model.model
+
+    def _get_output_path(self, filename: str) -> str:
+        """Get the full path for saving a file, creating output directory if needed."""
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
+            return os.path.join(self.output_dir, filename)
+        return filename
 
     def eval_batch_end(self, state: State, logger: Logger) -> None:
         """Record permutation orders and losses for each block."""
@@ -1229,38 +1289,57 @@ class PermutationOrderLossAnalysis(Callback):
             else:
                 permutation_std_losses[perm_tuple] = 0.0
             permutation_counts[perm_tuple] = len(loss_values)
+
+        # Keep full copies around for lowest-loss plotting later
+        full_perm_avg_losses = permutation_avg_losses.copy()
+        full_perm_std_losses = permutation_std_losses.copy()
+        full_perm_counts = permutation_counts.copy()
+        full_sorted_perms_by_loss = sorted(
+            permutation_avg_losses.items(), key=lambda x: x[1]
+        )
+
+        # Sort permutation orders by loss (highest first) for the "highest" plot
+        sorted_permutations_by_loss = sorted(
+            permutation_avg_losses.items(),
+            key=lambda x: x[1], reverse=True  # Sort by loss, highest first
+        )
         
-        # Sort permutation orders by lexicographic order (for consistent ordering)
-        sorted_permutations = sorted(
+        # Sort permutation orders by lexicographic order (for consistent ordering in "all" plot)
+        sorted_permutations_lex = sorted(
             permutation_avg_losses.items(),
             key=lambda x: x[0],  # Sort by permutation tuple
         )
 
         # If there are many permutation orders, restrict plots to top-k by highest loss
-        if len(sorted_permutations) > 50:
+        plot_all_threshold = 50
+        if len(sorted_permutations_by_loss) > plot_all_threshold:
             top_k = 20
-            top_perms = sorted(
-                permutation_avg_losses.items(), key=lambda x: x[1], reverse=True
-            )[:top_k]
+            top_perms = sorted_permutations_by_loss[:top_k]
             top_perm_keys = {p for p, _ in top_perms}
 
-            permutation_avg_losses = {
+            permutation_avg_losses_top = {
                 p: v for p, v in permutation_avg_losses.items() if p in top_perm_keys
             }
-            permutation_std_losses = {
+            permutation_std_losses_top = {
                 p: v for p, v in permutation_std_losses.items() if p in top_perm_keys
             }
-            permutation_counts = {
+            permutation_counts_top = {
                 p: v for p, v in permutation_counts.items() if p in top_perm_keys
             }
 
             sorted_permutations = sorted(
-                permutation_avg_losses.items(), key=lambda x: x[1], reverse=True
+                permutation_avg_losses_top.items(), key=lambda x: x[1], reverse=True
             )
+        else:
+            # Use all permutations for the "highest" plot
+            sorted_permutations = sorted_permutations_by_loss
+            permutation_avg_losses_top = permutation_avg_losses
+            permutation_std_losses_top = permutation_std_losses
+            permutation_counts_top = permutation_counts
         
-        # Log metrics for each permutation order
+        # Log metrics for each permutation order (log all, not just filtered)
         metrics = {}
-        for perm_tuple, avg_loss in sorted_permutations:
+        for perm_tuple, avg_loss in sorted_permutations_lex:
             # Convert permutation tuple to a readable string (1-indexed)
             perm_str = ",".join(str(int(x) + 1) for x in perm_tuple)
             count = permutation_counts[perm_tuple]
@@ -1273,21 +1352,66 @@ class PermutationOrderLossAnalysis(Callback):
         
         # Create bar chart with error bars and log summary (only on rank 0)
         if dist.get_global_rank() == 0:
+            # Always plot "highest" (sorted by loss, highest first)
             self._plot_permutation_orders(
-                permutation_avg_losses, permutation_std_losses, sorted_permutations, permutation_counts, logger
-            )
-            self._plot_permutation_frequencies(
-                sorted_permutations, permutation_counts, logger
+                permutation_avg_losses_top,
+                permutation_std_losses_top,
+                sorted_permutations,
+                permutation_counts_top,
+                logger,
+                plot_suffix="_highest",
+                show_error_bars=self.show_error_bars,
             )
             
-            # Also log a summary
+            # Also plot "all" permutations if below threshold
+            if len(sorted_permutations_lex) <= plot_all_threshold:
+                self._plot_permutation_orders(
+                    permutation_avg_losses,
+                    permutation_std_losses,
+                    sorted_permutations_lex,
+                    permutation_counts,
+                    logger,
+                    plot_suffix="_all",
+                    show_error_bars=self.show_error_bars,
+                )
+            # Also plot the lowest-loss permutation orders
+            if len(full_sorted_perms_by_loss) > 0:
+                bottom_k = 20 if len(full_sorted_perms_by_loss) > 50 else len(
+                    full_sorted_perms_by_loss
+                )
+                lowest_perms = full_sorted_perms_by_loss[:bottom_k]
+                low_perm_keys = {p for p, _ in lowest_perms}
+                low_perm_avg_losses = {
+                    p: v for p, v in full_perm_avg_losses.items() if p in low_perm_keys
+                }
+                low_perm_std_losses = {
+                    p: v for p, v in full_perm_std_losses.items() if p in low_perm_keys
+                }
+                low_perm_counts = {
+                    p: v for p, v in full_perm_counts.items() if p in low_perm_keys
+                }
+                self._plot_permutation_orders(
+                    low_perm_avg_losses,
+                    low_perm_std_losses,
+                    lowest_perms,
+                    low_perm_counts,
+                    logger,
+                    plot_suffix="_lowest",
+                    show_error_bars=self.show_error_bars,
+                )
+            self._plot_permutation_frequencies(
+                sorted_permutations_lex, permutation_counts, logger
+            )
+            
+            # Also log a summary (use full sorted list by loss for top/bottom)
+            sorted_all_by_loss = sorted_permutations_by_loss
             log.info("=" * 80)
             log.info("Permutation Order Loss Analysis Summary")
             log.info("=" * 80)
             log.info(f"Total unique permutation orders: {len(permutation_avg_losses)}")
             log.info(f"Total blocks analyzed: {sum(permutation_counts.values())}")
             log.info("\nTop 10 permutation orders by average loss:")
-            for i, (perm_tuple, avg_loss) in enumerate(sorted_permutations[:10], 1):
+            for i, (perm_tuple, avg_loss) in enumerate(sorted_all_by_loss[:10], 1):
                 perm_str = ",".join(str(int(x) + 1) for x in perm_tuple)  # 1-indexed
                 count = permutation_counts[perm_tuple]
                 std_loss = permutation_std_losses[perm_tuple]
@@ -1296,7 +1420,7 @@ class PermutationOrderLossAnalysis(Callback):
                     f"avg_loss={avg_loss:.4f}±{std_loss:.4f}, count={count}"
                 )
             log.info("\nBottom 10 permutation orders by average loss:")
-            for i, (perm_tuple, avg_loss) in enumerate(sorted_permutations[-10:], 1):
+            for i, (perm_tuple, avg_loss) in enumerate(sorted_all_by_loss[-10:], 1):
                 perm_str = ",".join(str(int(x) + 1) for x in perm_tuple)  # 1-indexed
                 count = permutation_counts[perm_tuple]
                 std_loss = permutation_std_losses[perm_tuple]
@@ -1316,8 +1440,10 @@ class PermutationOrderLossAnalysis(Callback):
         sorted_permutations: list[tuple[tuple, float]],
         permutation_counts: dict[tuple, int],
         logger: Logger,
+        plot_suffix: str = "",
+        show_error_bars: bool = False,
     ) -> None:
-        """Create and log a bar chart of permutation order losses with error bars."""
+        """Create and log a bar chart of permutation order losses with optional error bars."""
         # Prepare data for plotting
         permutation_strings = []
         avg_losses = []
@@ -1331,21 +1457,16 @@ class PermutationOrderLossAnalysis(Callback):
             std_losses.append(permutation_std_losses[perm_tuple])
             counts.append(permutation_counts[perm_tuple])
         
-        # Compute overall mean and std across all permutation orders
-        # Use weighted average based on counts
-        total_count = sum(permutation_counts.values())
-        if total_count > 0:
-            overall_mean = sum(
-                avg_loss * permutation_counts[perm_tuple]
-                for perm_tuple, avg_loss in permutation_avg_losses.items()
-            ) / total_count
-            
-            # Compute overall std from all values
-            all_losses = []
-            for perm_tuple, loss_values in self.permutation_stats.items():
-                all_losses.extend(loss_values)
+        # Compute overall mean and std from all individual loss values (fair average)
+        all_losses = []
+        for perm_tuple, loss_values in self.permutation_stats.items():
+            all_losses.extend(loss_values)
+        
+        if len(all_losses) > 0:
+            all_losses_array = np.array(all_losses)
+            overall_mean = float(np.mean(all_losses_array))
             if len(all_losses) > 1:
-                overall_std = float(np.std(all_losses, ddof=1))
+                overall_std = float(np.std(all_losses_array, ddof=1))
             else:
                 overall_std = 0.0
         else:
@@ -1357,23 +1478,24 @@ class PermutationOrderLossAnalysis(Callback):
         fig_width = max(12, min(n_permutations * 0.5, 30))  # Cap width at 30 inches
         fig, ax = plt.subplots(figsize=(fig_width, 8))
         
-        # Create bar chart with error bars
+        # Create bar chart with optional error bars
         x_pos = np.arange(n_permutations)
-        bars = ax.bar(
-            x_pos,
-            avg_losses,
-            yerr=std_losses,
-            capsize=5,
-            alpha=0.7,
-            edgecolor="black",
-            linewidth=0.5,
-        )
+        bar_kwargs = {
+            "alpha": 0.7,
+            "edgecolor": "black",
+            "linewidth": 0.5,
+        }
+        if show_error_bars:
+            bar_kwargs["yerr"] = std_losses
+            bar_kwargs["capsize"] = 5
+        bars = ax.bar(x_pos, avg_losses, **bar_kwargs)
         
         # Customize plot
         ax.set_xlabel("Permutation Order", fontsize=12)
         ax.set_ylabel("Validation Loss", fontsize=12)
+        title_prefix = "All " if plot_suffix == "_all" else ("Highest " if plot_suffix == "_highest" else "")
         ax.set_title(
-            f"Val. NLL by Permutation Order\n"
+            f"Val. NLL by Permutation Order ({title_prefix}Orders)\n"
             f"(NLL averaged over all orders: {overall_mean:.4f}±{overall_std:.4f})",
             fontsize=14,
             fontweight="bold",
@@ -1408,9 +1530,10 @@ class PermutationOrderLossAnalysis(Callback):
         # Add bar height annotations on bars
         for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
             height = bar.get_height()
+            y_offset = std_losses[i] if show_error_bars else 0
             ax.text(
                 bar.get_x() + bar.get_width() / 2.0,
-                height + std_losses[i] + 0.01 * max(avg_losses),
+                height + y_offset + 0.01 * max(avg_losses),
                 f"{avg_loss:.3f}",
                 ha="center",
                 va="bottom",
@@ -1418,13 +1541,16 @@ class PermutationOrderLossAnalysis(Callback):
                 rotation=90,
             )
         plt.tight_layout()
-        plt.savefig("permutation_order_loss_analysis.png")
+        filename = f"permutation_order_loss_analysis{plot_suffix}.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
         
         # Log to wandb if available
+        wandb_key = f"permutation_order_loss_analysis{plot_suffix}"
         if wandb.run is not None:
-            wandb.log({"permutation_order_loss_analysis": wandb.Image("permutation_order_loss_analysis.png")})
+            wandb.log({wandb_key: wandb.Image(filepath)})
         else:
-            logger.log_images({"permutation_order_loss_analysis": "permutation_order_loss_analysis.png"})
+            logger.log_images({wandb_key: filepath})
         
         # Close figure to free memory
         plt.close(fig)
@@ -1516,13 +1642,15 @@ class PermutationOrderLossAnalysis(Callback):
                 rotation=90,
             )
         plt.tight_layout()
-        plt.savefig("permutation_order_frequency_analysis.png")
+        filename = "permutation_order_frequency_analysis.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
         
         # Log to wandb if available
         if wandb.run is not None:
-            wandb.log({"permutation_order_frequency_analysis": wandb.Image("permutation_order_frequency_analysis.png")})
+            wandb.log({"permutation_order_frequency_analysis": wandb.Image(filepath)})
         else:
-            logger.log_images({"permutation_order_frequency_analysis": "permutation_order_frequency_analysis.png"})
+            logger.log_images({"permutation_order_frequency_analysis": filepath})
         
         # Close figure to free memory
         plt.close(fig)
@@ -1542,17 +1670,25 @@ class PermutationToMaskingPatternAnalysis(Callback):
     - Position 4: 0001 (first three unmasked, last masked)
     """
 
-    def __init__(self, *args: Any, **kwargs: Any):
+    def __init__(self, show_error_bars: bool = False, output_dir: str | None = None, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
-        # Use incremental statistics to avoid OOM
-        # For each masking pattern: (count, mean, M2) for Welford's algorithm
-        self.pattern_stats: dict[tuple, tuple[int, float, float]] = {}
+        # Store all loss values for each masking pattern
+        self.pattern_stats: dict[tuple, list[float]] = {}
+        self.show_error_bars = show_error_bars
+        self.output_dir = output_dir
 
     def _get_model(self, state: State):
         """Get the model, handling wrapped models."""
         if hasattr(state.model, "module"):
             return state.model.module.model
         return state.model.model
+
+    def _get_output_path(self, filename: str) -> str:
+        """Get the full path for saving a file, creating output directory if needed."""
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
+            return os.path.join(self.output_dir, filename)
+        return filename
 
     def _permutation_to_masking_patterns(
         self, perm_tuple: tuple[int, ...], block_size: int
@@ -1741,7 +1877,15 @@ class PermutationToMaskingPatternAnalysis(Callback):
             else:
                 pattern_std_losses[pattern] = 0.0
             pattern_counts[pattern] = len(loss_values)
-        
+
+        # Keep full copies around for lowest-loss plotting later
+        full_pattern_avg_losses = pattern_avg_losses.copy()
+        full_pattern_std_losses = pattern_std_losses.copy()
+        full_pattern_counts = pattern_counts.copy()
+        full_sorted_patterns_by_loss = sorted(
+            pattern_avg_losses.items(), key=lambda x: x[1]
+        )
+
         # Sort patterns by number of masked tokens (ascending: least masking to most masking)
         # Then by position of 0's (more 0's on the left ranked higher)
         sorted_patterns = sorted(
@@ -1786,8 +1930,39 @@ class PermutationToMaskingPatternAnalysis(Callback):
         # Create bar chart with error bars and log summary (only on rank 0)
         if dist.get_global_rank() == 0:
             self._plot_patterns(
-                pattern_avg_losses, pattern_std_losses, sorted_patterns, pattern_counts, logger
+                pattern_avg_losses,
+                pattern_std_losses,
+                sorted_patterns,
+                pattern_counts,
+                logger,
+                plot_suffix="_highest",
+                show_error_bars=self.show_error_bars,
             )
+            # Also plot the lowest-loss patterns (derived from permutations)
+            if len(full_sorted_patterns_by_loss) > 0:
+                bottom_k = 20 if len(full_sorted_patterns_by_loss) > 50 else len(
+                    full_sorted_patterns_by_loss
+                )
+                lowest_patterns = full_sorted_patterns_by_loss[:bottom_k]
+                low_pattern_keys = {p for p, _ in lowest_patterns}
+                low_pattern_avg_losses = {
+                    p: v for p, v in full_pattern_avg_losses.items() if p in low_pattern_keys
+                }
+                low_pattern_std_losses = {
+                    p: v for p, v in full_pattern_std_losses.items() if p in low_pattern_keys
+                }
+                low_pattern_counts = {
+                    p: v for p, v in full_pattern_counts.items() if p in low_pattern_keys
+                }
+                self._plot_patterns(
+                    low_pattern_avg_losses,
+                    low_pattern_std_losses,
+                    lowest_patterns,
+                    low_pattern_counts,
+                    logger,
+                    plot_suffix="_lowest",
+                    show_error_bars=self.show_error_bars,
+                )
             self._plot_pattern_frequencies(
                 sorted_patterns, pattern_counts, logger
             )
@@ -1828,8 +2003,10 @@ class PermutationToMaskingPatternAnalysis(Callback):
         sorted_patterns: list[tuple[tuple, float]],
         pattern_counts: dict[tuple, int],
         logger: Logger,
+        plot_suffix: str = "",
+        show_error_bars: bool = False,
     ) -> None:
-        """Create and log a bar chart of masking pattern losses with error bars."""
+        """Create and log a bar chart of masking pattern losses with optional error bars."""
         # Prepare data for plotting
         pattern_strings = []
         avg_losses = []
@@ -1843,20 +2020,16 @@ class PermutationToMaskingPatternAnalysis(Callback):
             std_losses.append(pattern_std_losses[pattern])
             counts.append(pattern_counts[pattern])
         
-        # Compute overall mean and std
-        total_count = sum(pattern_counts.values())
-        if total_count > 0:
-            overall_mean = sum(
-                avg_loss * pattern_counts[pattern]
-                for pattern, avg_loss in pattern_avg_losses.items()
-            ) / total_count
-            
-            # Compute overall std from all values
-            all_losses = []
-            for pattern, loss_values in self.pattern_stats.items():
-                all_losses.extend(loss_values)
+        # Compute overall mean and std from all individual loss values (fair average)
+        all_losses = []
+        for pattern, loss_values in self.pattern_stats.items():
+            all_losses.extend(loss_values)
+        
+        if len(all_losses) > 0:
+            all_losses_array = np.array(all_losses)
+            overall_mean = float(np.mean(all_losses_array))
             if len(all_losses) > 1:
-                overall_std = float(np.std(all_losses, ddof=1))
+                overall_std = float(np.std(all_losses_array, ddof=1))
             else:
                 overall_std = 0.0
         else:
@@ -1868,17 +2041,17 @@ class PermutationToMaskingPatternAnalysis(Callback):
         fig_width = max(12, min(n_patterns * 0.5, 30))
         fig, ax = plt.subplots(figsize=(fig_width, 8))
         
-        # Create bar chart with error bars
+        # Create bar chart with optional error bars
         x_pos = np.arange(n_patterns)
-        bars = ax.bar(
-            x_pos,
-            avg_losses,
-            yerr=std_losses,
-            capsize=5,
-            alpha=0.7,
-            edgecolor="black",
-            linewidth=0.5,
-        )
+        bar_kwargs = {
+            "alpha": 0.7,
+            "edgecolor": "black",
+            "linewidth": 0.5,
+        }
+        if show_error_bars:
+            bar_kwargs["yerr"] = std_losses
+            bar_kwargs["capsize"] = 5
+        bars = ax.bar(x_pos, avg_losses, **bar_kwargs)
         
         # Customize plot
         ax.set_xlabel("Masking Pattern (1=masked, 0=unmasked)", fontsize=12)
@@ -1919,9 +2092,10 @@ class PermutationToMaskingPatternAnalysis(Callback):
         # Add bar height annotations on bars
         for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
             height = bar.get_height()
+            y_offset = std_losses[i] if show_error_bars else 0
             ax.text(
                 bar.get_x() + bar.get_width() / 2.0,
-                height + std_losses[i] + 0.01 * max(avg_losses),
+                height + y_offset + 0.01 * max(avg_losses),
                 f"{avg_loss:.3f}",
                 ha="center",
                 va="bottom",
@@ -1929,13 +2103,15 @@ class PermutationToMaskingPatternAnalysis(Callback):
                 rotation=90,
             )
         plt.tight_layout()
-        plt.savefig("permutation_derived_pattern_loss_analysis.png")
+        filename = f"permutation_derived_pattern_loss_analysis{plot_suffix}.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
         
         # Log to wandb if available
         if wandb.run is not None:
-            wandb.log({"permutation_derived_pattern_loss_analysis": wandb.Image("permutation_derived_pattern_loss_analysis.png")})
+            wandb.log({"permutation_derived_pattern_loss_analysis": wandb.Image(filepath)})
         else:
-            logger.log_images({"permutation_derived_pattern_loss_analysis": "permutation_derived_pattern_loss_analysis.png"})
+            logger.log_images({"permutation_derived_pattern_loss_analysis": filepath})
         
         # Close figure to free memory
         plt.close(fig)
@@ -2027,13 +2203,15 @@ class PermutationToMaskingPatternAnalysis(Callback):
                 rotation=90,
             )
         plt.tight_layout()
-        plt.savefig("permutation_derived_pattern_frequency_analysis.png")
+        filename = "permutation_derived_pattern_frequency_analysis.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
         
         # Log to wandb if available
         if wandb.run is not None:
-            wandb.log({"permutation_derived_pattern_frequency_analysis": wandb.Image("permutation_derived_pattern_frequency_analysis.png")})
+            wandb.log({"permutation_derived_pattern_frequency_analysis": wandb.Image(filepath)})
         else:
-            logger.log_images({"permutation_derived_pattern_frequency_analysis": "permutation_derived_pattern_frequency_analysis.png"})
+            logger.log_images({"permutation_derived_pattern_frequency_analysis": filepath})
         
         # Close figure to free memory
         plt.close(fig)

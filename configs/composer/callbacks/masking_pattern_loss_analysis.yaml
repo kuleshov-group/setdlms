@@ -1,0 +1,4 @@
+masking_pattern_loss_analysis:
+  _target_: src.custom_composer.callbacks.MaskingPatternLossAnalysis
+  show_error_bars: false
+  output_dir: ${output_path}

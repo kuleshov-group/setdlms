@@ -3,18 +3,21 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block32_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_bd3lm_reinit"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block32_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_v9_reinit"
-
-# MODEL_PATH="outputs/<PATH_TO_SAVED_MODEL_DIR>"
+OUTPUT_DIR="/share/kuleshov/ma2238/runs/dllm-dev"
+MODEL_NAME="wmt_block4_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient_v2"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block1_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm_baseline"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient_v5"
+MODEL_PATH="${OUTPUT_DIR}/${MODEL_NAME}"
 REVISION=null
 
-EVAL_DATASET="gsm8k_eval"
-BLOCK_SIZE=32  # TODO: Change as needed
-BATCH_SIZE=1
-PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-1.7B-Base"  # TODO: Change as needed
+for EVAL_DATASET in "wmt_eval"; do
+BLOCK_SIZE=4
+BATCH_SIZE=16
+PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-0.6B-Base"
 CKPT_FILE="best-rank0.pt"
-USE_EMA=true
+USE_EMA=false
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \
@@ -28,13 +31,13 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   seed=1 \
   batch_size=${BATCH_SIZE} \
   block_size=${BLOCK_SIZE} \
-  task.eval_dataloader.batch_size=8 \
+  task.eval_dataloader.batch_size=${BATCH_SIZE} \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   tokenizer.pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
-  output_path=null \
+  output_path=/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/${MODEL_NAME} \
   +collator@task.collator=denoising \
-  task.collator.global_batch_size=${BATCH_SIZE} \
+  +model.config.length=256 \
   task.collator.max_length=null \
   task.collator.restricted_t_range=null \
   task.collator.sampling_eps=1e-3 \
@@ -44,4 +47,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   ~generation@generation_config \
   ~generation/logits_processor@logits_processor_list \
   ~generation/stopping_criteria@stopping_criteria_list \
-  gen_kwargs=null
+  gen_kwargs=null \
+  task.collator.global_batch_size=${BATCH_SIZE}
+done

@@ -37,8 +37,8 @@ sbatch \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=kuleshov,gpu \
-  --constraint="[h100|a100|a5000|3090]" \
+  --partition=gpu \
+  --constraint="[h100|a100|a6000]" \
   --time=960:00:00 \
   --mem=128000 \
   --nodes=1 \
@@ -47,6 +47,6 @@ sbatch \
   --mail-user=${USERNAME}@cornell.edu \
   --mail-type=ALL \
   --requeue \
-  --exclude=nikola-compute-12 \
+  --exclude=nikola-compute-12,goyal-compute-01,snavely-compute-02,rush-compute-02 \
   --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
   ${script_full_path}
