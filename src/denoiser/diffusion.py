@@ -336,7 +336,7 @@ class MDLM(Denoiser):
         else:
             batch_nll = nlls.sum(dim=-1)
         # Average over masked tokens during training
-        if self.training or block_size == 1:
+        if (self.training and not getattr(self.config, "train_on_nelbo", False)) or block_size == 1:
             batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
             mask_token_indicator = (denoiser_inputs.xt == self.mask_token_id).float()
             count = mask_token_indicator.sum(dim=-1)
@@ -557,12 +557,15 @@ class MDLM(Denoiser):
         )
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if generation_config.use_cache and inputs.numel() > 0:
-            cache = self.update_cache(
-                inputs=inputs[:, : block_size * (inputs.shape[-1] // block_size)]
-                if generation_config.align_inputs_to_blocks
-                else inputs,
-                cache={},
-            )
+            if generation_config.align_inputs_to_blocks and inputs.shape[-1] < block_size:
+                cache = None
+            else:
+                cache = self.update_cache(
+                    inputs=inputs[:, : block_size * (inputs.shape[-1] // block_size)]
+                    if generation_config.align_inputs_to_blocks
+                    else inputs,
+                    cache={},
+                )
         else:
             cache = None
 
@@ -1430,54 +1433,6 @@ class AnyOrderBD3LM(BD3LM):
             self.encoder_static_attention_mask = None
         self._create_static_mask()
 
-    @staticmethod
-    def sample_permutation_order(
-        seq_len: int,
-        block_size: int,
-        permute_mask: Optional[torch.Tensor] = None,
-        device: Optional[torch.device] = None,
-        staggered=False,
-    ) -> torch.Tensor:
-        # TODO: put this in the noise schedule
-        """Sample a random permutation order for tokens within blocks.
-        
-        Args:
-            seq_len: Sequence length.
-            block_size: Block size for block-wise permutation.
-            permute_mask: Optional mask indicating which tokens to permute (batch_size, seq_len).
-                         If None, all tokens are permuted.
-            device: Device for the output tensor.
-        
-        Returns:
-            Permutation indices of shape (batch_size, seq_len).
-        """
-        if permute_mask is None:
-            batch_size = 1
-            permute_mask = torch.ones(1, seq_len, dtype=torch.bool, device=device)
-        else:
-            batch_size = permute_mask.shape[0]
-            if device is None:
-                device = permute_mask.device
-        
-        n_blocks = seq_len // block_size
-        to_permute = permute_mask.view(batch_size, n_blocks, block_size)
-        if not staggered:
-            ranking = torch.rand(batch_size, n_blocks, block_size, device=device)
-            position_indices = torch.arange(block_size, device=device)[None, None, :]
-            is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :, :1] == False)
-            is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, :, -1:] == False))
-
-            ranking = torch.where(is_beginning, float('inf'), ranking)
-            ranking = torch.where(is_end, float('-inf'), ranking)
-            perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
-        else:
-            pass
-        block_offset = (
-            torch.arange(n_blocks, device=device)[None, :, None] * block_size
-        )
-        perm_indices = block_offset + perm_indices
-        return perm_indices.view(batch_size, n_blocks * block_size)
-
     def _create_static_mask(self) -> None:
         # self.mask_to_mask_interaction = False
         # self.clean_block_caching = False
@@ -1719,12 +1674,7 @@ class AnyOrderBD3LM(BD3LM):
 
         batch_size, context_len = input_ids.shape
         if permute_flag.any():
-            perm_indices = self.sample_permutation_order(
-                seq_len=context_len,
-                block_size=self.block_size,
-                permute_mask=permute_flag,
-                device=input_ids.device,
-            )
+            perm_indices = self.noise_schedule.sample_permutation_order(t, permute_flag, block_size=self.config.block_size)
         # if self.attn_sink_only:
         #     num_repetitions = 2
         #     attention_mask_padded = F.pad(attention_mask.repeat(1, 2), (0, 1, 0, 1), value=True)
@@ -1840,10 +1790,14 @@ class AnyOrderBD3LM(BD3LM):
                 ),
             )[-seq_len:].to(device)
             # randomly permute rows and cols
-            # perm_indices = torch.randperm(seq_len, device=device)
-            # attention_mask = attention_mask[perm_indices]
+            # perm_indices_rows = torch.randperm(seq_len, device=device)
+            # if full_seq_length > seq_len:
+            #     perm_indices_cols = torch.cat((torch.arange(full_seq_length - seq_len).to(device), perm_indices_rows + (full_seq_length - seq_len)))
+            # else:
+            #     perm_indices_cols = perm_indices_rows
+            # attention_mask = attention_mask[perm_indices_rows]
             # attention_mask = torch.gather(
-            #     attention_mask, dim=-1, index=perm_indices.unsqueeze(0).expand(seq_len, seq_len))
+            #     attention_mask, dim=-1, index=perm_indices_cols.unsqueeze(0).expand(seq_len, full_seq_length))
             attention_mask = self._preprocess_attention_mask(
                 attention_mask[None, None, ...], dtype=torch.float
             )

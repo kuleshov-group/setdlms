@@ -3,8 +3,9 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block32_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_bd3lm_reinit"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block32_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_v9_reinit"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block32_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_og_test_v1"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block32_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_comp_true_maskfalse_dummyfalse_4dummy_v4"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block32_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_comp_false_maskfalse_dummyfalse_4dummy_v4"
 
 # MODEL_PATH="outputs/<PATH_TO_SAVED_MODEL_DIR>"
 REVISION=null

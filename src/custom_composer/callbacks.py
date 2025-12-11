@@ -13,6 +13,7 @@ matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.distributed as torch_dist
 import wandb
 from composer.callbacks import CheckpointSaver
 from composer.core import Callback, State, Time, Timestamp
@@ -747,7 +748,7 @@ class MaskingPatternLossAnalysis(Callback):
             if world_size > 1:
                 # Gather pattern_stats from all ranks
                 gathered_pattern_stats = [None for _ in range(world_size)]
-                dist.all_gather_object(gathered_pattern_stats, self.pattern_stats)
+                torch_dist.all_gather_object(gathered_pattern_stats, self.pattern_stats)
 
                 # Combine statistics from all ranks
                 combined_pattern_stats = {}
@@ -855,6 +856,28 @@ class MaskingPatternLossAnalysis(Callback):
                 plot_suffix="_highest",
                 show_error_bars=self.show_error_bars,
             )
+            
+            # Plot visualization for top 3 highest loss patterns
+            for rank, (pattern, avg_loss) in enumerate(sorted_patterns[:3], 1):
+                self._plot_masking_pattern_visualization(
+                    pattern, avg_loss, logger, plot_suffix="_highest", rank=rank
+                )
+            
+            # Always plot "all" patterns, sorted by loss (lowest to highest)
+            sorted_patterns_all = sorted(
+                full_pattern_avg_losses.items(),
+                key=lambda x: x[1], reverse=False  # Sort by loss, lowest first
+            )
+            self._plot_masking_patterns(
+                full_pattern_avg_losses,
+                full_pattern_std_losses,
+                sorted_patterns_all,
+                full_pattern_counts,
+                logger,
+                plot_suffix="_all",
+                show_error_bars=self.show_error_bars,
+            )
+            
             # Also plot the lowest-loss patterns
             if len(full_sorted_patterns_by_loss) > 0:
                 bottom_k = 20 if len(full_sorted_patterns_by_loss) > 50 else len(
@@ -880,6 +903,12 @@ class MaskingPatternLossAnalysis(Callback):
                     plot_suffix="_lowest",
                     show_error_bars=self.show_error_bars,
                 )
+                
+                # Plot visualization for top 3 lowest loss patterns
+                for rank, (pattern, avg_loss) in enumerate(lowest_patterns[:3], 1):
+                    self._plot_masking_pattern_visualization(
+                        pattern, avg_loss, logger, plot_suffix="_lowest", rank=rank
+                    )
             # For frequency plot, use lexicographic order
             sorted_patterns_lex_for_freq = sorted(
                 full_pattern_avg_losses.items(),
@@ -987,18 +1016,23 @@ class MaskingPatternLossAnalysis(Callback):
         )
         ax.set_xticks(x_pos)
         
-        # Adjust font size and rotation based on number of patterns
-        if n_patterns > 20:
+        # For full histograms with many bars, hide x-axis labels
+        # For other plots, adjust font size and rotation based on number of patterns
+        if plot_suffix == "_all" and n_patterns > 30:
+            # Hide x-axis labels for full histograms with too many bars
+            ax.set_xticklabels([])
+        elif n_patterns > 20:
             label_fontsize = 8
             rotation = 90
+            ax.set_xticklabels(pattern_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         elif n_patterns > 10:
             label_fontsize = 10
             rotation = 60
+            ax.set_xticklabels(pattern_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         else:
             label_fontsize = 12
             rotation = 45
-        
-        ax.set_xticklabels(pattern_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
+            ax.set_xticklabels(pattern_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         ax.grid(axis="y", alpha=0.3, linestyle="--")
         
         # Add horizontal line for overall mean
@@ -1012,19 +1046,20 @@ class MaskingPatternLossAnalysis(Callback):
         )
         ax.legend(loc="best", fontsize=10)
         
-        # Add bar height annotations on bars
-        for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
-            height = bar.get_height()
-            y_offset = std_losses[i] if show_error_bars else 0
-            ax.text(
-                bar.get_x() + bar.get_width() / 2.0,
-                height + y_offset + 0.01 * max(avg_losses),
-                f"{avg_loss:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                rotation=90,
-            )
+        # Add bar height annotations on bars (skip if too many bars for readability)
+        if not (plot_suffix == "_all" and n_patterns > 30):
+            for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
+                height = bar.get_height()
+                y_offset = std_losses[i] if show_error_bars else 0
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    height + y_offset + 0.01 * max(avg_losses),
+                    f"{avg_loss:.3f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    rotation=90,
+                )
         plt.tight_layout()
         filename = f"masking_pattern_loss_analysis{plot_suffix}.png"
         filepath = self._get_output_path(filename)
@@ -1131,6 +1166,73 @@ class MaskingPatternLossAnalysis(Callback):
             logger.log_images({"masking_pattern_frequency_analysis": filepath})
         
         # Close figure to free memory
+        plt.close(fig)
+
+    def _plot_masking_pattern_visualization(
+        self,
+        pattern: tuple[int, ...],
+        avg_loss: float,
+        logger: Logger,
+        plot_suffix: str = "",
+        rank: int = 0,
+    ) -> None:
+        """Plot masking pattern as a 1 x block_size visualization.
+        
+        Args:
+            pattern: Masking pattern tuple (1=masked, 0=unmasked)
+            avg_loss: Average loss for this pattern
+            logger: Logger for saving plots
+            plot_suffix: Suffix for filename (e.g., "_highest", "_lowest")
+            rank: Rank of this pattern (e.g., 1, 2, 3 for top 3)
+        """
+        block_size = len(pattern)
+        
+        # Create a 1 x block_size matrix
+        pattern_matrix = np.array(pattern).reshape(1, block_size)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(max(6, block_size * 0.8), 2))
+        
+        # Create heatmap: black for masked (1), white for unmasked (0)
+        # Use grayscale colormap, inverted so 1=black, 0=white
+        im = ax.imshow(pattern_matrix, cmap='gray_r', aspect='auto', vmin=0, vmax=1)
+        
+        # Set ticks and labels
+        ax.set_xticks(np.arange(block_size))
+        ax.set_yticks([0])
+        ax.set_xticklabels([f"Pos {i}" for i in range(block_size)])
+        ax.set_yticklabels(["Mask"])
+        
+        # Add text annotations for clarity
+        for pos in range(block_size):
+            color = "white" if pattern[pos] == 1 else "black"
+            symbol = "M" if pattern[pos] == 1 else "U"
+            ax.text(pos, 0, symbol, ha="center", va="center",
+                   color=color, fontsize=12, fontweight="bold")
+        
+        # Labels and title
+        pattern_str = "".join(str(int(x)) for x in pattern)
+        ax.set_xlabel("Position", fontsize=12)
+        ax.set_title(
+            f"Masking Pattern (Rank {rank})\n"
+            f"Pattern: {pattern_str}\n"
+            f"Avg Loss: {avg_loss:.4f}",
+            fontsize=12,
+            fontweight="bold",
+        )
+        
+        plt.tight_layout()
+        filename = f"masking_pattern_visualization{plot_suffix}_rank{rank}.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
+        
+        # Log to wandb if available
+        wandb_key = f"masking_pattern_visualization{plot_suffix}_rank{rank}"
+        if wandb.run is not None:
+            wandb.log({wandb_key: wandb.Image(filepath)})
+        else:
+            logger.log_images({wandb_key: filepath})
+        
         plt.close(fig)
 
 
@@ -1260,7 +1362,7 @@ class PermutationOrderLossAnalysis(Callback):
             if world_size > 1:
                 # Gather permutation_stats from all ranks
                 gathered_permutation_stats = [None for _ in range(world_size)]
-                dist.all_gather_object(gathered_permutation_stats, self.permutation_stats)
+                torch_dist.all_gather_object(gathered_permutation_stats, self.permutation_stats)
                 
                 # Combine statistics from all ranks
                 combined_permutation_stats = {}
@@ -1375,17 +1477,27 @@ class PermutationOrderLossAnalysis(Callback):
                 show_error_bars=self.show_error_bars,
             )
             
-            # Also plot "all" permutations if below threshold
-            if len(sorted_permutations_lex) <= plot_all_threshold:
-                self._plot_permutation_orders(
-                    permutation_avg_losses,
-                    permutation_std_losses,
-                    sorted_permutations_lex,
-                    permutation_counts,
-                    logger,
-                    plot_suffix="_all",
-                    show_error_bars=self.show_error_bars,
+            # Always plot "all" permutations, sorted by loss (lowest to highest)
+            sorted_permutations_all = sorted(
+                permutation_avg_losses.items(),
+                key=lambda x: x[1], reverse=False  # Sort by loss, lowest first
+            )
+            self._plot_permutation_orders(
+                permutation_avg_losses,
+                permutation_std_losses,
+                sorted_permutations_all,
+                permutation_counts,
+                logger,
+                plot_suffix="_all",
+                show_error_bars=self.show_error_bars,
+            )
+            
+            # Plot generation order for top 3 highest loss permutations
+            for rank, (perm_tuple, avg_loss) in enumerate(sorted_permutations[:3], 1):
+                self._plot_permutation_generation_order(
+                    perm_tuple, avg_loss, logger, plot_suffix="_highest", rank=rank
                 )
+            
             # Also plot the lowest-loss permutation orders
             if len(full_sorted_perms_by_loss) > 0:
                 bottom_k = 20 if len(full_sorted_perms_by_loss) > 50 else len(
@@ -1411,6 +1523,12 @@ class PermutationOrderLossAnalysis(Callback):
                     plot_suffix="_lowest",
                     show_error_bars=self.show_error_bars,
                 )
+                
+                # Plot generation order for top 3 lowest loss permutations
+                for rank, (perm_tuple, avg_loss) in enumerate(lowest_perms[:3], 1):
+                    self._plot_permutation_generation_order(
+                        perm_tuple, avg_loss, logger, plot_suffix="_lowest", rank=rank
+                    )
             self._plot_permutation_frequencies(
                 sorted_permutations_lex, permutation_counts, logger
             )
@@ -1514,18 +1632,23 @@ class PermutationOrderLossAnalysis(Callback):
         )
         ax.set_xticks(x_pos)
         
-        # Adjust font size and rotation based on number of permutations
-        if n_permutations > 20:
+        # For full histograms with many bars, hide x-axis labels
+        # For other plots, adjust font size and rotation based on number of permutations
+        if plot_suffix == "_all" and n_permutations > 30:
+            # Hide x-axis labels for full histograms with too many bars
+            ax.set_xticklabels([])
+        elif n_permutations > 20:
             label_fontsize = 8
             rotation = 90
+            ax.set_xticklabels(permutation_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         elif n_permutations > 10:
             label_fontsize = 10
             rotation = 60
+            ax.set_xticklabels(permutation_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         else:
             label_fontsize = 12
             rotation = 45
-        
-        ax.set_xticklabels(permutation_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
+            ax.set_xticklabels(permutation_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         ax.grid(axis="y", alpha=0.3, linestyle="--")
         
         # Add horizontal line for overall mean
@@ -1539,19 +1662,20 @@ class PermutationOrderLossAnalysis(Callback):
         )
         ax.legend(loc="best", fontsize=10)
         
-        # Add bar height annotations on bars
-        for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
-            height = bar.get_height()
-            y_offset = std_losses[i] if show_error_bars else 0
-            ax.text(
-                bar.get_x() + bar.get_width() / 2.0,
-                height + y_offset + 0.01 * max(avg_losses),
-                f"{avg_loss:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                rotation=90,
-            )
+        # Add bar height annotations on bars (skip if too many bars for readability)
+        if not (plot_suffix == "_all" and n_permutations > 30):
+            for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
+                height = bar.get_height()
+                y_offset = std_losses[i] if show_error_bars else 0
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    height + y_offset + 0.01 * max(avg_losses),
+                    f"{avg_loss:.3f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    rotation=90,
+                )
         plt.tight_layout()
         filename = f"permutation_order_loss_analysis{plot_suffix}.png"
         filepath = self._get_output_path(filename)
@@ -1665,6 +1789,81 @@ class PermutationOrderLossAnalysis(Callback):
             logger.log_images({"permutation_order_frequency_analysis": filepath})
         
         # Close figure to free memory
+        plt.close(fig)
+
+    def _plot_permutation_generation_order(
+        self,
+        perm_tuple: tuple[int, ...],
+        avg_loss: float,
+        logger: Logger,
+        plot_suffix: str = "",
+        rank: int = 0,
+    ) -> None:
+        """Plot generation order as a block_size x block_size heatmap.
+        
+        Args:
+            perm_tuple: Permutation order (0-indexed positions)
+            avg_loss: Average loss for this permutation
+            logger: Logger for saving plots
+            plot_suffix: Suffix for filename (e.g., "_highest", "_lowest")
+            rank: Rank of this pattern (e.g., 1, 2, 3 for top 3)
+        """
+        block_size = len(perm_tuple)
+        
+        # Create a block_size x block_size matrix
+        # Row i = generation step i
+        # Column j = position j
+        # Value = 1 if position j is generated at step i or earlier (filled from step 0 to generation step)
+        generation_matrix = np.zeros((block_size, block_size))
+        
+        # Fill boxes above: if a position is generated at step N, fill all steps from 0 to N (inclusive)
+        for step, position in enumerate(perm_tuple):
+            # Fill all steps from 0 to step (inclusive) for this position
+            for s in range(step + 1):
+                generation_matrix[s, position] = 1
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(max(6, block_size), max(6, block_size)))
+        
+        # Create heatmap
+        im = ax.imshow(generation_matrix, cmap='Blues', aspect='auto', vmin=0, vmax=1)
+        
+        # Set ticks and labels
+        ax.set_xticks(np.arange(block_size))
+        ax.set_yticks(np.arange(block_size))
+        ax.set_xticklabels([f"Pos {i}" for i in range(block_size)])
+        ax.set_yticklabels([f"Step {i}" for i in range(block_size)])
+        
+        # Add text annotations - mark the actual generation step with a symbol
+        for step, position in enumerate(perm_tuple):
+            # Mark the actual generation step with a dot
+            ax.text(position, step, "●", ha="center", va="center", 
+                   color="white", fontsize=20, fontweight="bold")
+        
+        # Labels and title
+        perm_str = ",".join(str(int(x) + 1) for x in perm_tuple)  # 1-indexed
+        ax.set_xlabel("Position", fontsize=12)
+        ax.set_ylabel("Generation Step", fontsize=12)
+        ax.set_title(
+            f"Generation Order (Rank {rank})\n"
+            f"Permutation: {perm_str}\n"
+            f"Avg Loss: {avg_loss:.4f}",
+            fontsize=12,
+            fontweight="bold",
+        )
+        
+        plt.tight_layout()
+        filename = f"permutation_generation_order{plot_suffix}_rank{rank}.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
+        
+        # Log to wandb if available
+        wandb_key = f"permutation_generation_order{plot_suffix}_rank{rank}"
+        if wandb.run is not None:
+            wandb.log({wandb_key: wandb.Image(filepath)})
+        else:
+            logger.log_images({wandb_key: filepath})
+        
         plt.close(fig)
 
 
@@ -1852,7 +2051,7 @@ class PermutationToMaskingPatternAnalysis(Callback):
             if world_size > 1:
                 # Gather pattern_stats from all ranks
                 gathered_pattern_stats = [None for _ in range(world_size)]
-                dist.all_gather_object(gathered_pattern_stats, self.pattern_stats)
+                torch_dist.all_gather_object(gathered_pattern_stats, self.pattern_stats)
                 
                 # Combine statistics from all ranks
                 combined_pattern_stats = {}
@@ -1956,6 +2155,28 @@ class PermutationToMaskingPatternAnalysis(Callback):
                 plot_suffix="_highest",
                 show_error_bars=self.show_error_bars,
             )
+            
+            # Plot visualization for top 3 highest loss patterns
+            for rank, (pattern, avg_loss) in enumerate(sorted_patterns[:3], 1):
+                self._plot_masking_pattern_visualization(
+                    pattern, avg_loss, logger, plot_suffix="_highest", rank=rank
+                )
+            
+            # Always plot "all" patterns, sorted by loss (lowest to highest)
+            sorted_patterns_all = sorted(
+                full_pattern_avg_losses.items(),
+                key=lambda x: x[1], reverse=False  # Sort by loss, lowest first
+            )
+            self._plot_patterns(
+                full_pattern_avg_losses,
+                full_pattern_std_losses,
+                sorted_patterns_all,
+                full_pattern_counts,
+                logger,
+                plot_suffix="_all",
+                show_error_bars=self.show_error_bars,
+            )
+            
             # Also plot the lowest-loss patterns (derived from permutations)
             if len(full_sorted_patterns_by_loss) > 0:
                 bottom_k = 20 if len(full_sorted_patterns_by_loss) > 50 else len(
@@ -1981,6 +2202,12 @@ class PermutationToMaskingPatternAnalysis(Callback):
                     plot_suffix="_lowest",
                     show_error_bars=self.show_error_bars,
                 )
+                
+                # Plot visualization for top 3 lowest loss patterns
+                for rank, (pattern, avg_loss) in enumerate(lowest_patterns[:3], 1):
+                    self._plot_masking_pattern_visualization(
+                        pattern, avg_loss, logger, plot_suffix="_lowest", rank=rank
+                    )
             # For frequency plot, use lexicographic order
             sorted_patterns_lex_for_freq = sorted(
                 full_pattern_avg_losses.items(),
@@ -2018,6 +2245,73 @@ class PermutationToMaskingPatternAnalysis(Callback):
         
         # Reset for next eval
         self.pattern_stats.clear()
+
+    def _plot_masking_pattern_visualization(
+        self,
+        pattern: tuple[int, ...],
+        avg_loss: float,
+        logger: Logger,
+        plot_suffix: str = "",
+        rank: int = 0,
+    ) -> None:
+        """Plot masking pattern as a 1 x block_size visualization.
+        
+        Args:
+            pattern: Masking pattern tuple (1=masked, 0=unmasked)
+            avg_loss: Average loss for this pattern
+            logger: Logger for saving plots
+            plot_suffix: Suffix for filename (e.g., "_highest", "_lowest")
+            rank: Rank of this pattern (e.g., 1, 2, 3 for top 3)
+        """
+        block_size = len(pattern)
+        
+        # Create a 1 x block_size matrix
+        pattern_matrix = np.array(pattern).reshape(1, block_size)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(max(6, block_size * 0.8), 2))
+        
+        # Create heatmap: black for masked (1), white for unmasked (0)
+        # Use grayscale colormap, inverted so 1=black, 0=white
+        im = ax.imshow(pattern_matrix, cmap='gray_r', aspect='auto', vmin=0, vmax=1)
+        
+        # Set ticks and labels
+        ax.set_xticks(np.arange(block_size))
+        ax.set_yticks([0])
+        ax.set_xticklabels([f"Pos {i}" for i in range(block_size)])
+        ax.set_yticklabels(["Mask"])
+        
+        # Add text annotations for clarity
+        for pos in range(block_size):
+            color = "white" if pattern[pos] == 1 else "black"
+            symbol = "M" if pattern[pos] == 1 else "U"
+            ax.text(pos, 0, symbol, ha="center", va="center",
+                   color=color, fontsize=12, fontweight="bold")
+        
+        # Labels and title
+        pattern_str = "".join(str(int(x)) for x in pattern)
+        ax.set_xlabel("Position", fontsize=12)
+        ax.set_title(
+            f"Masking Pattern (Rank {rank}, from Permutations)\n"
+            f"Pattern: {pattern_str}\n"
+            f"Avg Loss: {avg_loss:.4f}",
+            fontsize=12,
+            fontweight="bold",
+        )
+        
+        plt.tight_layout()
+        filename = f"permutation_derived_pattern_visualization{plot_suffix}_rank{rank}.png"
+        filepath = self._get_output_path(filename)
+        plt.savefig(filepath)
+        
+        # Log to wandb if available
+        wandb_key = f"permutation_derived_pattern_visualization{plot_suffix}_rank{rank}"
+        if wandb.run is not None:
+            wandb.log({wandb_key: wandb.Image(filepath)})
+        else:
+            logger.log_images({wandb_key: filepath})
+        
+        plt.close(fig)
 
     def _plot_patterns(
         self,
@@ -2087,18 +2381,23 @@ class PermutationToMaskingPatternAnalysis(Callback):
         )
         ax.set_xticks(x_pos)
         
-        # Adjust font size and rotation based on number of patterns
-        if n_patterns > 20:
+        # For full histograms with many bars, hide x-axis labels
+        # For other plots, adjust font size and rotation based on number of patterns
+        if plot_suffix == "_all" and n_patterns > 30:
+            # Hide x-axis labels for full histograms with too many bars
+            ax.set_xticklabels([])
+        elif n_patterns > 20:
             label_fontsize = 8
             rotation = 90
+            ax.set_xticklabels(pattern_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         elif n_patterns > 10:
             label_fontsize = 10
             rotation = 60
+            ax.set_xticklabels(pattern_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         else:
             label_fontsize = 12
             rotation = 45
-        
-        ax.set_xticklabels(pattern_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
+            ax.set_xticklabels(pattern_strings, rotation=rotation, ha="right", fontsize=label_fontsize)
         ax.grid(axis="y", alpha=0.3, linestyle="--")
         
         # Add horizontal line for overall mean
@@ -2112,19 +2411,20 @@ class PermutationToMaskingPatternAnalysis(Callback):
         )
         ax.legend(loc="best", fontsize=10)
         
-        # Add bar height annotations on bars
-        for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
-            height = bar.get_height()
-            y_offset = std_losses[i] if show_error_bars else 0
-            ax.text(
-                bar.get_x() + bar.get_width() / 2.0,
-                height + y_offset + 0.01 * max(avg_losses),
-                f"{avg_loss:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                rotation=90,
-            )
+        # Add bar height annotations on bars (skip if too many bars for readability)
+        if not (plot_suffix == "_all" and n_patterns > 30):
+            for i, (bar, avg_loss) in enumerate(zip(bars, avg_losses)):
+                height = bar.get_height()
+                y_offset = std_losses[i] if show_error_bars else 0
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    height + y_offset + 0.01 * max(avg_losses),
+                    f"{avg_loss:.3f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    rotation=90,
+                )
         plt.tight_layout()
         filename = f"permutation_derived_pattern_loss_analysis{plot_suffix}.png"
         filepath = self._get_output_path(filename)

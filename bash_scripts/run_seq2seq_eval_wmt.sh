@@ -30,9 +30,15 @@ source setup_env.sh
 PROMPT_TEXT=null
 BLOCK_SIZE=32
 # MODEL_PATH="kuleshov-group/e2d2-wmt"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm_baseline"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm_baseline"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient"
 # MODEL_PATH="${RUN_DIR}/<PATH_TO_MDLM_SAVED_MODEL_DIR>"
+
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_aoarm_efficient_v6"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm_comp_false_maskfalse_dummyfalse_v1"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/wmt_block32_lr3e-4_bsz128_warm1000ba_layers16_hidden512_inter1536_bd3lm_comp_true_maskfalse_dummyfalse_v1"
+
+echo "MODEL_PATH: ${MODEL_PATH}"
 KV_CACHING=true
 ALIGN_INPUTS_TO_BLOCKS=true
 
@@ -51,7 +57,7 @@ CKPT="best"
 USE_EMA=true
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-T${T}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}"
-PORT=29502
+PORT=29501
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/seq2seq_eval.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \

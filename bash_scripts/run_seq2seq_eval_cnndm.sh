@@ -33,9 +33,13 @@ source setup_env.sh
 #REPETITION_PENALTY=1.5
 
 ########### E2D2
-BLOCK_SIZE=8
-MODEL_PATH="kuleshov-group/e2d2-cnndm"
+BLOCK_SIZE=32
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block32_lr3e-4_bsz128_warm1000ba_layers12_hidden256_inter768_aoarm_v12"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block32_lr3e-4_bsz128_warm1000ba_layers12_hidden256_inter768_bd3lm_comp_true_maskfalse_dummyfalse_v1"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block32_lr3e-4_bsz128_warm1000ba_layers12_hidden256_inter768_bd3lm_v4"
 #MODEL_PATH="${RUN_DIR}/<PATH_TO_E2D2_SAVED_MODEL_DIR>"
+
+echo "MODEL_PATH: ${MODEL_PATH}"
 KV_CACHING=true
 ALIGN_INPUTS_TO_BLOCKS=false
 LEN_PENALTY=1.1

@@ -5,11 +5,11 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=32
-EVAL_BLOCK_SIZE=32
+BLOCK_SIZE=768
+EVAL_BLOCK_SIZE=768
 N_LAYERS=28
 TOP_LAYERS=false
-REINIT_MODEL=true
+REINIT_MODEL=false
 
 # Hyperparameters
 LR=1e-5
@@ -23,9 +23,9 @@ PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
 TRAIN_COMPLEMENT=false
-RM_ATTN_TO_MASKED_TOKENS=true
-ATTEND_TO_DUMMY_TOKENS=true
-TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_4dummy_v4"
+RM_ATTN_TO_MASKED_TOKENS=false
+ATTEND_TO_DUMMY_TOKENS=false
+TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_v1"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
