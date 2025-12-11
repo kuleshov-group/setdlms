@@ -41,7 +41,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
   tokenizer=autotokenizer \
-  tokenizer.pretrained_model_name_or_path=gpt2 \
+  tokenizer.pretrained_model_name_or_path=bert-base-uncased \
   dataset@train_dataset=lm1b_train \
   dataset@eval_dataset=lm1b_eval \
   composer.optimizer.lr=${LR} \

@@ -1,2 +1,2 @@
 _target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
-dataset_path: '${oc.env:DATA_DIR}/gpt2_tokenizer/lm1b_test_bs128_wrapped.dat'
+dataset_path: '${oc.env:DATA_DIR}/lm1b_test_bs128_wrapped.dat'

@@ -12,6 +12,7 @@ def load_preprocessed_dataset(
     dataset_path: str,
     keep_in_memory: bool | None = None,
     storage_options: dict | None = None,
+    limit_size: int | None = None,
     # Unused tokenizer arg (compat. with other dataset loading functions/classes)
     **_: Dict[str, Any],
 ) -> Dataset | DatasetDict:
@@ -34,6 +35,11 @@ def load_preprocessed_dataset(
     """
     if not fsspec_exists(dataset_path):
         raise FileNotFoundError(f"Dataset not found at {dataset_path}.")
-    return load_from_disk(
+    dataset = load_from_disk(
         dataset_path, keep_in_memory=keep_in_memory, storage_options=storage_options
     ).with_format("torch")
+
+    if limit_size is not None:
+        dataset = dataset.select(range(limit_size))
+
+    return dataset
