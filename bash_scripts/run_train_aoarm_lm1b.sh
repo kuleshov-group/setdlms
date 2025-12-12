@@ -51,7 +51,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=aoarm_efficient \
-  model.config.attn_backend="sdpa" \
+  model.config.attn_backend=${ATTN_BACKEND} \
   training.compile_backbone=false \
   model.config.length=${LENGTH} \
   model/backbone@model.config.backbone_config=dit \
@@ -67,7 +67,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
-  composer.trainer.save_interval="1000ba" \
+  composer.trainer.save_interval="10000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true

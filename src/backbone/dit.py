@@ -551,7 +551,6 @@ class DDiTBlock(nn.Module):
       x = self.norm1(x)
 
     qkv = self.get_qkv(x, rotary_cos_sin)
-      
     # attention
     if self.attn_backend == 'flash_attn' and mask is None:
       qkv = einops.rearrange(qkv, 'b s ... -> (b s) ...')
@@ -561,7 +560,7 @@ class DDiTBlock(nn.Module):
       x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
         qkv, cu_seqlens, seq_len, 0., causal=causal)
       x = rearrange(x, '(b s) h d -> b s (h d)', b=batch_size)     
-    elif self.attn_backend == 'flex' and FLEX_ATTN_AVAILABLE:
+    elif self.attn_backend == 'flex_attention' and FLEX_ATTN_AVAILABLE:
       x = self.cross_attn_flex(qkv, mask=mask)
     elif self.attn_backend == 'sdpa':
       x = self.cross_attn(qkv, mask=mask, causal=causal)

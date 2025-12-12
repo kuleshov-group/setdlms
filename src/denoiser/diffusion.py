@@ -1433,78 +1433,120 @@ class AnyOrderBD3LM(BD3LM):
             self.encoder_static_attention_mask = None
         self._create_static_mask()
 
+    # noinspection PyUnusedLocal
+    @staticmethod
+    def _block_mask(
+        b,
+        h,
+        q_idx,
+        kv_idx,
+        seq_length: Optional[int] = None,
+    ) -> torch.Tensor:
+        del b, h
+
+        # Indicate whether token belongs to xt or x0:
+        xt_flag_q = (q_idx >= seq_length).bool()
+        xt_flag_kv = (kv_idx >= seq_length).bool()
+
+        # **1. Offset Causal Mask **
+        offset_causal = (q_idx > kv_idx) & ~xt_flag_kv & xt_flag_q
+
+        # **2. Diagonal Mask **
+        diagonal = (q_idx == kv_idx) & (xt_flag_q == xt_flag_kv)
+
+        # **3. Causal Mask **
+        causal = (q_idx >= kv_idx) & ~xt_flag_kv & ~xt_flag_q
+
+        # **4. Combine Masks **
+        return diagonal | offset_causal | causal
+
     def _create_static_mask(self) -> None:
-        # self.mask_to_mask_interaction = False
-        # self.clean_block_caching = False
-        # self.clean_attends_to_mask = False
-        # self.clean_attends_to_clean = True
-        # self.attn_sink_only = False
-        # block_diagonal_mask =((torch.arange(self.config.length)[..., None] // self.config.block_size) == (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
-        # block_causal_mask = ((torch.arange(self.config.length)[..., None] // self.config.block_size) >= (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
-        # offset_block_causal_mask = ((torch.arange(self.config.length)[..., None] // self.config.block_size) > (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
-        # upper_tri = torch.triu(torch.ones((self.config.length, self.config.length), dtype=torch.bool), diagonal=1)
-        encoder_static_mask = torch.tril(
-            torch.ones(
-                (self.config.length, self.config.length),
-                dtype=torch.bool,
-            ),
-            diagonal=-1,
-        )
-        # if self.clean_block_caching:
-        #     encoder_static_mask *= block_diagonal_mask
-        decoder_static_mask = torch.cat(
-            (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
-        )
-        encoder_static_mask = torch.cat(
-            (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
-        )
-        self.register_buffer("static_attention_mask", 
-            torch.cat(
-                (encoder_static_mask, decoder_static_mask), dim=0
+        if self.config.attn_backend == "flex_attention":
+            mask = partial(
+                self._block_mask,
+                seq_length=self.config.length,
             )
-        )
+            self.static_attention_mask = create_block_mask(
+                mask,
+                B=None,
+                H=None,
+                Q_LEN=self.config.length * 2,
+                KV_LEN=self.config.length * 2,
+            )
+        elif self.config.attn_backend == "sdpa":
+            # self.mask_to_mask_interaction = False
+            # self.clean_block_caching = False
+            # self.clean_attends_to_mask = False
+            # self.clean_attends_to_clean = True
+            # self.attn_sink_only = False
+            # block_diagonal_mask =((torch.arange(self.config.length)[..., None] // self.config.block_size) == (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
+            # block_causal_mask = ((torch.arange(self.config.length)[..., None] // self.config.block_size) >= (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
+            # offset_block_causal_mask = ((torch.arange(self.config.length)[..., None] // self.config.block_size) > (torch.arange(self.config.length)[None, ...] // self.config.block_size)).bool()
+            # upper_tri = torch.triu(torch.ones((self.config.length, self.config.length), dtype=torch.bool), diagonal=1)
+            encoder_static_mask = torch.tril(
+                torch.ones(
+                    (self.config.length, self.config.length),
+                    dtype=torch.bool,
+                ),
+                diagonal=-1,
+            )
+            # if self.clean_block_caching:
+            #     encoder_static_mask *= block_diagonal_mask
+            decoder_static_mask = torch.cat(
+                (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
+            )
+            encoder_static_mask = torch.cat(
+                (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
+            )
+            self.register_buffer("static_attention_mask", 
+                torch.cat(
+                    (encoder_static_mask, decoder_static_mask), dim=0
+                )
+            )
 
-        # # -- Attention to clean tokens --
-        # if self.clean_block_caching:
-        #     self.static_attention_mask = F.pad(self.static_attention_mask, (0, self.config.length, 0, self.config.length), value=False)
+            # # -- Attention to clean tokens --
+            # if self.clean_block_caching:
+            #     self.static_attention_mask = F.pad(self.static_attention_mask, (0, self.config.length, 0, self.config.length), value=False)
 
-        #     # "caching"
-        #     self.static_attention_mask[-self.config.length:, -self.config.length:] = block_causal_mask
+            #     # "caching"
+            #     self.static_attention_mask[-self.config.length:, -self.config.length:] = block_causal_mask
 
-        #     # clean tokens can attend to offset blocks
-        #     self.static_attention_mask[:self.config.length, -self.config.length:] = offset_block_causal_mask
+            #     # clean tokens can attend to offset blocks
+            #     self.static_attention_mask[:self.config.length, -self.config.length:] = offset_block_causal_mask
 
-        #     # masked tokens can attend to clean blocks
-        #     self.static_attention_mask[self.config.length:-self.config.length, -self.config.length:] = offset_block_causal_mask
+            #     # masked tokens can attend to clean blocks
+            #     self.static_attention_mask[self.config.length:-self.config.length, -self.config.length:] = offset_block_causal_mask
 
-        # if not self.clean_attends_to_clean:
-        #     self.static_attention_mask[:self.config.length, :self.config.length] *= (~block_diagonal_mask)
-        #     self.static_attention_mask[:self.config.length, :self.config.length] = torch.eye(self.config.length, device=self.static_attention_mask.device).bool()
+            # if not self.clean_attends_to_clean:
+            #     self.static_attention_mask[:self.config.length, :self.config.length] *= (~block_diagonal_mask)
+            #     self.static_attention_mask[:self.config.length, :self.config.length] = torch.eye(self.config.length, device=self.static_attention_mask.device).bool()
 
-        # # -- Attention to masked tokens --
-        # if self.mask_to_mask_interaction:
-        #     if self.attn_sink_only:
-        #         mask_len = self.config.length
-        #     else:
-        #         mask_len = self.config.length
-        #     self.static_attention_mask = F.pad(self.static_attention_mask, (0, mask_len, 0, mask_len), value=False)
+            # # -- Attention to masked tokens --
+            # if self.mask_to_mask_interaction:
+            #     if self.attn_sink_only:
+            #         mask_len = self.config.length
+            #     else:
+            #         mask_len = self.config.length
+            #     self.static_attention_mask = F.pad(self.static_attention_mask, (0, mask_len, 0, mask_len), value=False)
 
-        #     self.static_attention_mask[-mask_len:, -mask_len:] = block_diagonal_mask#[:mask_len, :mask_len]
+            #     self.static_attention_mask[-mask_len:, -mask_len:] = block_diagonal_mask#[:mask_len, :mask_len]
 
-        #     # can attend to previous clean blocks
-        #     if self.clean_block_caching:
-        #         self.static_attention_mask[-mask_len:, self.config.length*2:-mask_len] = offset_block_causal_mask
-        #     else:
-        #         self.static_attention_mask[-mask_len:, :self.config.length] = offset_block_causal_mask#[:mask_len]
+            #     # can attend to previous clean blocks
+            #     if self.clean_block_caching:
+            #         self.static_attention_mask[-mask_len:, self.config.length*2:-mask_len] = offset_block_causal_mask
+            #     else:
+            #         self.static_attention_mask[-mask_len:, :self.config.length] = offset_block_causal_mask#[:mask_len]
 
-        #     # mask tokens can attend to offset blocks
-        #     if self.attn_sink_only:
-        #         self.static_attention_mask[self.config.length:self.config.length*2, -mask_len:] = True
-        #     else:
-        #         self.static_attention_mask[self.config.length:self.config.length*2, -mask_len:] = (upper_tri * block_diagonal_mask)
-        
-        #     if self.clean_attends_to_mask:
-        #         self.static_attention_mask[:mask_len, -mask_len:] = (upper_tri * block_diagonal_mask)#[:mask_len, :mask_len]
+            #     # mask tokens can attend to offset blocks
+            #     if self.attn_sink_only:
+            #         self.static_attention_mask[self.config.length:self.config.length*2, -mask_len:] = True
+            #     else:
+            #         self.static_attention_mask[self.config.length:self.config.length*2, -mask_len:] = (upper_tri * block_diagonal_mask)
+            
+            #     if self.clean_attends_to_mask:
+            #         self.static_attention_mask[:mask_len, -mask_len:] = (upper_tri * block_diagonal_mask)#[:mask_len, :mask_len]
+        else:
+            raise ValueError("Unknown attention backend")
 
     def _compute_loss(
         self,
@@ -1685,12 +1727,40 @@ class AnyOrderBD3LM(BD3LM):
         #     )
         # else:
         num_repetitions = self.static_attention_mask.shape[1] // input_ids.shape[1]
-
-        decoder_attention_mask = (
-            self.static_attention_mask[None, ...]
-            & attention_mask.repeat(1, num_repetitions)[:, None, :]
-            & attention_mask.repeat(1, num_repetitions)[..., None]
-        )
+        if self.config.attn_backend == "sdpa":
+            decoder_attention_mask = (
+                self.static_attention_mask[None, ...]
+                & attention_mask.repeat(1, num_repetitions)[:, None, :]
+                & attention_mask.repeat(1, num_repetitions)[..., None]
+            )
+        elif self.config.attn_backend == "flex_attention":
+            if context_mask.any():
+                raise NotImplementedError(
+                    "flex_attention with context_mask not implemented yet."
+                )
+            elif attention_mask is not None and (attention_mask != 1).any():
+                padding_mask = create_attn_mask(attention_mask.repeat(1, 2).bool())
+                dec_masks = [
+                    partial(
+                        self._block_mask,
+                        block_size=self.config.block_size
+                        if self.training
+                        else self.config.eval_block_size,
+                        seq_length=self.config.length,
+                    ),
+                    padding_mask,
+                ]
+                decoder_attention_mask = create_block_mask(
+                    and_masks(*dec_masks),
+                    B=input_ids.shape[0],
+                    H=None,
+                    Q_LEN=input_ids.shape[1],
+                    KV_LEN=input_ids.shape[1] * 2,
+                )
+            else:
+                decoder_attention_mask = self.static_attention_mask
+        else:
+            raise ValueError("Unknown attention backend")
         if permute_flag.any():
             seq_len = input_ids.shape[1]
             perm_indices_cols = perm_indices.repeat(1, num_repetitions)
@@ -1703,26 +1773,30 @@ class AnyOrderBD3LM(BD3LM):
                 perm_indices_cols[:, seq_len*2:] += seq_len * 2
             if num_repetitions > 3:
                 perm_indices_cols[:, seq_len*3:] += seq_len * 3
-            # permute rows
-            decoder_attention_mask_perm = decoder_attention_mask[
-                torch.arange(batch_size).unsqueeze(1), perm_indices_cols.argsort(dim=-1)]
-            # permute columns
-            decoder_attention_mask_perm = torch.gather(
-                decoder_attention_mask_perm,
-                dim=-1,
-                index=perm_indices_cols.argsort(dim=-1)[:, None, :].expand(
-                    batch_size, decoder_attention_mask_perm.shape[-1], decoder_attention_mask.shape[-1]
+            
+            if self.config.attn_backend == "sdpa":
+                # permute rows
+                decoder_attention_mask_perm = decoder_attention_mask[
+                    torch.arange(batch_size).unsqueeze(1), perm_indices_cols.argsort(dim=-1)]
+                # permute columns
+                decoder_attention_mask_perm = torch.gather(
+                    decoder_attention_mask_perm,
+                    dim=-1,
+                    index=perm_indices_cols.argsort(dim=-1)[:, None, :].expand(
+                        batch_size, decoder_attention_mask_perm.shape[-1], decoder_attention_mask.shape[-1]
+                    )
                 )
-            )
 
-            # self-attention
-            decoder_attention_mask_perm[:, torch.arange(seq_len), torch.arange(seq_len)] = 1
-            decoder_attention_mask_perm[:, torch.arange(seq_len, seq_len*2), torch.arange(seq_len, seq_len*2)] = 1
-            # if num_repetitions > 2:
-            #     decoder_attention_mask_perm[:, torch.arange(seq_len*2, seq_len*3), torch.arange(seq_len*2, seq_len*3)] = 1
-            # if num_repetitions > 3:
-            #     decoder_attention_mask_perm[:, torch.arange(seq_len*3, seq_len*4), torch.arange(seq_len*3, seq_len*4)] = 1
-            decoder_attention_mask = decoder_attention_mask_perm
+                # self-attention
+                decoder_attention_mask_perm[:, torch.arange(seq_len), torch.arange(seq_len)] = 1
+                decoder_attention_mask_perm[:, torch.arange(seq_len, seq_len*2), torch.arange(seq_len, seq_len*2)] = 1
+                # if num_repetitions > 2:
+                #     decoder_attention_mask_perm[:, torch.arange(seq_len*2, seq_len*3), torch.arange(seq_len*2, seq_len*3)] = 1
+                # if num_repetitions > 3:
+                #     decoder_attention_mask_perm[:, torch.arange(seq_len*3, seq_len*4), torch.arange(seq_len*3, seq_len*4)] = 1
+                decoder_attention_mask = decoder_attention_mask_perm
+            elif self.config.attn_backend == "flex_attention":
+                raise NotImplementedError("Permutation of block mask not implmented yet")
 
         decoder_attention_mask = self._preprocess_attention_mask(
             decoder_attention_mask[:, None], dtype=torch.float
