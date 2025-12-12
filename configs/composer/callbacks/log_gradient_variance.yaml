@@ -3,3 +3,4 @@ log_gradient_variance:
   accumulation_steps: 10
   log_frequency: 1
   include_embedding_params: false
+  log_per_param_variance: false

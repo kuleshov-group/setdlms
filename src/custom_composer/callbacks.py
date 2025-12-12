@@ -492,6 +492,7 @@ class LogGradientVariance(Callback):
         accumulation_steps: int = 10,
         log_frequency: int = 1,
         include_embedding_params: bool = False,
+        log_per_param_variance: bool = False,
         *args: Any,
         **kwargs: Any,
     ):
@@ -499,6 +500,7 @@ class LogGradientVariance(Callback):
         self.accumulation_steps = accumulation_steps
         self.log_frequency = log_frequency
         self.include_embedding_params = include_embedding_params
+        self.log_per_param_variance = log_per_param_variance
         self.step_count = 0
         self.accumulated_grads: list[dict[str, torch.Tensor]] = []
 
@@ -538,6 +540,13 @@ class LogGradientVariance(Callback):
             metrics = self._compute_variance_across_steps()
             if metrics:
                 logger.log_metrics(metrics)
+                # Also log per-parameter variances directly to wandb if enabled
+                if self.log_per_param_variance and wandb.run is not None:
+                    per_param_metrics = {
+                        k: v for k, v in metrics.items() if k.startswith("grad_stats/variance_per_param/")
+                    }
+                    if per_param_metrics:
+                        wandb.log(per_param_metrics)
             self.accumulated_grads.clear()
 
     def _compute_variance_across_steps(self) -> dict[str, float]:
@@ -563,6 +572,25 @@ class LogGradientVariance(Callback):
             metrics["grad_stats/variance"] = total_variance.item()
         else:
             metrics["grad_stats/variance_non_embedding"] = total_variance.item()
+        
+        # Optionally compute and log per-parameter variances
+        if self.log_per_param_variance:
+            for param_name in param_names:
+                # Stack gradients for this parameter across all steps
+                param_gradients = torch.stack(
+                    [step_grads[param_name] for step_grads in self.accumulated_grads],
+                    dim=0,
+                )
+                # Compute variance: mean squared deviation from mean
+                param_mean = param_gradients.mean(dim=0)
+                param_variance = torch.norm(
+                    param_gradients - param_mean, p=2, dim=1
+                ).pow(2).mean().item()
+                
+                # Sanitize parameter name for metric key (replace dots and slashes)
+                sanitized_name = param_name.replace(".", "/").replace("\\", "/")
+                metrics[f"grad_stats/variance_per_param/{sanitized_name}"] = param_variance
+        
         return metrics
 
 class WarmupWithFrozenEncoder(Callback):
