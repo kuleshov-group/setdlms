@@ -264,6 +264,13 @@ class MDLM(Denoiser):
         )
         cache = cache if cache is not None else {}
         past_key_values = cache.pop("past_key_values", DynamicCache())
+        # Pad input_ids/context_mask to full context length
+        pad_length = self.config.length - input_ids.shape[-1]
+        input_ids = F.pad(input_ids, (0, pad_length), value=self.mask_token_id)
+        if attention_mask is not None:
+            attention_mask = F.pad(attention_mask, (0, pad_length), value=1)
+        if context_mask is not None:
+            context_mask = F.pad(context_mask, (0, pad_length), value=0)
         if context is not None:
             if input_ids is not None:
                 if context_mask is None:
@@ -289,6 +296,7 @@ class MDLM(Denoiser):
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             context_mask=context_mask,
+            pad_length=pad_length,
             backbone_kwargs=backbone_kwargs | {"use_cache": False},
         ), cache
 
@@ -430,6 +438,10 @@ class MDLM(Denoiser):
                 )
             backbone_output = {k: v for k, v in backbone_output.items()}
             logits = backbone_output.pop("logits")
+            # Remove any additional padding (for inference of MDLM-style models)
+            if hasattr(denoiser_inputs, "pad_length") and denoiser_inputs.pad_length is not None:
+                logits = logits[:, :-denoiser_inputs.pad_length, :]
+                denoiser_inputs.xt = denoiser_inputs.xt[:, :-denoiser_inputs.pad_length]
             cache = cache | backbone_output
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             if logits_processor is not None:
@@ -591,11 +603,15 @@ class MDLM(Denoiser):
         )
         for block_id in block_pbar:
             block_NFEs = 0
-            xt = accumulated_samples[
-                :,
-                inputs_offset + (block_id * block_size) : inputs_offset
-                + ((block_id + 1) * block_size),
-            ]
+            if generation_config.use_cache and self.config.block_size < self.config.length:
+                xt = accumulated_samples[
+                    :,
+                    inputs_offset + (block_id * block_size) : inputs_offset
+                    + ((block_id + 1) * block_size),
+                ]
+            else:
+                xt = accumulated_samples[
+                    :, : inputs_offset + ((block_id + 1) * block_size)]
             if self.mask_token_id not in xt:
                 continue
             step_pbar = tqdm(
@@ -659,7 +675,7 @@ class MDLM(Denoiser):
                 :,
                 inputs_offset + (block_id * block_size) : inputs_offset
                 + ((block_id + 1) * block_size),
-            ] = xt
+            ] = xt[..., -block_size:]
             if tokenizer is not None:  # Useful for debugging
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
@@ -676,7 +692,7 @@ class MDLM(Denoiser):
                         : inputs_offset + ((block_id + 1) * block_size),
                     ]
                     break
-            if generation_config.use_cache:
+            if generation_config.use_cache and self.config.block_size < self.config.length:
                 cache = self.update_cache(
                     inputs=xt,
                     cache=cache,

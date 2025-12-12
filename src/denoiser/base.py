@@ -50,6 +50,7 @@ class DenoiserInput(OrderedDict):
     t: Optional[torch.FloatTensor] = None  # (B,) | # (B, L)
     alpha_t: Optional[torch.FloatTensor] = None  # (B,) | (B, 1|L) | (B, 1|L, 1)
     alpha_t_prime: Optional[torch.FloatTensor] = None  # (B,) | (B, 1|L) | (B, 1|L, 1)
+    pad_length: Optional[int] = None
     backbone_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
