@@ -50,7 +50,6 @@ class DenoiserInput(OrderedDict):
     t: Optional[torch.FloatTensor] = None  # (B,) | # (B, L)
     alpha_t: Optional[torch.FloatTensor] = None  # (B,) | (B, 1|L) | (B, 1|L, 1)
     alpha_t_prime: Optional[torch.FloatTensor] = None  # (B,) | (B, 1|L) | (B, 1|L, 1)
-    pad_length: Optional[int] = None
     backbone_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
@@ -427,7 +426,6 @@ class Denoiser(ABC, PreTrainedModel):
         with torch.amp.autocast(inputs.device.type, dtype=torch.float32):
             backbone_output = self._backbone_forward(
                 context_input,
-                return_updated_cache=True,  # Will get absorbed in backbone_kwargs
                 **cache,
             )
         backbone_output = {k: v for k, v in backbone_output.items()}

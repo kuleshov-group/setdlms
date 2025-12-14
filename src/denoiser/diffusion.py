@@ -11,7 +11,7 @@ from transformers import (
     StoppingCriteriaList,
 )
 from transformers.cache_utils import Cache, DynamicCache
-
+import math
 try:
     from torch.nn.attention.flex_attention import (
         BlockMask,
@@ -264,23 +264,6 @@ class MDLM(Denoiser):
         )
         cache = cache if cache is not None else {}
         past_key_values = cache.pop("past_key_values", DynamicCache())
-        # Pad input_ids/context_mask to full context length
-        pad_length = self.config.length - input_ids.shape[-1]
-        input_ids = F.pad(input_ids, (0, pad_length), value=self.mask_token_id)
-        if attention_mask is not None:
-            attention_mask = F.pad(attention_mask, (0, pad_length), value=1)
-        if context_mask is not None:
-            context_mask = F.pad(context_mask, (0, pad_length), value=0)
-        if context is not None:
-            if input_ids is not None:
-                if context_mask is None:
-                    context_mask = torch.cat(
-                        [torch.ones_like(context), torch.zeros_like(input_ids)], dim=-1
-                    )
-                input_ids = torch.cat([context, input_ids], dim=-1)
-            else:
-                input_ids = context
-                context_mask = torch.ones_like(input_ids)
         if attention_mask is None:
             cache_length = self._get_past_key_values_seq_length(past_key_values)
             full_seq_length = cache_length + input_ids.shape[-1]
@@ -295,8 +278,6 @@ class MDLM(Denoiser):
             xt=input_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
-            context_mask=context_mask,
-            pad_length=pad_length,
             backbone_kwargs=backbone_kwargs | {"use_cache": False},
         ), cache
 
@@ -423,6 +404,7 @@ class MDLM(Denoiser):
         cache: Optional[Dict[str, Any]] = None,
         running_generation: Optional[torch.LongTensor] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
+        sample_indices: Optional[Tuple[int, int]] = None,
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
@@ -438,10 +420,6 @@ class MDLM(Denoiser):
                 )
             backbone_output = {k: v for k, v in backbone_output.items()}
             logits = backbone_output.pop("logits")
-            # Remove any additional padding (for inference of MDLM-style models)
-            if hasattr(denoiser_inputs, "pad_length") and denoiser_inputs.pad_length is not None:
-                logits = logits[:, :-denoiser_inputs.pad_length, :]
-                denoiser_inputs.xt = denoiser_inputs.xt[:, :-denoiser_inputs.pad_length]
             cache = cache | backbone_output
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             if logits_processor is not None:
@@ -490,7 +468,7 @@ class MDLM(Denoiser):
             # Noise
             num_noise_indices = torch.minimum(
                 ((1 - alpha_s) * generation_config.block_size).to(torch.int),
-                (denoiser_inputs.xt == self.mask_token_id).sum() - 1,  # type: ignore
+                (denoiser_inputs.xt[..., sample_indices] == self.mask_token_id).sum() - 1,  # type: ignore
             )
             if generation_config.confidence_based_noising:
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
@@ -499,7 +477,7 @@ class MDLM(Denoiser):
                     conf,
                     torch.inf,
                 )
-                noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
+                noise_indices = conf[..., sample_indices].argsort(dim=-1)[..., :num_noise_indices] + sample_indices[0]
             elif generation_config.confidence_margin_based_noising:
                 top2 = torch.topk(x_theta, k=2, dim=-1).values  # shape: (B, L, 2)
                 conf = (top2[..., 0] - top2[..., 1]).abs()
@@ -513,6 +491,8 @@ class MDLM(Denoiser):
                 # TODO: implement random noise indices selection
                 raise NotImplementedError
             output[..., noise_indices] = self.mask_token_id
+            if sample_indices is not None and sample_indices[-1] < self.config.length:
+                output[..., sample_indices[-1]+1:] = self.mask_token_id
             output = torch.where(
                 xs_probs >= generation_config.confidence_threshold, xs, output
             )
@@ -552,20 +532,28 @@ class MDLM(Denoiser):
             else:
                 max_length = self.max_length
         if max_new_tokens is None:
-            if hasattr(generation_config, "max_new_tokens"):
-                max_new_tokens = generation_config.max_new_tokens
-            else:
+            if max_length is not None:
                 max_new_tokens = max_length - inputs.shape[-1]
+            else:
+                if hasattr(generation_config, "max_new_tokens"):
+                    max_new_tokens = generation_config.max_new_tokens
+                else:
+                    max_new_tokens = max_length - inputs.shape[-1]
         batch_size = batch_size if batch_size is not None else inputs.shape[0]
         assert batch_size == 1, "Batched sampling not supported yet"
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         block_size = generation_config.block_size
-        max_blocks = max_new_tokens // block_size
+        if getattr(self.config, "block_size", self.config.length) == self.config.length:
+            num_mask_tokens = self.config.length - inputs.shape[-1]
+            max_blocks = math.ceil(num_mask_tokens / block_size)
+        else:
+            max_blocks = max_new_tokens // block_size
+            num_mask_tokens = max_blocks * block_size
 
         # Sample max generation length tensor from prior
         accumulated_samples = self.mask_token_id * torch.ones(
-            (batch_size, max_blocks * block_size), dtype=torch.int64, device=device
+            (batch_size, num_mask_tokens), dtype=torch.int64, device=device
         )
         accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if generation_config.use_cache and inputs.numel() > 0:
@@ -603,7 +591,9 @@ class MDLM(Denoiser):
         )
         for block_id in block_pbar:
             block_NFEs = 0
-            if generation_config.use_cache and self.config.block_size < self.config.length:
+            if getattr(self.config, "block_size", self.config.length) == self.config.length:
+                xt = accumulated_samples
+            elif generation_config.use_cache:
                 xt = accumulated_samples[
                     :,
                     inputs_offset + (block_id * block_size) : inputs_offset
@@ -628,10 +618,14 @@ class MDLM(Denoiser):
                 else None
             )
             # Used for logit processing
-            running_generation = accumulated_samples[
-                :,
-                inputs_offset : inputs_offset + (block_id * block_size),
-            ]
+            if getattr(self.config, "block_size", self.config.length) == self.config.length:
+                running_generation = accumulated_samples
+            else:
+                running_generation = accumulated_samples[
+                    :,
+                    inputs_offset : inputs_offset + (block_id * block_size),
+                ]
+            sample_indices = torch.arange(inputs_offset + (block_id * block_size), min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]))
             for t in step_pbar:
                 if model_output_cache is None:
                     block_NFEs += 1
@@ -656,6 +650,7 @@ class MDLM(Denoiser):
                     running_generation=running_generation,  # type: ignore
                     logits_processor=logits_processor,
                     tokenizer=tokenizer,
+                    sample_indices=sample_indices,
                     **kwargs,
                 )
                 block_pbar.set_postfix(
@@ -666,16 +661,17 @@ class MDLM(Denoiser):
                 if not torch.allclose(xs, denoiser_inputs.xt):
                     model_output_cache = None
                 if not generation_config.use_cache:
-                    xt[..., -block_size:] = xs[..., -block_size:]
+                    xt[..., sample_indices] = xs[..., sample_indices]                    
                 else:
                     xt = xs
                 if (xt == self.mask_token_id).sum().item() == 0:
                     break
-            accumulated_samples[
-                :,
-                inputs_offset + (block_id * block_size) : inputs_offset
-                + ((block_id + 1) * block_size),
-            ] = xt[..., -block_size:]
+            if not generation_config.use_cache:
+                accumulated_samples[..., sample_indices] = xt[..., sample_indices]
+            else:
+                accumulated_samples[
+                    :, sample_indices
+                ] = xt[..., -block_size:]
             if tokenizer is not None:  # Useful for debugging
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
@@ -692,7 +688,7 @@ class MDLM(Denoiser):
                         : inputs_offset + ((block_id + 1) * block_size),
                     ]
                     break
-            if generation_config.use_cache and self.config.block_size < self.config.length:
+            if generation_config.use_cache and getattr(self.config, "block_size", self.config.length) < self.config.length:
                 cache = self.update_cache(
                     inputs=xt,
                     cache=cache,
