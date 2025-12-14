@@ -15,6 +15,14 @@ from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
+try:
+    from transformers.utils import use_kernel_forward_from_hub
+except ImportError:
+    # Fallback if decorator is not available
+    def use_kernel_forward_from_hub(kernel_name):
+        def decorator(cls):
+            return cls
+        return decorator
 
 from typing import Any
 import torch
@@ -202,6 +210,7 @@ def apply_rotary_pos_emb(qkv, cos, sin):
 def regular_attention_multi_headed(q, k, v):
   # Assuming qkv is a tensor with shape [batch, seq_len, 3, num_heads, head_dim]
   # where the 3 represents Q, K, V packed in that order
+  import ipdb ; ipdb.set_trace()
   attention_output = F.scaled_dot_product_attention(
     query=q.transpose(1, 2),
     key=k.transpose(1, 2),
@@ -226,6 +235,34 @@ class LayerNorm(nn.Module):
     with torch.amp.autocast('cuda', enabled=False):
       x = F.layer_norm(x.float(), [self.dim])
     return x * self.weight[None, None, :]
+
+
+@use_kernel_forward_from_hub("RMSNorm")
+class RMSNorm(nn.Module):
+  """Root Mean Square Layer Normalization.
+  
+  RMSNorm is equivalent to T5LayerNorm and Qwen3RMSNorm.
+  RMSNorm normalizes by RMS instead of mean and variance, which is simpler
+  and often works as well as LayerNorm.
+  """
+  def __init__(self, hidden_size=None, dim=None, eps=1e-6):
+    super().__init__()
+    # Support both hidden_size (Qwen3 style) and dim (backward compatibility)
+    size = hidden_size if hidden_size is not None else dim
+    if size is None:
+      raise ValueError("Either hidden_size or dim must be provided")
+    self.weight = nn.Parameter(torch.ones(size))
+    self.variance_epsilon = eps
+    
+  def forward(self, hidden_states):
+    input_dtype = hidden_states.dtype
+    hidden_states = hidden_states.to(torch.float32)
+    variance = hidden_states.pow(2).mean(-1, keepdim=True)
+    hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+    return self.weight * hidden_states.to(input_dtype)
+    
+  def extra_repr(self):
+    return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
 def residual_linear(x, W, x_skip, residual_scale):
@@ -305,18 +342,24 @@ class LabelEmbedder(nn.Module):
 #################################################################################
 
 class DDiTBlockCausal(nn.Module):
-  def __init__(self, n, dim, n_heads, mlp_ratio=4, dropout=0.1, max_seqlen=1024, adaLN=False, cond_dim=None, attn_backend='flash_attn'):
+  def __init__(self, n, dim, n_heads, mlp_ratio=4, dropout=0.1, max_seqlen=1024, adaLN=False, cond_dim=None, attn_backend='flash_attn', norm_type='layernorm'):
     super().__init__()
     self.n_heads = n_heads
     self.max_seqlen = max_seqlen
     self.n = n
 
-    self.norm1 = LayerNorm(dim)
+    if norm_type == 'rmsnorm':
+      self.norm1 = RMSNorm(dim)
+    else:
+      self.norm1 = LayerNorm(dim)
     self.attn_qkv = nn.Linear(dim, 3 * dim, bias=False)
     self.attn_out = nn.Linear(dim, dim, bias=False)
     self.dropout1 = nn.Dropout(dropout)
 
-    self.norm2 = LayerNorm(dim)
+    if norm_type == 'rmsnorm':
+      self.norm2 = RMSNorm(dim)
+    else:
+      self.norm2 = LayerNorm(dim)
     self.mlp = nn.Sequential(
       nn.Linear(dim, mlp_ratio * dim, bias=True),
       nn.GELU(approximate='tanh'),
@@ -329,7 +372,7 @@ class DDiTBlockCausal(nn.Module):
       self.adaLN_modulation.weight.data.zero_()
       self.adaLN_modulation.bias.data.zero_()
     self.attn_backend = attn_backend
-
+    self.norm_type = norm_type
   def _get_bias_dropout_scale(self):
     if self.training:
       return bias_dropout_add_scale_fused_train
@@ -431,7 +474,7 @@ class DDiTBlock(nn.Module):
   def __init__(self, n, dim, n_heads, adaLN,
                latent_dim=None, cond_dim=None,
                latent_conditioning=-1, mlp_ratio=4,
-               dropout=0.1, block_size=1, max_seqlen=1024, attn_backend='flash_attn'):
+               dropout=0.1, block_size=1, max_seqlen=1024, attn_backend='flash_attn', norm_type='layernorm'):
     super().__init__()
     self.max_seqlen = max_seqlen
     self.n = n
@@ -440,12 +483,22 @@ class DDiTBlock(nn.Module):
     self.latent_conditioning = latent_conditioning
     self.block_size = block_size
 
-    self.norm1 = LayerNorm(dim)
+    if norm_type == 'rmsnorm':
+      self.norm1 = RMSNorm(dim)
+    else:
+      self.norm1 = LayerNorm(dim)
     self.attn_qkv = nn.Linear(dim, 3 * dim, bias=False)
     self.attn_out = nn.Linear(dim, dim, bias=False)
     self.dropout1 = nn.Dropout(dropout)
 
-    self.norm2 = LayerNorm(dim)
+    if norm_type == 'rmsnorm':
+      self.norm2 = RMSNorm(dim)
+    else:
+      self.norm2 = LayerNorm(dim)
+
+    if norm_type == "qknorm":
+      self.q_norm = LayerNorm(dim // n_heads)
+      self.k_norm = LayerNorm(dim // n_heads)
     self.mlp = nn.Sequential(
       nn.Linear(dim, mlp_ratio * dim, bias=True),
       nn.GELU(approximate='tanh'),
@@ -459,7 +512,7 @@ class DDiTBlock(nn.Module):
       self.adaLN_modulation.weight.data.zero_()
       self.adaLN_modulation.bias.data.zero_()
     self.attn_backend = attn_backend
-
+    self.norm_type = norm_type
   def _get_bias_dropout_scale(self):
     if self.training:
       return bias_dropout_add_scale_fused_train
@@ -474,6 +527,11 @@ class DDiTBlock(nn.Module):
       'b s (three h d) -> b s three h d',
       three=3,
       h=self.n_heads)
+
+    if self.norm_type == "qknorm":
+      q_states = self.q_norm(qkv[:, :, 0])
+      k_states = self.k_norm(qkv[:, :, 1])
+      qkv = torch.stack([q_states, k_states, qkv[:, :, 2]], dim=2)
     with torch.amp.autocast('cuda', enabled=False):
       cos, sin = rotary_cos_sin
       if self.attn_backend == 'flash_attn':
@@ -581,9 +639,12 @@ class EmbeddingLayer(nn.Module):
 
 class DDiTFinalLayer(nn.Module):
   def __init__(self, hidden_size, out_channels, cond_dim, 
-               adaLN, tie_word_embeddings=False):
+               adaLN, tie_word_embeddings=False, norm_type='layernorm'):
     super().__init__()
-    self.norm_final = LayerNorm(hidden_size)
+    if norm_type == 'rmsnorm':
+      self.norm_final = RMSNorm(hidden_size)
+    else:
+      self.norm_final = LayerNorm(hidden_size)
     self.linear = nn.Linear(hidden_size, out_channels)
     self.linear.weight.data.zero_()
     self.linear.bias.data.zero_()
@@ -595,6 +656,7 @@ class DDiTFinalLayer(nn.Module):
       self.adaLN_modulation.weight.data.zero_()
       self.adaLN_modulation.bias.data.zero_()
     self.tie_word_embeddings = tie_word_embeddings
+    self.norm_type = norm_type
 
   def forward(self, x, c):
     x = self.norm_final(x)
@@ -622,7 +684,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         tie_word_embeddings: bool,
         vocab_size: int,
         block_size: int,
-        attn_backend: str):
+        attn_backend: str,
+        norm_type: str):
     super().__init__()
     self.causal = causal_attention
     self.n = length
@@ -632,6 +695,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     dim = hidden_size
     cond_dim = cond_dim
     self.n_heads = n_heads
+    self.norm_type = norm_type
     self.vocab_embed = EmbeddingLayer(dim, vocab_size)
     if self.adaLN == True:
       self.sigma_map = TimestepEmbedder(cond_dim)
@@ -649,7 +713,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           dropout=dropout,
           adaLN=self.adaLN,
           cond_dim=cond_dim,
-          attn_backend=self.attn_backend)
+          attn_backend=self.attn_backend,
+          norm_type=self.norm_type)
       else:
         block = DDiTBlock(
           n=length,
@@ -660,7 +725,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           dropout=dropout,
           block_size=self.block_size,
           attn_backend=self.attn_backend,
-          max_seqlen=self.max_seqlen)
+          max_seqlen=self.max_seqlen,
+          norm_type=self.norm_type)
       blocks.append(block)
     self.blocks = nn.ModuleList(blocks)
     self.output_layer = DDiTFinalLayer(
@@ -668,7 +734,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       out_channels=vocab_size,
       cond_dim=cond_dim,
       adaLN=self.adaLN,
-      tie_word_embeddings=tie_word_embeddings)
+      tie_word_embeddings=tie_word_embeddings,
+      norm_type=self.norm_type)
     print(self)
 
   def _get_bias_dropout_scale(self):

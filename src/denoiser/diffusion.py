@@ -214,7 +214,7 @@ class MDLM(Denoiser):
         while alpha_t.ndim < 2:
             alpha_t = alpha_t[..., None]
             alpha_t_prime = alpha_t_prime[..., None]
-        noise_mask = context_mask & attention_mask
+        noise_mask = context_mask | ~(attention_mask.bool())
         xt = self._sample_q_xt(
             x0=input_ids,
             alpha_t=alpha_t,
