@@ -25,17 +25,17 @@ MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG="aoarm_dropout${DROPOUT}_norm${NORM_TYPE}_v1"
+TAG="aoarm_dropout${DROPOUT}_norm${NORM_TYPE}_v2"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=lm1b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
-    MICRO_BATCH_SIZE=64
+    MICRO_BATCH_SIZE=32
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=64
+    MICRO_BATCH_SIZE=32
 else
-    MICRO_BATCH_SIZE=64
+    MICRO_BATCH_SIZE=32
 fi
 NUM_WORKERS=0
 
@@ -47,7 +47,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   dataset@train_dataset=lm1b_train \
   dataset@eval_dataset=lm1b_eval \
   composer.optimizer.lr=${LR} \
-  composer.trainer.eval_interval="1000ba" \
+  composer.trainer.eval_interval="10000ba" \
   composer.trainer.max_duration=${MAX_DURATION} \
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=constant_with_warmup \
