@@ -1,0 +1,9 @@
+defaults:
+  - base@_here_
+  - _self_
+
+dataset:
+  _target_: src.datasets.tokenize_on_demand.ROCStoriesDataset
+  num_target_sentences: 1
+  max_samples: null
+  padding: false

@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple, Union
+import inspect
 
 import hydra.utils
 import torch
@@ -303,6 +304,12 @@ class Denoiser(ABC, PreTrainedModel):
         Returns:
             Backbone output (ModelOutput instance).
         """
+        # HACK FOR MDLM
+        if "timesteps" in inspect.signature(self.backbone.forward).parameters:
+            return self.backbone(
+                denoiser_inputs.xt,
+                timesteps=torch.zeros_like(denoiser_inputs.xt[:, 0]),
+            )
         return self.backbone(
             denoiser_inputs.xt,
             attention_mask=denoiser_inputs.attention_mask,

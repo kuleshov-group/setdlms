@@ -1,0 +1,5 @@
+_target_: src.datasets.tokenize_on_demand.ROCStoriesDataset
+max_length: ${model.config.length}
+dataset_path: "eval_datasets/cloze_test_val__spring2016.csv"
+padding: false
+num_target_sentences: 1

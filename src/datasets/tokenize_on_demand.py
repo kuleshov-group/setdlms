@@ -7,6 +7,7 @@ from torch.utils.data.dataset import Dataset
 from transformers import PreTrainedTokenizer
 
 from datasets import load_dataset
+import csv
 
 _QUESTION_PREFIX = (
     "Please reason step by step, and put your final answer within $\\boxed{}$. "
@@ -504,3 +505,76 @@ class WMTDataset(Dataset):
                 "attention_mask": attention_mask,
                 "context_mask": context_mask,
             }
+
+
+class ROCStoriesDataset(Dataset):
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        split: Literal["train", "validation", "test"],
+        max_length: int,
+        dataset_path: str = "eval_datasets/cloze_test_val__spring2016.csv",
+        padding: bool = False,
+        num_target_sentences: int = 1,
+        max_samples: int | None = None,
+        # Unused tokenizer arg (compat. with other dataset loading functions/classes)
+        **_: Dict[str, Any],
+    ):
+        self.tokenizer = tokenizer
+        self.num_target_sentences = num_target_sentences
+        assert self.num_target_sentences in [1, 3], "Only 1 or 3 target sentences are supported"
+        self.max_length = max_length
+        self.padding = padding
+        self.dataset = []
+        with open(dataset_path) as f:
+            reader = csv.reader(f)
+            next(reader)
+            for row in reader:
+                sents = row[1:-3] + [row[-3] if row[-1] == "1" else row[-2]]
+                self.dataset.append(sents)
+                if max_samples is not None and len(self.dataset) >= max_samples:
+                    break
+
+    @property
+    def target_references(self) -> list[str]:
+        """Helper method to retrieve list of ground truth labels for downstream eval."""
+        if self.num_target_sentences == 1:
+            return [story[2] for story in self.dataset]
+        elif self.num_target_sentences == 3:
+            return [story[1] + " " + story[2] + " " + story[3] for story in self.dataset]
+        else:
+            raise ValueError(f"Invalid number of target sentences: {self.num_target_sentences}")
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        story = self.dataset[idx]
+        if self.num_target_sentences == 1:
+            prompt = story[0] + " " + story[1]
+            suffix = story[3] + " " + story[4]
+            middle = story[2]
+        else:
+            prompt = story[0]
+            suffix = story[4]
+            middle = story[1] + " " + story[2] + " " + story[3]
+
+        prefix_ids = self.tokenizer(prompt).input_ids
+        suffix_ids = self.tokenizer(suffix).input_ids
+        middle_ids = self.tokenizer(middle).input_ids
+
+        input_ids = prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) + suffix_ids
+        input_ids = torch.LongTensor(input_ids)
+
+        total_len = input_ids.shape[-1]
+        attention_mask = torch.ones_like(input_ids)
+
+        if self.padding:
+            input_ids = torch.nn.functional.pad(input_ids, (0, self.max_length - len(input_ids)), value=self.tokenizer.pad_token_id)
+            attention_mask = torch.nn.functional.pad(attention_mask, (0, self.max_length - len(attention_mask)), value=0)
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }

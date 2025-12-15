@@ -99,6 +99,22 @@ def main(cfg: DictConfig) -> None:
                 revision=getattr(cfg, "pretrained_model_revision", None),
                 **getattr(cfg, "model_config_overrides", {}),
             )
+    # HACK FOR MDLM
+    if not hasattr(model, "generate"):
+        from src.denoiser.diffusion import MDLM, MDLMConfig
+        from src.noise_schedule.noise_schedules import LinearNoise
+        mdlm_config = MDLMConfig(
+            length=model.config.model_length,
+        )
+        mdlm_config.mask_token_id = tokenizer.mask_token_id
+        mdlm_config.vocab_size = model.config.vocab_size
+        model_ = MDLM(
+            mdlm_config,
+            tokenizer=tokenizer,
+        )
+        model_.backbone = model
+        model = model_.to(device)
+        model.noise_schedule = LinearNoise()
     model = model.to(device)
     if local_rank == 0:
         print(f"Num. params: {format_number(count_parameters(model, trainable=False))}")
@@ -115,6 +131,7 @@ def main(cfg: DictConfig) -> None:
     # Iterate through the dataset and sample
     generated_samples = []
     tputs = []
+    references = dataset.target_references
     for elem_id, elem in tqdm(
         enumerate(dataloader),
         desc="Generating",
@@ -147,7 +164,7 @@ def main(cfg: DictConfig) -> None:
         else:
             start_event, end_event = None, None
         input_ids = elem["input_ids"].to(device)  # type: ignore
-        if dataset.target_prompt_text is not None:
+        if getattr(dataset, "target_prompt_text", None) is not None:
             prompt_ids = (
                 torch.tensor(tokenizer.encode(dataset.target_prompt_text.strip()))
                 .to(input_ids.dtype)
@@ -169,9 +186,12 @@ def main(cfg: DictConfig) -> None:
                 elapsed_time_s = start_event.elapsed_time(end_event) / 1000
                 if elem_id >= THROUGHPUT_WARMUP:
                     tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
-        outputs = outputs[:, input_ids.shape[-1] :]
+        if tokenizer.mask_token_id is not None and tokenizer.mask_token_id in elem["input_ids"]:
+            outputs = outputs[elem["input_ids"] == tokenizer.mask_token_id]
+        else:
+            outputs = outputs[:, input_ids.shape[-1] :].squeeze(0)
         # Decode the generated samples
-        outputs = tokenizer.decode(outputs[0])
+        outputs = tokenizer.decode(outputs)
         # Post-process:
         outputs = outputs.replace(" .", ".")
         if stop_tokens is not None:
@@ -181,6 +201,7 @@ def main(cfg: DictConfig) -> None:
         if local_rank == 0:
             print("Input:", tokenizer.decode(input_ids[0]))
             print("Output:", decoded_samples)
+            print("Ground truth:", references[elem_id])
             if elem_id >= THROUGHPUT_WARMUP:
                 print(f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
         generated_samples.append(decoded_samples)
