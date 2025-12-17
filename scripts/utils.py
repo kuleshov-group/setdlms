@@ -174,10 +174,10 @@ def load_model_from_ckpt_dir_path(
         device (torch.device | str): Device for torch.load(map_location=).
             Defaults to torch.device("cpu").
         model_config_overrides (dict[str, Any]): Optional overrides for
-            `config.model.config`.
-            Currently, this only supports overriding entries in config.model.config,
-            however overriding a nested entry value,
-            e.g., config.model.config.backbone_config.num_layers, will not work.
+            `config.model.config`. Supports both top-level and nested overrides.
+            For nested dictionaries, values are merged recursively. For example:
+            `{"backbone_config": {"num_layers": 32}}` will update only `num_layers`
+            while preserving other keys in `backbone_config`.
 
     Returns:
         Denoiser: The loaded denoiser model.
@@ -216,10 +216,34 @@ def load_model_from_ckpt_dir_path(
                     newkey = key.replace(prefix, replacement)
                     sd._metadata[newkey] = sd._metadata.pop(key)
 
+    def _deep_update(base_dict: dict, update_dict: dict) -> None:
+        """Recursively update a dictionary with values from another dictionary.
+        
+        Args:
+            base_dict: The dictionary to update in-place.
+            update_dict: The dictionary containing updates.
+        """
+        # Convert any DictConfig values to plain dicts for proper merging
+        if isinstance(update_dict, DictConfig):
+            update_dict = OmegaConf.to_container(update_dict, resolve=True)
+        
+        for k, v in update_dict.items():
+            # Convert nested DictConfig values to plain dicts
+            if isinstance(v, DictConfig):
+                v = OmegaConf.to_container(v, resolve=True)
+            
+            if k in base_dict and isinstance(base_dict[k], dict) and isinstance(v, dict):
+                _deep_update(base_dict[k], v)
+            else:
+                base_dict[k] = v
+
     with open(os.path.join(path_to_ckpt_dir, "config.yaml"), "rb") as f:
         config = yaml.safe_load(f)
-    for k, v in model_config_overrides.items():
-        config["model"]["config"][k] = v
+    if model_config_overrides:
+        # Convert OmegaConf DictConfig to plain dict to ensure proper merging
+        # This is important because nested DictConfigs don't pass isinstance(..., dict) checks
+        overrides_dict = OmegaConf.to_container(model_config_overrides, resolve=True) if isinstance(model_config_overrides, DictConfig) else model_config_overrides
+        _deep_update(config["model"]["config"], overrides_dict)
     config = OmegaConf.create(config)
 
     model = hydra.utils.instantiate(

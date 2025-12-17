@@ -1,6 +1,5 @@
 import gc
 import glob
-import ipdb
 import logging
 import os
 import pathlib
@@ -493,6 +492,9 @@ class LogGradientVariance(Callback):
         log_frequency: int = 1,
         include_embedding_params: bool = False,
         log_per_param_variance: bool = False,
+        log_outlier_params: bool = False,
+        outlier_top_k: int = 10,
+        outlier_threshold_multiplier: float = 2.0,
         *args: Any,
         **kwargs: Any,
     ):
@@ -501,6 +503,9 @@ class LogGradientVariance(Callback):
         self.log_frequency = log_frequency
         self.include_embedding_params = include_embedding_params
         self.log_per_param_variance = log_per_param_variance
+        self.log_outlier_params = log_outlier_params
+        self.outlier_top_k = outlier_top_k
+        self.outlier_threshold_multiplier = outlier_threshold_multiplier
         self.step_count = 0
         self.accumulated_grads: list[dict[str, torch.Tensor]] = []
 
@@ -590,6 +595,58 @@ class LogGradientVariance(Callback):
                 # Sanitize parameter name for metric key (replace dots and slashes)
                 sanitized_name = param_name.replace(".", "/").replace("\\", "/")
                 metrics[f"grad_stats/variance_per_param/{sanitized_name}"] = param_variance
+        
+        # Optionally identify and log outlier parameters contributing to high variance
+        if self.log_outlier_params:
+            param_contributions = {}
+            # Compute each parameter's contribution to total variance
+            for param_name in param_names:
+                # Stack gradients for this parameter across all steps
+                param_gradients = torch.stack(
+                    [step_grads[param_name] for step_grads in self.accumulated_grads],
+                    dim=0,
+                )
+                # Compute variance contribution: norm of deviations from mean
+                param_mean = param_gradients.mean(dim=0)
+                param_variance = torch.norm(
+                    param_gradients - param_mean, p=2, dim=1
+                ).pow(2)
+                # Contribution is the sum of squared norms across steps
+                contribution = param_variance.sum().item() / (all_gradients.shape[0] - 1)
+                param_contributions[param_name] = contribution
+            
+            if param_contributions:
+                # Sort by contribution (descending)
+                sorted_contributions = sorted(
+                    param_contributions.items(), key=lambda x: x[1], reverse=True
+                )
+                
+                # Compute statistics for outlier detection
+                contributions_array = np.array(list(param_contributions.values()))
+                mean_contribution = np.mean(contributions_array)
+                std_contribution = np.std(contributions_array)
+                threshold = mean_contribution + self.outlier_threshold_multiplier * std_contribution
+                
+                # Get top K outliers
+                top_k_outliers = sorted_contributions[:self.outlier_top_k]
+                
+                # Log outlier parameters
+                for rank, (param_name, contribution) in enumerate(top_k_outliers, 1):
+                    sanitized_name = param_name.replace(".", "/").replace("\\", "/")
+                    # Log contribution value
+                    metrics[f"grad_stats/outlier_contribution/{sanitized_name}"] = contribution
+                    # Log percentage contribution relative to total variance
+                    if total_variance.item() > 0:
+                        pct_contribution = (contribution / total_variance.item()) * 100.0
+                        metrics[f"grad_stats/outlier_contribution_pct/{sanitized_name}"] = pct_contribution
+                
+                # Log summary statistics
+                metrics["grad_stats/outlier_mean_contribution"] = mean_contribution
+                metrics["grad_stats/outlier_threshold"] = threshold
+                
+                # Log how many parameters exceed threshold
+                n_outliers = sum(1 for _, contrib in param_contributions.items() if contrib > threshold)
+                metrics["grad_stats/n_outliers"] = n_outliers
         
         return metrics
 

@@ -16,6 +16,7 @@ VOCAB_SIZE=50258
 DROPOUT=0.1
 NORM_TYPE=qknorm
 ATTN_BACKEND=sdpa
+ADALN=true
 
 # Hyperparameters
 LR=3e-4
@@ -23,7 +24,7 @@ WARMUP_DURATION="2500ba"
 BATCH_SIZE=512
 MAX_DURATION="1000000ba"
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
+PRETRAINED_MODEL_NAME_OR_PATH=/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4/49-800000.ckpt
 
 TAG="aoarm_dropout${DROPOUT}_norm${NORM_TYPE}_v2"
 LAYERS="layers${N_LAYERS}"
@@ -31,11 +32,11 @@ RUN_NAME=lm1b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
-    MICRO_BATCH_SIZE=32
+    MICRO_BATCH_SIZE=4
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=32
+    MICRO_BATCH_SIZE=4
 else
-    MICRO_BATCH_SIZE=32
+    MICRO_BATCH_SIZE=4
 fi
 NUM_WORKERS=0
 
@@ -64,6 +65,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.attn_backend=${ATTN_BACKEND} \
   model.config.backbone_config.dropout=${DROPOUT} \
   model.config.backbone_config.norm_type=${NORM_TYPE} \
+  model.config.backbone_config.adaln=${ADALN} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
   eval_dataloader.batch_size=${MICRO_BATCH_SIZE} \

@@ -10,6 +10,7 @@ try:
 except:
   pass
 import huggingface_hub
+import os
 import omegaconf
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
@@ -210,7 +211,6 @@ def apply_rotary_pos_emb(qkv, cos, sin):
 def regular_attention_multi_headed(q, k, v):
   # Assuming qkv is a tensor with shape [batch, seq_len, 3, num_heads, head_dim]
   # where the 3 represents Q, K, V packed in that order
-  import ipdb ; ipdb.set_trace()
   attention_output = F.scaled_dot_product_attention(
     query=q.transpose(1, 2),
     key=k.transpose(1, 2),
@@ -685,7 +685,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         vocab_size: int,
         block_size: int,
         attn_backend: str,
-        norm_type: str):
+        norm_type: str,
+        pretrained_model_name_or_path: str):
     super().__init__()
     self.causal = causal_attention
     self.n = length
@@ -736,7 +737,20 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       adaLN=self.adaLN,
       tie_word_embeddings=tie_word_embeddings,
       norm_type=self.norm_type)
+    if pretrained_model_name_or_path is not None:
+      if os.path.exists(pretrained_model_name_or_path):
+        state_dict = torch.load(pretrained_model_name_or_path, weights_only=False)
+        state_dict = state_dict["state_dict"]
+        # replace all keys
+        new_state_dict = {}
+        for key in state_dict.keys():
+          if key.startswith("backbone."):
+            new_key = key.replace("backbone.", "")
+            new_state_dict[new_key] = state_dict[key]
+        del state_dict
+      self.load_state_dict(new_state_dict, strict=False)
     print(self)
+  
 
   def _get_bias_dropout_scale(self):
     if self.training:
@@ -757,15 +771,19 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
   ) -> CausalLMOutputWithPast | BaseModelOutputWithPast:
     x = self.vocab_embed(input_ids)
     if sigma is None:
-      t_cond = None
-    else:
+      if self.adaLN:
+        sigma = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+        t_cond = F.silu(self.sigma_map(sigma))
+      else:
+        t_cond = None
+
+    if sigma is not None:
       t_cond = F.silu(self.sigma_map(sigma))
 
     if position_ids is None:
       position_ids = torch.arange(input_ids.shape[-1], device=input_ids.device).to(input_ids.dtype)
     else:
       position_ids = position_ids[0]
-
     rotary_cos_sin = self.rotary_emb(position_ids)
 
     if self.causal:

@@ -4,10 +4,10 @@ defaults:
   - generation/logits_processor@logits_processor_list: ???
   - generation/stopping_criteria@stopping_criteria_list: ???
   - tokenizer: autotokenizer
-  - composer/callbacks:
-    # - permutation_to_masking_pattern_analysis
-    # - permutation_order_loss_analysis
-    - masking_pattern_loss_analysis
+  # - composer/callbacks:
+  #   # - permutation_to_masking_pattern_analysis
+  #   # - permutation_order_loss_analysis
+  #   - masking_pattern_loss_analysis
   - _self_
 
 task: ???  # Set with CLI, e.g., `+eval/lm_eval_harness@task=gsm8k`

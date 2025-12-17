@@ -29,12 +29,18 @@ def main(cfg: DictConfig) -> None:
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
     # Load model
+    model_config_overrides = getattr(cfg, "model_config_overrides", None) or {}
+    # Convert to plain dict if it's a DictConfig to ensure proper merging
+    if isinstance(model_config_overrides, DictConfig):
+        from omegaconf import OmegaConf
+        model_config_overrides = OmegaConf.to_container(model_config_overrides, resolve=True)
     if fsspec_exists(os.path.join(cfg.pretrained_model_name_or_path, "config.yaml")):
         model = load_model_from_ckpt_dir_path(
             path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
             load_ema_weights=cfg.task.load_ema_weights,
             ckpt_file=cfg.task.ckpt_file,
             verbose=True,
+            **model_config_overrides,
         )
     else:
         try:
@@ -42,12 +48,14 @@ def main(cfg: DictConfig) -> None:
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
+                **model_config_overrides,
             )
         except:  # Model not compatible with CausalLM
             model = AutoModelForMaskedLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
+                **model_config_overrides,
             )
     model = HuggingFaceModel(
         model=model,
@@ -87,14 +95,18 @@ def main(cfg: DictConfig) -> None:
         sampler=eval_sampler,
     )
 
-    callbacks = hydra.utils.instantiate(cfg.composer.callbacks)
+    if hasattr(cfg, "composer") and hasattr(cfg.composer, "callbacks"):
+        callbacks = hydra.utils.instantiate(cfg.composer.callbacks)
+        callbacks = list(callbacks.values())
+    else:
+        callbacks = []
 
     trainer = hydra.utils.instantiate(
         cfg.task.trainer,
         _convert_="all",
         model=model,
         eval_dataloader=eval_dataloader,
-        callbacks=list(callbacks.values()),
+        callbacks=callbacks,
     )
     trainer.eval()
     print(

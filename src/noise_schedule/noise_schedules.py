@@ -5,7 +5,7 @@ import numpy as np
 # import plotly.graph_objects as go
 # import matplotlib.pyplot as plt
 # import torch
-
+import math
 import torch
 
 
@@ -72,7 +72,7 @@ class LogarithmicNoise(Noise):
 
 
 class LinearNoise(Noise):
-    def __init__(self):
+    def __init__(self, block_size: Optional[int] = None):
         super().__init__()
         self.name = "linear"
 
@@ -106,141 +106,170 @@ class LinearNoise(Noise):
         return perm_indices
 
 
-# class StaggeredNoise(Noise):
-#     def __init__(self, eps=1e-3, scale=1.0, block_size=1, length=1, plot_schedule=False):
-#         super().__init__()
-#         self.eps = eps
-#         self.scale = scale
-#         self.block_size = block_size
-#         self.length = length
-#         self.init_schedule()
+class StaggeredNoise(Noise):
+    def __init__(self, eps=1e-3, scale=1.0, block_size=1, length=1, plot_schedule=False):
+        super().__init__()
+        self.eps = eps
+        self.scale = scale
+        self.block_size = block_size
+        self.length = length
+        self.init_schedule()
         
-#         if plot_schedule and self.length < 128:
-#             figdir = f"/share/kuleshov/ma2238/dllm-dev-new-/dllm-devnoise_schedules/ar_step/bs{self.block_size}/"
-#             figdir += f'scale{self.scale}'
-#             figdir += '/'
-#             if not os.path.exists(figdir):
-#                 os.makedirs(figdir)
-#             self._plot_schedule(figdir)
+        if plot_schedule and self.length < 128:
+            figdir = f"/share/kuleshov/ma2238/dllm-dev-new-/dllm-devnoise_schedules/ar_step/bs{self.block_size}/"
+            figdir += f'scale{self.scale}'
+            figdir += '/'
+            if not os.path.exists(figdir):
+                os.makedirs(figdir)
+            self._plot_schedule(figdir)
 
-#     def inverse(self, alpha_t):
-#         raise NotImplementedError("Inverse function not implemented")
+    def inverse(self, alpha_t):
+        raise NotImplementedError("Inverse function not implemented")
 
-#     def init_schedule(self, scale=None, block_size=None):
-#         if block_size is None:
-#             block_size = self.block_size
-#         if scale is None:
-#             scale = self.scale
-#         num_blocks = self.length // block_size
-#         self.scale = scale
-#         self.scale = torch.ones(1, block_size).repeat(1, num_blocks) * scale
-#         self.loc =  - torch.linspace(0, 1 - 1 / scale, block_size).flip(0)
-#         self.loc = self.loc[None, :].repeat(1, num_blocks)
+    def compute_window_size(self):
+        # return (-self.loc < (1/self.scale[0][0])).sum().item()
+        if self.scale[0][0] == 1:
+            return self.block_size
+        max_parallel = math.ceil((2 - self.scale[0][0] - self.block_size) / (1 - self.scale[0][0])) - 1
+        return min(max_parallel, self.block_size)
 
-#         last_token_max_t = 1 / scale
-#         self.max_lookahead = (-self.loc < last_token_max_t).sum().item()
+    def init_schedule(self, scale=None, block_size=None):
+        if block_size is None:
+            block_size = self.block_size
+        if scale is None:
+            scale = self.scale
+        num_blocks = self.length // block_size
+        self.scale = scale
+        self.scale = torch.ones(1, block_size) * scale
+        self.loc =  - torch.linspace(0, 1 - 1 / scale, block_size).flip(0)
+        self.loc = self.loc[None, :]
     
-#     def _plot_schedule(self, figdir):
-#         num_blocks = self.length // self.block_size
-#         t = torch.linspace(0, 1, 1000).unsqueeze(-1).repeat(1, self.length).repeat_interleave(num_blocks, dim=1)
-#         move_chance = self.total_noise(t)
-#         move_chance = move_chance.cpu().numpy()
+    def _plot_schedule(self, figdir):
+        num_blocks = self.length // self.block_size
+        t = torch.linspace(0, 1, 1000).unsqueeze(-1).repeat(1, self.length).repeat_interleave(num_blocks, dim=1)
+        move_chance = self.total_noise(t)
+        move_chance = move_chance.cpu().numpy()
 
-#         colors = n_colors('rgb(68, 1, 84)', 'rgb(253, 231, 37)', self.length, colortype='rgb')
-#         fig = go.Figure()
-#         for i in range(self.length):
-#             fig.add_trace(go.Scatter(
-#                 x=np.linspace(0, 1, 1000),
-#                 y=move_chance[:, i],
-#                 mode='lines',
-#                 line=dict(color=colors[i]),
-#                 name=str(i) if self.length <= 8 else None
-#             ))
-#         fig.update_layout(
-#             title="Line Plot with Colormap",
-#             xaxis_title="X-axis",
-#             yaxis_title="Y-axis",
-#             showlegend=(self.length <= 8),
-#             template="plotly"
-#         )
-#         plt.savefig(f'{figdir}{self.length}schedule.jpg')
-#         print('min move chance', move_chance[0].max())
-#         print('max move chance', move_chance[-1].min())
-#         print('saved to ', f'{figdir}{self.length}schedule.jpg')
+        colors = n_colors('rgb(68, 1, 84)', 'rgb(253, 231, 37)', self.length, colortype='rgb')
+        fig = go.Figure()
+        for i in range(self.length):
+            fig.add_trace(go.Scatter(
+                x=np.linspace(0, 1, 1000),
+                y=move_chance[:, i],
+                mode='lines',
+                line=dict(color=colors[i]),
+                name=str(i) if self.length <= 8 else None
+            ))
+        fig.update_layout(
+            title="Line Plot with Colormap",
+            xaxis_title="X-axis",
+            yaxis_title="Y-axis",
+            showlegend=(self.length <= 8),
+            template="plotly"
+        )
+        plt.savefig(f'{figdir}{self.length}schedule.jpg')
+        print('min move chance', move_chance[0].max())
+        print('max move chance', move_chance[-1].min())
+        print('saved to ', f'{figdir}{self.length}schedule.jpg')
 
-#     def total_noise(self, t):
-#         scale, loc = self.scale.to(t.device)[:, :t.shape[-1]], self.loc.to(t.device)[:, :t.shape[-1]]
-#         t_ = (t + loc) * scale
-#         t_ = torch.clamp(t_, 0, 1)
-#         return t_
+    def total_noise(self, t):
+        if self.block_size == 1:
+            return torch.ones_like(t)
+        scale, loc = self.scale.to(t.device)[:, :t.shape[-1]], self.loc.to(t.device)[:, :t.shape[-1]]
+        batch_size = t.shape[0]
+        t = t.view(-1, self.block_size)
+        move_chance = (t + loc) * scale
+        move_chance = torch.clamp(move_chance, 0, 1)
+        return move_chance.view(batch_size, -1)
 
-#     def rate_noise(self, t):
-#         scale, loc = self.scale.to(t.device)[:, :t.shape[-1]], self.loc.to(t.device)[:, :t.shape[-1]]
-#         t_ = (t + loc) * scale
-#         t_ = torch.clamp(t_, 0, 1)
-#         at_prime = (((t_ != 0) * (t_ != 1)) * scale)
+    def inverse_noise(self, move_chance):
+        scale, loc = self.scale.to(move_chance.device)[:, :move_chance.shape[-1]], self.loc.to(move_chance.device)[:, :move_chance.shape[-1]]
+        batch_size = move_chance.shape[0]
+        move_chance = move_chance.view(-1, self.block_size)
+        t = (move_chance / scale) - loc
+        t = torch.clamp(t, 0, 1)
+        return t.view(batch_size, -1)
 
-#         # edge case 1: token at min masking prob
-#         # at_prime += (t == -loc) * scale
+    def rate_noise(self, t):
+        scale, loc = self.scale.to(t.device)[:, :t.shape[-1]], self.loc.to(t.device)[:, :t.shape[-1]]
+        batch_size = t.shape[0]
+        t = t.view(-1, self.block_size)
+        move_chance = (t + loc) * scale
+        move_chance = torch.clamp(move_chance, 0, 1)
+        at_prime = (((move_chance != 0) * (move_chance != 1)) * scale)
 
-#         # edge case 2: token at max masking prob
-#         at_prime += (t == (1/scale - loc)) * scale
-#         at_prime = torch.clamp(at_prime, max=scale)
-#         return at_prime
+        # edge case: token at max masking prob
+        at_prime += (t == (1/scale - loc)) * scale
+        at_prime = torch.clamp(at_prime, max=scale)
+        return at_prime.view(batch_size, -1)
 
-#     def __call__(self, t):
-#         t = t.to(torch.float32)
-#         return self.total_noise(t), self.rate_noise(t)
+    def __call__(self, t):
+        t = t.to(torch.float32)
+        return 1 - self.total_noise(t), - self.rate_noise(t)
 
-    
-#     def sample_permutation_order(self, t, to_permute: torch.Tensor) -> torch.Tensor:
-#         t = t.to(torch.float32)
-#         seq_len = t.shape[-1]
-#         block_size = self.block_size
-#         num_blocks = seq_len // block_size
-#         batch_size = t.shape[0]
-#         device = t.device
+    def sample_permutation_order(self, t, to_permute: torch.Tensor, block_size: Optional[int] = None) -> torch.Tensor:
+        batch_size = to_permute.shape[0]
+        block_size = block_size if block_size is not None else self.block_size
+
+        num_total_blocks = t.shape[-1] // block_size * t.shape[0]
+        num_blocks = to_permute.shape[-1] // block_size
+        t = torch.ones(num_total_blocks, block_size)
+
+        to_permute = to_permute.reshape(-1, block_size)
+        is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :1] == False)
+        is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, -1:] == False))
+
+        mask = torch.ones(num_total_blocks, block_size).to(to_permute.device)
+
+        # 1) Start with full noise
+        ranking = torch.full((num_total_blocks, block_size), fill_value=-1, dtype=torch.long)
+        unmask_chance = 1 - self.total_noise(t - self.eps).to(to_permute.device)
         
-#         move_chance = self.total_noise(t)
-#         # move_chance = 
+        # 2) Sample next-hitting time for every token
+        uniform_samp = torch.rand(num_total_blocks).to(to_permute.device)
+        mask_chance = 1 - (uniform_samp.unsqueeze(-1) * (1 - unmask_chance))
+        t = self.inverse_noise(mask_chance).max(dim=-1).values
+        if t.ndim == 1:
+            t = t.unsqueeze(-1)
+        t = t.repeat(1, block_size)
+        for i in range(block_size):
+            if i == block_size - 1:
+                ranking[ranking == -1] = i
+                break
+            # Get unmasking probs for the next-hitting time
+            unmask_chance = 1 - self.total_noise(t).to(to_permute.device)
 
-#         num_blocks = seq_len // block_size
+            # 3) Sample a token
+            unmask_chance_filtered = torch.where(is_beginning, 1.0, unmask_chance)
+            unmask_chance_filtered = torch.where(is_end, 0.0, unmask_chance_filtered)
+            unmask_chance_filtered *= mask
 
-#         perms = torch.zeros_like(move_chance)
-#         mask = torch.ones_like(move_chance)
+            full_unmask_chance_mask = (unmask_chance_filtered == 1.0) * (mask == 1.0)
+            unmask_chance_filtered[(full_unmask_chance_mask).any(dim=-1)] = 0.0
 
-#         # if we roll T->inf, we mask one token at a time (any-order AR)
-#         # 2) for each latent, sample the token most likely to be masked next
-#         for i in range(move_chance.shape[0]):
-#             current_probs = move_chance[i]
-#             current_probs.mul_(mask)
+            # Prioritize leftmost token
+            unmask_chance_filtered[(full_unmask_chance_mask).any(dim=-1)] = ((full_unmask_chance_mask.cumsum(-1) == 1) * (unmask_chance_filtered == 1.0))[(full_unmask_chance_mask).any(dim=-1)].float()
+            if (unmask_chance_filtered.sum(-1) <= 0).any():
+                unmask_chance_filtered[unmask_chance_filtered <= 0] = ((mask.cumsum(-1) == 1) * mask > 0)[unmask_chance_filtered <= 0].float()
+            samp = torch.multinomial(unmask_chance_filtered, 1)
 
-#             # always sample if prob is 1
-#             full_mask = current_probs == 1
-#             full_mask_idx = (full_mask).any(-1)
-#             current_probs = current_probs / current_probs.sum(-1, keepdim=True).clamp(min=1e-8)
-#             current_probs[full_mask_idx] = 0
-#             current_probs += full_mask
-#             sampled_index = torch.multinomial(current_probs, 1, replacement=False)
-#             perms[:, i] = sampled_index.squeeze(1)
-#             mask.scatter_(1, sampled_index, 0)
-#             # mask[torch.arange(mask.shape[0]), sampled_index.squeeze(1)] = 0
+            ranking[:, i] = samp.squeeze(-1)
+            mask.scatter_(1, samp, 0)
 
-#         # 3) FLIP. causal attention from x_T -> x_0
-#         perms = perms.view(n, num_blocks, self.block_size)
-#         perms += torch.arange(0, seq_len, self.block_size).unsqueeze(0).unsqueeze(-1).to(perms.device)
-#         perms = perms.view(n, -1)
-#         perms = perms.flip(1)
+            if i == block_size - 1:
+                break
+            # 2) Sample next-hitting time for every token, based on current unmasking probs
+            uniform_samp = torch.rand(num_total_blocks).to(to_permute.device)
+            mask_chance = 1 - (uniform_samp.unsqueeze(-1) * (1 - unmask_chance))
+            t = (self.inverse_noise(mask_chance) * mask).max(dim=-1).values
+            t = t.unsqueeze(-1).repeat(1, block_size)
 
-#         # DEBUG:
-#         # max_lookahead = math.ceil(seq_len / self.noise.scale_conf)
-#         # assert ((perms - torch.arange(0, x0.shape[1]).unsqueeze(0).to(perms.device)).abs() < max_lookahead).all()
+        perms = ranking.view(batch_size, -1, block_size)
+        perms += torch.arange(num_blocks)[None, :, None] * block_size
 
-#         # bos will always be the first index.
-#         # 5) move zero idx to the first position, shift
-#         zero_idx = (perms != 0)
-#         perms = perms[zero_idx].view(n, perms.shape[1]-1)
-#         perms = torch.cat((torch.zeros_like(perms[:, 0].unsqueeze(1)), perms), dim=1)
-#         perms = perms.to(t.device).to(torch.long)
-
-#         return perms
+        # max_lookahead = math.ceil((block_size - 1) / (self.scale[0][0] - 1)) + 1
+        # max_deviation = (perms - torch.arange(0, block_size)[None, None, :]).abs()
+        # assert (max_deviation < max_lookahead).all()
+        
+        perms = perms.view(batch_size, -1).to(to_permute.device)
+        return perms
