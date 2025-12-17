@@ -748,7 +748,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
             new_key = key.replace("backbone.", "")
             new_state_dict[new_key] = state_dict[key]
         del state_dict
-      self.load_state_dict(new_state_dict, strict=False)
+        self.load_state_dict(new_state_dict, strict=False)
     print(self)
   
 
