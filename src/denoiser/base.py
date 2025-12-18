@@ -350,10 +350,10 @@ class Denoiser(ABC, PreTrainedModel):
             past_key_values=past_key_values,
             t=t,
         )
+        backbone_output = self._backbone_forward(denoiser_inputs, **kwargs)
+        new_past_key_values = getattr(backbone_output, "past_key_values", None)
+        backbone_output = getattr(backbone_output, "logits", backbone_output[0])
         with torch.amp.autocast(input_ids.device.type, dtype=torch.float32):
-            backbone_output = self._backbone_forward(denoiser_inputs, **kwargs)
-            new_past_key_values = getattr(backbone_output, "past_key_values", None)
-            backbone_output = getattr(backbone_output, "logits", backbone_output[0])
             denoiser_output = self._forward(
                 backbone_output,
                 denoiser_inputs,

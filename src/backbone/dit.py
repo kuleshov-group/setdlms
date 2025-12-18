@@ -90,7 +90,6 @@ def block_diff_mask(b, h, q_idx, kv_idx, block_size=None, n=None):
   # **4. Combine Masks **
   return block_diagonal | offset_block_causal | block_causal
 
-@torch.compile(fullgraph=True, mode="max-autotune-no-cudagraphs")
 def fused_flex_attention(q, k, v, mask=None):
     return flex_attention(q, k, v, block_mask=mask)
 
@@ -126,7 +125,6 @@ def modulate(x: torch.Tensor,
              scale: torch.Tensor) -> torch.Tensor:
   return x * (1 + scale) + shift
 
-@torch.jit.script
 def bias_dropout_add_scale_fused_train(
     x: torch.Tensor,
     bias: typing.Optional[torch.Tensor],
@@ -136,7 +134,6 @@ def bias_dropout_add_scale_fused_train(
   return bias_dropout_add_scale(
     x, bias, scale, residual, prob, True)
 
-@torch.jit.script
 def bias_dropout_add_scale_fused_inference(
     x: torch.Tensor,
     bias: typing.Optional[torch.Tensor],
@@ -146,7 +143,6 @@ def bias_dropout_add_scale_fused_inference(
   return bias_dropout_add_scale(
     x, bias, scale, residual, prob, False)
 
-@torch.jit.script
 def modulate_fused(x: torch.Tensor,
                    shift: torch.Tensor,
                    scale: torch.Tensor) -> torch.Tensor:
@@ -236,35 +232,6 @@ class LayerNorm(nn.Module):
       x = F.layer_norm(x.float(), [self.dim])
     return x * self.weight[None, None, :]
 
-
-@use_kernel_forward_from_hub("RMSNorm")
-class RMSNorm(nn.Module):
-  """Root Mean Square Layer Normalization.
-  
-  RMSNorm is equivalent to T5LayerNorm and Qwen3RMSNorm.
-  RMSNorm normalizes by RMS instead of mean and variance, which is simpler
-  and often works as well as LayerNorm.
-  """
-  def __init__(self, hidden_size=None, dim=None, eps=1e-6):
-    super().__init__()
-    # Support both hidden_size (Qwen3 style) and dim (backward compatibility)
-    size = hidden_size if hidden_size is not None else dim
-    if size is None:
-      raise ValueError("Either hidden_size or dim must be provided")
-    self.weight = nn.Parameter(torch.ones(size))
-    self.variance_epsilon = eps
-    
-  def forward(self, hidden_states):
-    input_dtype = hidden_states.dtype
-    hidden_states = hidden_states.to(torch.float32)
-    variance = hidden_states.pow(2).mean(-1, keepdim=True)
-    hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-    return self.weight * hidden_states.to(input_dtype)
-    
-  def extra_repr(self):
-    return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
-
-
 def residual_linear(x, W, x_skip, residual_scale):
   """x_skip + residual_scale * W @ x"""
   dim_out, dim_in = W.shape[0], W.shape[1]
@@ -348,18 +315,12 @@ class DDiTBlockCausal(nn.Module):
     self.max_seqlen = max_seqlen
     self.n = n
 
-    if norm_type == 'rmsnorm':
-      self.norm1 = RMSNorm(dim)
-    else:
-      self.norm1 = LayerNorm(dim)
+    self.norm1 = LayerNorm(dim)
     self.attn_qkv = nn.Linear(dim, 3 * dim, bias=False)
     self.attn_out = nn.Linear(dim, dim, bias=False)
     self.dropout1 = nn.Dropout(dropout)
 
-    if norm_type == 'rmsnorm':
-      self.norm2 = RMSNorm(dim)
-    else:
-      self.norm2 = LayerNorm(dim)
+    self.norm2 = LayerNorm(dim)
     self.mlp = nn.Sequential(
       nn.Linear(dim, mlp_ratio * dim, bias=True),
       nn.GELU(approximate='tanh'),
@@ -483,18 +444,12 @@ class DDiTBlock(nn.Module):
     self.latent_conditioning = latent_conditioning
     self.block_size = block_size
 
-    if norm_type == 'rmsnorm':
-      self.norm1 = RMSNorm(dim)
-    else:
-      self.norm1 = LayerNorm(dim)
+    self.norm1 = LayerNorm(dim)
     self.attn_qkv = nn.Linear(dim, 3 * dim, bias=False)
     self.attn_out = nn.Linear(dim, dim, bias=False)
     self.dropout1 = nn.Dropout(dropout)
 
-    if norm_type == 'rmsnorm':
-      self.norm2 = RMSNorm(dim)
-    else:
-      self.norm2 = LayerNorm(dim)
+    self.norm2 = LayerNorm(dim)
 
     if norm_type == "qknorm":
       self.q_norm = LayerNorm(dim // n_heads)
@@ -641,10 +596,7 @@ class DDiTFinalLayer(nn.Module):
   def __init__(self, hidden_size, out_channels, cond_dim, 
                adaLN, tie_word_embeddings=False, norm_type='layernorm'):
     super().__init__()
-    if norm_type == 'rmsnorm':
-      self.norm_final = RMSNorm(hidden_size)
-    else:
-      self.norm_final = LayerNorm(hidden_size)
+    self.norm_final = LayerNorm(hidden_size)
     self.linear = nn.Linear(hidden_size, out_channels)
     self.linear.weight.data.zero_()
     self.linear.bias.data.zero_()
@@ -738,17 +690,19 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       tie_word_embeddings=tie_word_embeddings,
       norm_type=self.norm_type)
     if pretrained_model_name_or_path is not None:
-      if os.path.exists(pretrained_model_name_or_path):
-        state_dict = torch.load(pretrained_model_name_or_path, weights_only=False)
-        state_dict = state_dict["state_dict"]
-        # replace all keys
-        new_state_dict = {}
-        for key in state_dict.keys():
-          if key.startswith("backbone."):
-            new_key = key.replace("backbone.", "")
-            new_state_dict[new_key] = state_dict[key]
-        del state_dict
-        self.load_state_dict(new_state_dict, strict=False)
+      state_dict = torch.load(pretrained_model_name_or_path, weights_only=False)
+      state_dict = state_dict["state_dict"]
+      # replace all keys
+      new_state_dict = {}
+      for key in state_dict.keys():
+        new_key = key
+        if "backbone." in key:
+          new_key = key.replace("backbone.", "")
+        if "_orig_mod." in new_key:
+          new_key = new_key.replace("_orig_mod.", "")
+        new_state_dict[new_key] = state_dict[key]
+      del state_dict
+      self.load_state_dict(new_state_dict, strict=False)
     print(self)
   
 
@@ -789,15 +743,14 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     if self.causal:
       attention_mask = None
     
-    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-      for i in range(len(self.blocks)):
-        x = self.blocks[i](
-          x,
-          rotary_cos_sin,
-          c=t_cond,
-          causal=self.causal,
-          mask=attention_mask,)
-      x = self.output_layer(x, t_cond)
+    for i in range(len(self.blocks)):
+      x = self.blocks[i](
+        x,
+        rotary_cos_sin,
+        c=t_cond,
+        causal=self.causal,
+        mask=attention_mask,)
+    x = self.output_layer(x, t_cond)
     return CausalLMOutputWithPast(
       logits=x,
       past_key_values=None)
