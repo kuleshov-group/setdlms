@@ -1644,12 +1644,13 @@ class AnyOrderBD3LM(BD3LM):
 
         batch_size, seq_len = input_ids.shape
         if permute_flag.any():
-            perm_indices = self.noise_schedule.sample_permutation_order(
-                t,
-                permute_flag,
-                self.config.block_size,
-                masked_tokens=(xt[:, seq_len:] == self.mask_token_id) if evaluate_nll_flag else None,
-            )
+            with torch.no_grad():
+                perm_indices = self.noise_schedule.sample_permutation_order(
+                    t,
+                    permute_flag,
+                    self.config.block_size,
+                    masked_tokens=(xt[:, seq_len:] == self.mask_token_id) if evaluate_nll_flag else None,
+                )
         num_repetitions = self.static_attention_mask.shape[1] // input_ids.shape[1]
         if self.config.attn_backend == "sdpa":
             decoder_attention_mask = (
