@@ -409,15 +409,12 @@ class MDLM(Denoiser):
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
         if model_output_cache is None:  # execute function evaluation
-            with torch.amp.autocast(
-                denoiser_inputs.xt.device.type, dtype=torch.float32
-            ):
-                backbone_output = self._backbone_forward(
-                    denoiser_inputs,
-                    fix_cache_length=True,  # Do not let kv cache grow on each forward call
-                    **cache,
-                    **kwargs,
-                )
+            backbone_output = self._backbone_forward(
+                denoiser_inputs,
+                fix_cache_length=True,  # Do not let kv cache grow on each forward call
+                **cache,
+                **kwargs,
+            )
             if isinstance(backbone_output, torch.Tensor):
                 logits = backbone_output
             else:
@@ -470,10 +467,13 @@ class MDLM(Denoiser):
 
             # Noise
             xt_block = denoiser_inputs.xt[..., sample_indices] if sample_indices is not None else denoiser_inputs.xt
-            num_noise_indices = torch.minimum(
-                ((1 - alpha_s) * generation_config.block_size).to(torch.int),
-                (xt_block == self.mask_token_id).sum() - 1,  # type: ignore
-            )
+            # Estimate number of noise indices based on univariate/multivariate noise schedule
+            if alpha_s.shape[-1] == 1:
+                est_noise_indices = ((1 - alpha_s) * generation_config.block_size).to(torch.int)
+            else:
+                # Multivariate noise schedule: sum masking probabilities for timestep s
+                est_noise_indices = torch.floor((1 - alpha_s).sum(dim=-1)).to(torch.int)
+            num_noise_indices = torch.minimum(est_noise_indices, (xt_block == self.mask_token_id).sum() - 1)  # type: ignore
             if generation_config.confidence_based_noising:
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
                 conf = torch.where(  # already decoded tokens have 'inf' confidence
@@ -1562,10 +1562,12 @@ class AnyOrderBD3LM(BD3LM):
         if not self.training and getattr(self.config, "eval_nll", False) and self.config.block_size > 1:
             coeff = denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
             coeff = torch.where(torch.isnan(coeff), torch.zeros_like(coeff), coeff)
+            seq_len = denoiser_inputs.x0.shape[1]
+            masked_indices = denoiser_inputs.xt[:, seq_len:] == self.mask_token_id
             nlls = (
                 log_p_theta
                 * coeff
-                * denoiser_inputs.tokens_mask
+                * masked_indices
             )
         else:
             nlls = loss * denoiser_inputs.tokens_mask
@@ -1626,10 +1628,28 @@ class AnyOrderBD3LM(BD3LM):
         permute_flag = noise_mask != 1
         perm_indices = None
         xt = input_ids.clone()
+        evaluate_nll_flag = getattr(self.config, "eval_nll", False) and not self.training and self.config.block_size > 1
+        if not evaluate_nll_flag:
+            xt = torch.where(
+                (attention_mask == 1) & (context_mask == 0), self.mask_token_id, xt
+            )
+            xt = torch.cat((input_ids, xt), dim=-1)
+        else:
+            xt = self._sample_q_xt(
+                x0=input_ids,
+                alpha_t=alpha_t,
+                mask=noise_mask,
+            )
+            xt = torch.cat((input_ids, xt), dim=-1)
 
-        batch_size, context_len = input_ids.shape
+        batch_size, seq_len = input_ids.shape
         if permute_flag.any():
-            perm_indices = self.noise_schedule.sample_permutation_order(t, permute_flag, self.config.block_size)
+            perm_indices = self.noise_schedule.sample_permutation_order(
+                t,
+                permute_flag,
+                self.config.block_size,
+                masked_tokens=(xt[:, seq_len:] == self.mask_token_id) if evaluate_nll_flag else None,
+            )
         num_repetitions = self.static_attention_mask.shape[1] // input_ids.shape[1]
         if self.config.attn_backend == "sdpa":
             decoder_attention_mask = (
@@ -1667,7 +1687,6 @@ class AnyOrderBD3LM(BD3LM):
             raise ValueError("Unknown attention backend")
         # if self.training and permute_flag.any():
         if permute_flag.any():
-            seq_len = input_ids.shape[1]
             perm_indices_cols = perm_indices.repeat(1, num_repetitions)
             perm_indices_cols[:, seq_len:seq_len*2] += seq_len
             
@@ -1690,37 +1709,21 @@ class AnyOrderBD3LM(BD3LM):
             elif self.config.attn_backend == "flex_attention":
                 raise NotImplementedError("Permutation of block mask not implmented yet")
 
-        if not getattr(self.config, "eval_nll", False) or self.training or self.config.block_size == 1:
-            xt = torch.where(
-                (attention_mask == 1) & (context_mask == 0), self.mask_token_id, xt
-            )
-            xt = torch.cat((input_ids, xt), dim=-1)
-        else:
-            xt = self._sample_q_xt(
-                x0=input_ids,
-                alpha_t=alpha_t,
-                mask=noise_mask,
-            )
-            xt = torch.cat((input_ids, xt), dim=-1)
+        if evaluate_nll_flag:
             masked_indices = xt == self.mask_token_id
-
-            block_diagonal_mask = (torch.arange(seq_len)//self.config.block_size)[:,  None] == (torch.arange(seq_len)//self.config.block_size)[None, :]
-            block_diagonal_mask = block_diagonal_mask.to(decoder_attention_mask.dtype).to(decoder_attention_mask.device)
-            block_diagonal_mask = block_diagonal_mask[None, :, :].repeat(batch_size, 2, 2)
-            block_diagonal_mask[:, seq_len:, :seq_len] = 0
             offset_block_causal_mask = (torch.arange(seq_len)//self.config.block_size)[:,  None] > (torch.arange(seq_len)//self.config.block_size)[None, :]
             offset_block_causal_mask = offset_block_causal_mask.to(decoder_attention_mask.dtype).to(decoder_attention_mask.device)
             offset_block_causal_mask = offset_block_causal_mask[None, :, :].repeat(batch_size, 1, 1)
 
-            decoder_attention_mask[masked_indices] = block_diagonal_mask[masked_indices] # tokens attends within its block
-            decoder_attention_mask[:, seq_len:, :seq_len] = offset_block_causal_mask # block attends to previous blocks
-
-            # Remove all attention to masked tokens
-            decoder_attention_mask = decoder_attention_mask & (~masked_indices[:, None, :]).to(decoder_attention_mask.dtype)
+            # Remove attention to masked tokens
+            allowed_cross_attn = F.pad(~masked_indices[..., seq_len:], (0, seq_len), mode="constant", value=1)
+            decoder_attention_mask[:, seq_len:] = decoder_attention_mask[:, seq_len:] & (allowed_cross_attn[:, None, :]).to(decoder_attention_mask.dtype)
+            
+            # Masked tokens attend to previous blocks, and clean tokens earlier in the permutation
+            decoder_attention_mask[:, seq_len:, :seq_len] |= offset_block_causal_mask 
 
             # Keep self-attention
             decoder_attention_mask[:, torch.arange(seq_len, seq_len*2), torch.arange(seq_len, seq_len*2)] = 1
-
             
         decoder_attention_mask = self._preprocess_attention_mask(
             decoder_attention_mask[:, None], dtype=torch.float
@@ -1868,7 +1871,7 @@ class AnyOrderBD3LM(BD3LM):
                 max_blocks = math.ceil(num_mask_tokens / block_size)
             all_position_ids = torch.arange(inputs.shape[-1], device=device)[None, :]
         else:
-            max_blocks = max_new_tokens // block_size
+            max_blocks = max(max_new_tokens // block_size, 1)
             all_position_ids = torch.arange(
                 inputs.shape[-1] + max_blocks * block_size, device=device
             )[None, :]
@@ -1896,13 +1899,17 @@ class AnyOrderBD3LM(BD3LM):
             inputs_indices = torch.empty(0, device=device)
 
         total_NFEs = 0
+        is_done = False
         block_pbar = tqdm(
             range(max_blocks),
             desc="Blocks",
             leave=True,
             disable=disable_pbar,
         )
-        inputs_offset = (accumulated_samples == self.mask_token_id)[0].nonzero().min()
+        if self.mask_token_id in accumulated_samples:
+            inputs_offset = (accumulated_samples == self.mask_token_id)[0].nonzero().min()
+        else:
+            inputs_offset = accumulated_samples.shape[-1]
         if generation_config.align_inputs_to_blocks and inputs_offset > 0:
             inputs_offset = block_size * (inputs_offset // block_size)
         for block_id in block_pbar:
@@ -1931,13 +1938,12 @@ class AnyOrderBD3LM(BD3LM):
             for t in step_pbar:
                 block_NFEs += 1
                 total_NFEs += 1
-                # t is 0-dim tensor, reshape to (1, 1, 1) for broadcasting
+                if t.ndim == 0:
+                    t = t[None, None].repeat(1, block_size)
                 alpha_t, _ = self.noise_schedule(t)
                 alpha_s, _ = self.noise_schedule(t - dt)
-                alpha_t = alpha_t[None, None, None]
-                alpha_s = alpha_s[None, None, None]
                 masked_positions = (xt == self.mask_token_id)
-                window_start = masked_positions.nonzero(as_tuple=False)[0].item()
+                window_start = inputs_offset + (block_id * block_size) + masked_positions[0].nonzero(as_tuple=False)[0].item()
                 masked_positions = masked_positions & (xt_position_ids < window_start + window_size)
 
                 # Only decode masked tokens
@@ -1956,8 +1962,8 @@ class AnyOrderBD3LM(BD3LM):
 
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
-                    alpha_t=alpha_t,
-                    alpha_s=alpha_s,
+                    alpha_t=alpha_t[masked_positions],
+                    alpha_s=alpha_s[masked_positions],
                     denoiser_inputs=denoiser_inputs,
                     cache=cache,
                     xt=xt,
@@ -1983,28 +1989,30 @@ class AnyOrderBD3LM(BD3LM):
                         cache=cache,
                     )
                 # Update position IDs for next tokens to decode
-                xt = xs[xs == self.mask_token_id].unsqueeze(0)
-                xt_position_ids = xt_position_ids[masked_positions][xs[0] == self.mask_token_id].unsqueeze(0)
+                xt[masked_positions][xs[0] == self.mask_token_id] = xs[xs == self.mask_token_id].unsqueeze(0)
+                xt_position_ids[masked_positions][xs[0] == self.mask_token_id] = xt_position_ids[masked_positions][xs[0] == self.mask_token_id].unsqueeze(0)
 
                 if (xt == self.mask_token_id).sum().item() == 0:
                     break
+                if stopping_criteria is not None:
+                    is_done = stopping_criteria(
+                        input_ids=accumulated_samples[  # type: ignore
+                            :,
+                            inputs_offset : inputs_offset
+                            + ((block_id + 1) * block_size)
+                        ],
+                        scores=None,  # type: ignore
+                    )
+                    if torch.any(is_done):
+                        accumulated_samples = accumulated_samples[
+                            :,
+                            : inputs_offset + ((block_id + 1) * block_size),
+                        ]
+                        break
             if tokenizer is not None:
                 print(tokenizer.batch_decode(accumulated_samples))
-            if stopping_criteria is not None:
-                is_done = stopping_criteria(
-                    input_ids=accumulated_samples[  # type: ignore
-                        :,
-                        inputs_offset : inputs_offset
-                        + ((block_id + 1) * block_size)
-                    ],
-                    scores=None,  # type: ignore
-                )
-                if torch.any(is_done):
-                    accumulated_samples = accumulated_samples[
-                        :,
-                        : inputs_offset + ((block_id + 1) * block_size),
-                    ]
-                    break
+            if is_done:
+                break
         if pad_length is not None:
             accumulated_samples = accumulated_samples[:, : -pad_length]
         return accumulated_samples  # type: ignore

@@ -180,21 +180,6 @@ def rotate_half(x):
   return torch.cat((-x2, x1), dim=-1)
 
 
-def split_and_apply_rotary_pos_emb(qkv, rotary_cos_sin):
-  with torch.amp.autocast('cuda', enabled=False):
-    cos, sin = rotary_cos_sin
-    cos = cos.to(qkv.dtype)
-    sin = sin.to(qkv.dtype)
-    cos = cos[0,:,0,0,:cos.shape[-1]//2]
-    sin = sin[0,:,0,0,:sin.shape[-1]//2]
-    q, k, v = qkv.chunk(3, dim=2)
-    q = flash_attn.layers.rotary.apply_rotary_emb_torch(
-      q.squeeze(dim=2), cos, sin)
-    k = flash_attn.layers.rotary.apply_rotary_emb_torch(
-      k.squeeze(dim=2), cos, sin)
-    v = v.squeeze(dim=2)
-  return q, k, v
-
 def apply_rotary_pos_emb_torchscript(qkv, cos, sin):
     return (qkv * cos) + (rotate_half(qkv) * sin)
 
@@ -228,9 +213,10 @@ class LayerNorm(nn.Module):
     self.weight = nn.Parameter(torch.ones([dim]))
     self.dim = dim
   def forward(self, x):
+    original_dtype = x.dtype
     with torch.amp.autocast('cuda', enabled=False):
-      x = F.layer_norm(x.float(), [self.dim])
-    return x * self.weight[None, None, :]
+      x = F.layer_norm(x.float(), [self.dim], weight=self.weight.float())
+    return x.to(original_dtype)
 
 def residual_linear(x, W, x_skip, residual_scale):
   """x_skip + residual_scale * W @ x"""
@@ -690,19 +676,22 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       tie_word_embeddings=tie_word_embeddings,
       norm_type=self.norm_type)
     if pretrained_model_name_or_path is not None:
-      state_dict = torch.load(pretrained_model_name_or_path, weights_only=False)
-      state_dict = state_dict["state_dict"]
-      # replace all keys
-      new_state_dict = {}
-      for key in state_dict.keys():
-        new_key = key
-        if "backbone." in key:
-          new_key = key.replace("backbone.", "")
-        if "_orig_mod." in new_key:
-          new_key = new_key.replace("_orig_mod.", "")
-        new_state_dict[new_key] = state_dict[key]
-      del state_dict
-      self.load_state_dict(new_state_dict, strict=False)
+      if os.path.exists(pretrained_model_name_or_path):
+        state_dict = torch.load(pretrained_model_name_or_path, weights_only=False)
+        state_dict = state_dict["state_dict"]
+        # replace all keys
+        new_state_dict = {}
+        for key in state_dict.keys():
+          new_key = key
+          if "backbone." in key:
+            new_key = key.replace("backbone.", "")
+          if "_orig_mod." in new_key:
+            new_key = new_key.replace("_orig_mod.", "")
+          new_state_dict[new_key] = state_dict[key]
+        del state_dict
+        self.load_state_dict(new_state_dict, strict=False)
+      else:
+        print(f"Pretrained model {pretrained_model_name_or_path} not found")
     print(self)
   
 

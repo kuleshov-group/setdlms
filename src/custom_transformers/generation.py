@@ -8,6 +8,8 @@ from transformers.generation import (
     StoppingCriteriaList,
 )
 
+from scripts.utils import maybe_add_missing_special_tokens
+
 
 class HydraCompatibleLogitsProcessorList(LogitsProcessorList):
     """Hydra-compatible version of LogitsProcessorList.
@@ -33,7 +35,7 @@ class HydraCompatibleStoppingCriteriaList(StoppingCriteriaList):
 
 class RegexStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer, pattern):
-        self.tokenizer = tokenizer
+        self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
         self.pattern = pattern
 
     def __call__(
@@ -41,11 +43,17 @@ class RegexStoppingCriteria(StoppingCriteria):
     ) -> torch.BoolTensor:
         if input_ids.numel() == 0:
             return torch.tensor([False], device=input_ids.device, dtype=torch.bool)
-        matches = []
+        all_matches = []
         if input_ids.ndim > 1:
             text = self.tokenizer.batch_decode(input_ids)
         else:
             text = [self.tokenizer.decode(input_ids)]
         for i in range(len(text)):
-            matches.append(len(re.findall(self.pattern, text[i])) > 0)
-        return torch.tensor(matches, device=input_ids.device, dtype=torch.bool)
+            matches = re.finditer(self.pattern, text[i])
+            valid_match_found = False
+            for match in matches:
+                if self.tokenizer.mask_token not in text[i][:match.span()[-1]]:
+                    valid_match_found = True
+                    break
+            all_matches.append(valid_match_found)
+        return torch.tensor(all_matches, device=input_ids.device, dtype=torch.bool)

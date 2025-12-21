@@ -430,11 +430,10 @@ class Denoiser(ABC, PreTrainedModel):
         context_input, cache = self._prepare_inputs_inference(
             input_ids=inputs, cache=cache, return_updated_cache=True, **backbone_kwargs
         )
-        with torch.amp.autocast(inputs.device.type, dtype=torch.float32):
-            backbone_output = self._backbone_forward(
-                context_input,
-                **cache,
-            )
+        backbone_output = self._backbone_forward(
+            context_input,
+            **cache,
+        )
         backbone_output = {k: v for k, v in backbone_output.items()}
         backbone_output.pop("logits", None)  # Do not store logits in cache
         cache = cache | backbone_output

@@ -1,0 +1,2 @@
+log_noise_level_annealing:
+  _target_: src.custom_composer.callbacks.LogNoiseLevelAnnealing

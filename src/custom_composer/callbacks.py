@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import torch.distributed as torch_dist
 import wandb
+from composer import TimeUnit
 from composer.callbacks import CheckpointSaver
 from composer.core import Callback, State, Time, Timestamp
 from composer.loggers import Logger
@@ -262,6 +263,7 @@ class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
         save_local: bool = True,
         save_to_hub: bool = False,
         hub_repo_id: str | None = None,
+        start: str = "0.0dur",
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -274,6 +276,8 @@ class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
         self.metric_name = "/".join(metric_to_monitor.split("/")[1:])
         self.mode = mode
         self.best_value = None
+        self.start = Time.from_timestring(start)
+        self.started = False
 
         self.latest_filename = None
         self.latest_hf_filename = None
@@ -300,6 +304,19 @@ class SaveBestCheckpointing(HuggingFaceCompatibleCheckpointing):
             "mode": self.mode,
             "best_value": self.best_value,
         }
+
+    def _should_start(self, state: State) -> bool:
+        if self.start.unit == TimeUnit.DURATION:
+            current_time = state.get_elapsed_duration()
+            if current_time is not None:
+                should_start = self.start <= current_time
+            else:
+                should_start = False
+        else:
+            current_time = state.timestamp.get(self.start.unit).value
+            should_start = self.start.value <= current_time
+
+        return should_start
 
     def _trigger_save(self, metric_value: float) -> bool:
         if self.best_value is None:
@@ -827,6 +844,10 @@ class MaskingPatternLossAnalysis(Callback):
 
     def eval_end(self, state: State, logger: Logger) -> None:
         """Report average loss per masking pattern."""
+        if not self.started:
+            self.started = self._should_start(state)
+        if not self.started:
+            return
         # Gather data from all ranks for distributed evaluation
         if dist.is_initialized():
             world_size = dist.get_world_size()
@@ -2623,3 +2644,18 @@ class PermutationToMaskingPatternAnalysis(Callback):
         
         # Close figure to free memory
         plt.close(fig)
+
+class LogNoiseLevelAnnealing(Callback):
+    @staticmethod
+    def _select_model_from_state(state: State):
+        if hasattr(state.model, "module"):
+            return state.model.module.model
+        else:
+            return state.model.model
+
+    def batch_end(self, state: State, logger: Logger) -> None:
+        model = self._select_model_from_state(state)
+        scale = model.noise_schedule.scale[0][0].item()
+        logger.log_metrics(
+            {"scale": scale}
+        )

@@ -8,7 +8,7 @@ import hydra
 import numpy as np
 import torch
 import torch.distributed as dist
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
@@ -84,7 +84,7 @@ def main(cfg: DictConfig) -> None:
             ckpt_file=cfg.ckpt_file,
             **getattr(cfg, "model_config_overrides", {}),
         )
-    except FileNotFoundError:
+    except:
         try:
             model = AutoModelForCausalLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
@@ -93,26 +93,67 @@ def main(cfg: DictConfig) -> None:
                 **getattr(cfg, "model_config_overrides", {}),
             )
         except:  # Model not compatible with CausalLM
-            model = AutoModelForMaskedLM.from_pretrained(
-                cfg.pretrained_model_name_or_path,
-                trust_remote_code=True,
-                revision=getattr(cfg, "pretrained_model_revision", None),
-                **getattr(cfg, "model_config_overrides", {}),
-            )
+            try:
+                model = AutoModelForMaskedLM.from_pretrained(
+                    cfg.pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    revision=getattr(cfg, "pretrained_model_revision", None),
+                    **getattr(cfg, "model_config_overrides", {}),
+                )
+            except:
+                model = None
     # HACK FOR MDLM
-    if not hasattr(model, "generate"):
+    if model is None or not hasattr(model, "generate"):
         from src.denoiser.diffusion import MDLM, MDLMConfig
         from src.noise_schedule.noise_schedules import LinearNoise
+        
+        # Create dit backbone config
+        # Load the dit config template and update with actual values
+        dit_config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "configs", "model", "backbone", "dit.yaml"
+        )
+        backbone_config = OmegaConf.load(dit_config_path)
+        
+        # Update backbone config with necessary parameters (resolving the template values)
+        length = getattr(cfg, "length", 1024)
+        backbone_config.length = length
+        backbone_config.vocab_size = len(tokenizer)
+        backbone_config.block_size = getattr(cfg, "block_size", None)
+        backbone_config.pretrained_model_name_or_path = getattr(cfg, "pretrained_model_name_or_path", None)
+        backbone_config.num_layers = 12
+        backbone_config.n_heads = 12
+        backbone_config.hidden_size = 768
+        backbone_config.adaln = True
+        
+        # Ensure it's a DictConfig
+        if not isinstance(backbone_config, DictConfig):
+            backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
+        
         mdlm_config = MDLMConfig(
-            length=model.config.model_length,
+            length=length,
+            backbone_config=backbone_config,
         )
         mdlm_config.mask_token_id = tokenizer.mask_token_id
-        mdlm_config.vocab_size = model.config.vocab_size
+        mdlm_config.vocab_size = len(tokenizer)
         model_ = MDLM(
             mdlm_config,
             tokenizer=tokenizer,
         )
-        model_.backbone = model
+        if model is not None:
+            model_.backbone = model
+        else:
+            state_dict = torch.load(cfg.pretrained_model_name_or_path, weights_only=False)
+            state_dict = state_dict["state_dict"]
+            new_state_dict = {}
+            for key in state_dict.keys():
+                new_key = key
+                if "backbone." in key:
+                    new_key = key.replace("backbone.", "")
+                if "_orig_mod." in new_key:
+                    new_key = new_key.replace("_orig_mod.", "")
+                new_state_dict[new_key] = state_dict[key]
+            model_.backbone.load_state_dict(new_state_dict)
         model = model_.to(device)
         model.noise_schedule = LinearNoise()
     model = model.to(device)

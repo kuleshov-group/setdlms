@@ -1,0 +1,3 @@
+defaults:
+  - gsm8k_train_distill
+dataset_path: "/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_eval"

@@ -48,6 +48,7 @@ class LMEvalHarnessModel(LM):
         throughput_samples: int = 100,
         throughput_warmup: int = 100,
         model_config_overrides: dict[str, Any] | None = None,
+        **kwargs: Any,
     ):
         """
         Args:
@@ -83,6 +84,14 @@ class LMEvalHarnessModel(LM):
         model_config_overrides = (
             {} if model_config_overrides is None else model_config_overrides
         )
+        # Handle string input (JSON string) - parse it to dict
+        if isinstance(model_config_overrides, str):
+            import json
+            model_config_overrides = json.loads(model_config_overrides)
+        # Convert to plain dict if it's a DictConfig to ensure proper merging
+        if isinstance(model_config_overrides, DictConfig):
+            from omegaconf import OmegaConf
+            model_config_overrides = OmegaConf.to_container(model_config_overrides, resolve=True)
         if fsspec_exists(os.path.join(pretrained_model_name_or_path, "config.yaml")):
             model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=pretrained_model_name_or_path,

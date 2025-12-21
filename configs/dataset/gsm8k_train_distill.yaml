@@ -1,0 +1,3 @@
+#file: noinspection LongLine
+_target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
+dataset_path: "/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_train"

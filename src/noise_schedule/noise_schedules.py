@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Any
 import os
 import numpy as np
 # import plotly.graph_objects as go
@@ -85,7 +85,7 @@ class LinearNoise(Noise):
         move_chance = t
         return 1 - move_chance, alpha_t_prime
 
-    def sample_permutation_order(self, t, to_permute: torch.Tensor, block_size: Optional[int] = None) -> torch.Tensor:
+    def sample_permutation_order(self, t, to_permute: torch.Tensor, block_size: Optional[int] = None, **kwargs: Any) -> torch.Tensor:
         t = t.to(torch.float32)
         seq_len = t.shape[-1]
         block_size = block_size
@@ -102,7 +102,7 @@ class LinearNoise(Noise):
         ranking = torch.where(is_beginning, float('inf'), ranking)
         ranking = torch.where(is_end, float('-inf'), ranking)
         perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
-        perm_indices = perm_indices.view(batch_size, num_blocks * block_size)
+        perm_indices = perm_indices.reshape(batch_size, num_blocks * block_size)
         return perm_indices
 
 
@@ -177,23 +177,23 @@ class StaggeredNoise(Noise):
             return torch.ones_like(t)
         scale, loc = self.scale.to(t.device)[:, :t.shape[-1]], self.loc.to(t.device)[:, :t.shape[-1]]
         batch_size = t.shape[0]
-        t = t.view(-1, self.block_size)
+        t = t.reshape(-1, self.block_size)
         move_chance = (t + loc) * scale
         move_chance = torch.clamp(move_chance, 0, 1)
-        return move_chance.view(batch_size, -1)
+        return move_chance.reshape(batch_size, -1)
 
     def inverse_noise(self, move_chance):
         scale, loc = self.scale.to(move_chance.device)[:, :move_chance.shape[-1]], self.loc.to(move_chance.device)[:, :move_chance.shape[-1]]
         batch_size = move_chance.shape[0]
-        move_chance = move_chance.view(-1, self.block_size)
+        move_chance = move_chance.reshape(-1, self.block_size)
         t = (move_chance / scale) - loc
         t = torch.clamp(t, 0, 1)
-        return t.view(batch_size, -1)
+        return t.reshape(batch_size, -1)
 
     def rate_noise(self, t):
         scale, loc = self.scale.to(t.device)[:, :t.shape[-1]], self.loc.to(t.device)[:, :t.shape[-1]]
         batch_size = t.shape[0]
-        t = t.view(-1, self.block_size)
+        t = t.reshape(-1, self.block_size)
         move_chance = (t + loc) * scale
         move_chance = torch.clamp(move_chance, 0, 1)
         at_prime = (((move_chance != 0) * (move_chance != 1)) * scale)
@@ -201,13 +201,20 @@ class StaggeredNoise(Noise):
         # edge case: token at max masking prob
         at_prime += (t == (1/scale - loc)) * scale
         at_prime = torch.clamp(at_prime, max=scale)
-        return at_prime.view(batch_size, -1)
+        return at_prime.reshape(batch_size, -1)
 
     def __call__(self, t):
         t = t.to(torch.float32)
         return 1 - self.total_noise(t), - self.rate_noise(t)
 
-    def sample_permutation_order(self, t, to_permute: torch.Tensor, block_size: Optional[int] = None) -> torch.Tensor:
+    def sample_permutation_order(
+        self,
+        t,
+        to_permute: torch.Tensor,
+        block_size: Optional[int] = None,
+        masked_tokens: Optional[torch.Tensor] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
         batch_size = to_permute.shape[0]
         block_size = block_size if block_size is not None else self.block_size
 
@@ -222,7 +229,7 @@ class StaggeredNoise(Noise):
         mask = torch.ones(num_total_blocks, block_size).to(to_permute.device)
 
         # 1) Start with full noise
-        ranking = torch.full((num_total_blocks, block_size), fill_value=-1, dtype=torch.long)
+        ranking = torch.full((num_total_blocks, block_size), fill_value=-1, dtype=torch.long).to(to_permute.device)
         unmask_chance = 1 - self.total_noise(t - self.eps).to(to_permute.device)
         
         # 2) Sample next-hitting time for every token
@@ -232,7 +239,11 @@ class StaggeredNoise(Noise):
         if t.ndim == 1:
             t = t.unsqueeze(-1)
         t = t.repeat(1, block_size)
+        if masked_tokens is not None:
+            masked_tokens = masked_tokens.reshape(-1, block_size)
         for i in range(block_size):
+            if -1 not in ranking:
+                break
             if i == block_size - 1:
                 ranking[ranking == -1] = i
                 break
@@ -247,10 +258,20 @@ class StaggeredNoise(Noise):
             full_unmask_chance_mask = (unmask_chance_filtered == 1.0) * (mask == 1.0)
             unmask_chance_filtered[(full_unmask_chance_mask).any(dim=-1)] = 0.0
 
-            # Prioritize leftmost token
+            # 4) During EVAL, use sampled x_t to determine the unmasking order (for CACHING)
+            if masked_tokens is not None:
+                # If clean tokens aren't already ranked, set the unmasking chance for masked tokens to 0
+                for j in range(num_total_blocks):
+                    clean_mask = ~masked_tokens[j]
+                    remaining_clean_tokens_rank = ~torch.isin(clean_mask.nonzero().squeeze(-1), ranking[j])
+                    if remaining_clean_tokens_rank.any():
+                        unmask_chance_filtered[j][masked_tokens[j]] = 0.0
+
+            # For tie-breakers where unmasking chance is 1.0, prioritize leftmost token
             unmask_chance_filtered[(full_unmask_chance_mask).any(dim=-1)] = ((full_unmask_chance_mask.cumsum(-1) == 1) * (unmask_chance_filtered == 1.0))[(full_unmask_chance_mask).any(dim=-1)].float()
             if (unmask_chance_filtered.sum(-1) <= 0).any():
                 unmask_chance_filtered[unmask_chance_filtered <= 0] = ((mask.cumsum(-1) == 1) * mask > 0)[unmask_chance_filtered <= 0].float()
+            
             samp = torch.multinomial(unmask_chance_filtered, 1)
 
             ranking[:, i] = samp.squeeze(-1)
@@ -264,12 +285,12 @@ class StaggeredNoise(Noise):
             t = (self.inverse_noise(mask_chance) * mask).max(dim=-1).values
             t = t.unsqueeze(-1).repeat(1, block_size)
 
-        perms = ranking.view(batch_size, -1, block_size)
-        perms += torch.arange(num_blocks)[None, :, None] * block_size
+        perms = ranking.reshape(batch_size, -1, block_size)
+        perms += torch.arange(num_blocks, device=perms.device)[None, :, None] * block_size
 
         # max_lookahead = math.ceil((block_size - 1) / (self.scale[0][0] - 1)) + 1
         # max_deviation = (perms - torch.arange(0, block_size)[None, None, :]).abs()
         # assert (max_deviation < max_lookahead).all()
         
-        perms = perms.view(batch_size, -1).to(to_permute.device)
+        perms = perms.reshape(batch_size, -1)
         return perms

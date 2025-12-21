@@ -9,3 +9,4 @@ save_best_checkpointing:
   save_local: true
   save_to_hub: false
   hub_repo_id: null
+  start: '0.0dur'
