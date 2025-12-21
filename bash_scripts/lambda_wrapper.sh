@@ -25,8 +25,8 @@ if [ ! -e "${script_full_path}" ]; then
 fi
 NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 export NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES}
-RUN_DIR="/home/ubuntu/mar/runs"
-DATA_DIR="/home/ubuntu/mar/data"
+RUN_DIR="/home/ubuntu/marn/runs"
+DATA_DIR="/home/ubuntu/marn/data"
 mkdir -p ${RUN_DIR}
 mkdir -p ${DATA_DIR}
 export RUN_DIR

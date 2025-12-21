@@ -16,17 +16,20 @@ VOCAB_SIZE=50258
 DROPOUT=0.1
 NORM_TYPE=qknorm
 ATTN_BACKEND=sdpa
-ADALN=true
+ADALN=false
+SCALE=1024
+# SCALE=1.0
+ANNEAL_STEPS="10000ba"
 
 # Hyperparameters
 LR=3e-4
 WARMUP_DURATION="2500ba"
 BATCH_SIZE=512
-MAX_DURATION="1000000ba"
+MAX_DURATION="250000ba"
 
-PRETRAINED_MODEL_NAME_OR_PATH=/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4/49-800000.ckpt
+PRETRAINED_MODEL_NAME_OR_PATH=~/marn/runs/mari-owt-ar-noeos-v4-1/47-750000.ckpt
 
-TAG="aoarm_dropout${DROPOUT}_norm${NORM_TYPE}_v2"
+TAG="aoarm_norm${NORM_TYPE}_adaln${ADALN}_ft_v8"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=lm1b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -76,4 +79,11 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="10000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  noise@model.config.noise_config=staggered \
+  model.config.noise_config.scale=${SCALE} \
+  +composer/algorithms=noise_level_annealing \
+  composer.algorithms.noise_level_annealing.anneal_duration=${ANNEAL_STEPS} \
+  composer.algorithms.noise_level_annealing.final_scale=1.0 \
+  +composer/callbacks=log_noise_level_annealing \
+  composer.callbacks.save_best_checkpointing.start=${ANNEAL_STEPS}

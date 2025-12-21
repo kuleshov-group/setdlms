@@ -313,18 +313,12 @@ class StaggeredNoise(Noise):
             full_unmask_chance_mask = (unmask_chance_i == 1.0) * mask
             all_0_mask = (unmask_chance_i * mask).sum(dim=-1) == 0
             
-            # Use more efficient conditional logic
-            has_all_0 = all_0_mask.any()
-            has_full_unmask = full_unmask_chance_mask.any()
-            
-            if has_all_0:
-                out = mask.int().argmax(dim=1)
-            elif has_full_unmask:
-                out = full_unmask_chance_mask.int().argmax(dim=1)
-            else:
-                out = torch.where(mask, unmask_chance_noised_i, float('-inf')).argmax(dim=-1)
-                if (out[0] - i).abs() > window_size:
-                    raise ValueError(f'Window size violation at step {i}')
+            out = torch.where(mask, unmask_chance_noised_i, float('-inf')).argmax(dim=-1)
+            out[all_0_mask.any(dim=-1)] = mask.int().argmax(dim=1)[all_0_mask.any(dim=-1)]
+            out[full_unmask_chance_mask.any(dim=-1)] = full_unmask_chance_mask.int().argmax(dim=1)[full_unmask_chance_mask.any(dim=-1)]
+
+            if ((out - i).abs() > window_size).any():
+                raise ValueError(f'Window size violation at step {i}')
 
             perms[:, i] = out
             mask.scatter_(1, out.unsqueeze(-1), False)
@@ -334,6 +328,6 @@ class StaggeredNoise(Noise):
         perms = perms.reshape(batch_size, -1)
         max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
         if max_deviation.max() > window_size:
-            raise ValueError(f'Window size violation at final step')
+            raise ValueError(f'Window size violation at final step', max_deviation.max(), window_size, self.scale[0][0])
 
         return perms
