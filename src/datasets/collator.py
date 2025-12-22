@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from typing import Any
-
+import math
 import torch
 from transformers import DataCollatorWithPadding, PreTrainedTokenizerBase
 
@@ -73,8 +73,12 @@ class DenoisingCollator:
         self._rank = rank
         self._world_size = world_size
 
+    def update_block_size(self, new_block_size: int) -> None:
+        self.block_size = new_block_size
+
     def _sample_t(self, global_batch_size, batch_size, t_index, device):
-        num_blocks = self.max_length // self.block_size if self.block_size else 1
+        # Add extra padding if max_length is not a multiple of block_size
+        num_blocks = math.ceil(self.max_length / self.block_size) if self.block_size else 1
         if self.block_size is not None and self.block_size > 0:
             _eps_t = torch.rand(batch_size, num_blocks, device=device)
         else:
@@ -93,7 +97,9 @@ class DenoisingCollator:
             t = (low - high) * t + high
         if self.block_size is not None and self.block_size > 0:
             t = t[..., torch.randperm(t.shape[-1])]
-            return t.repeat_interleave(self.block_size, dim=1)
+            return t.repeat_interleave(self.block_size, dim=1)[:, :self.max_length]
+        # Remove extra padding
+        t = t[:, :self.max_length]
         return t
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:

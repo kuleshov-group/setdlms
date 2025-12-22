@@ -1,0 +1,2 @@
+log_block_size:
+  _target_: src.custom_composer.callbacks.LogBlockSize

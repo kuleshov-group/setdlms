@@ -2656,6 +2656,16 @@ class LogNoiseLevelAnnealing(Callback):
     def batch_end(self, state: State, logger: Logger) -> None:
         model = self._select_model_from_state(state)
         scale = model.noise_schedule.scale[0][0].item()
+        window_size = model.noise_schedule.compute_window_size()
         logger.log_metrics(
-            {"scale": scale}
+            {"scale": scale, "window_size": window_size}
         )
+
+
+class LogBlockSize(Callback):
+    def batch_end(self, state: State, logger: Logger) -> None:
+        if hasattr(state.model, "module"):
+            block_size = state.model.module.model.config.block_size
+        else:
+            block_size = state.model.model.config.block_size
+        logger.log_metrics({"block_size": block_size})

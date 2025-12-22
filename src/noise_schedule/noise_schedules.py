@@ -236,6 +236,7 @@ class StaggeredNoise(Noise):
             ranking = torch.where(is_end, float('-inf'), ranking)
             perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
             perm_indices = perm_indices.reshape(batch_size, num_blocks * block_size)
+            max_deviation = (perm_indices - torch.arange(0, block_size, device=device)[None, :]).abs()
             return perm_indices
 
         batch_size = to_permute.shape[0]
@@ -252,81 +253,60 @@ class StaggeredNoise(Noise):
         if masked_tokens is not None:
             masked_tokens = masked_tokens.reshape(-1, block_size)
 
-        # 1) Start with full noise
-        # Initialize t with ones on device for initial computation
+        # Start with full noise
         t = torch.ones(num_total_blocks, 1, device=device)
-        unmask_chance = 1 - self.total_noise(t - self.eps)
+
+        # Per-token masking probabilities
+        mask_chance = self.total_noise(t)
         
-        # 2) Sample next-hitting time for every token
         # Pre-allocate random numbers for entire loop (use float32 for efficiency)
-        uniform_samp_init = torch.rand(num_total_blocks, device=device, dtype=torch.float32)
-        uniform_samp_loop = torch.rand(num_total_blocks, block_size - 1, device=device, dtype=torch.float32)
-        
-        mask_chance = (uniform_samp_init.unsqueeze(-1) * (1 - unmask_chance))
-        t = self.inverse_noise(mask_chance).max(dim=-1).values
-        if t.ndim == 1:
-            t = t.unsqueeze(-1)
+        uniform_samp = torch.rand(num_total_blocks, self.block_size, self.block_size, device=device, dtype=torch.float32)
+        g = -torch.empty(num_total_blocks, self.block_size, self.block_size, device=device, dtype=torch.float32).exponential_().log()
 
         # Sample next-hitting time for every token, based on current unmasking probs
         unmask_chance_list = []
-        for i in range(block_size):
-            unmask_chance = 1 - self.total_noise(t)
-
-            # 3) Sample a token
-            unmask_chance_filtered = torch.where(is_beginning, 1.0, unmask_chance)
-            unmask_chance_filtered = torch.where(is_end, 0.0, unmask_chance_filtered)
-
-            if (unmask_chance_filtered.sum(-1) <= 0).any():
-                unmask_chance_filtered[:, 0] = torch.where(unmask_chance_filtered[:, 0] <= 0, 1.0, unmask_chance_filtered[:, 0])
-            
-            unmask_chance_list.append(unmask_chance_filtered)
-            
-            # Sample next-hitting time for every token, based on current unmasking probs
-            if i == block_size - 1:
-                break
-            
-            # Use pre-allocated random numbers
-            uniform_samp = uniform_samp_loop[:, i]
-            mask_chance = uniform_samp.unsqueeze(-1) * (1 - unmask_chance)
-            t = self.inverse_noise(mask_chance)[:, i + 1].unsqueeze(-1)            
-
-        # (B x L/S) x S x S
-        unmask_chance_list = torch.stack(unmask_chance_list, dim=1)
-
-        def gumbel_noise(logits):
-            g = -torch.empty_like(logits).exponential_().log()
-            g = torch.where(logits == 0, -float('inf'), g)
-            return (logits + g)
-
-        unmask_chance_noised = gumbel_noise(unmask_chance_list)
 
         # (B x L/S) x S
         perms = torch.full((num_total_blocks, block_size), fill_value=-1, dtype=torch.long, device=device)
         mask = torch.full((num_total_blocks, block_size), fill_value=True, dtype=torch.bool, device=device)
         window_size = self.compute_window_size()
-        
-        # Pre-compute masks to avoid repeated .any() calls
+
+        def gumbel_noise(logits, g):
+            g = torch.where(logits == 0, -float('inf'), g)
+            g = torch.where(logits == 1, float('inf'), g)
+            return (logits + g)
+
         for i in range(block_size):
-            unmask_chance_noised_i = unmask_chance_noised[:, i]
-            unmask_chance_i = unmask_chance_list[:, i]
-            
-            full_unmask_chance_mask = (unmask_chance_i == 1.0) * mask
-            all_0_mask = (unmask_chance_i * mask).sum(dim=-1) == 0
-            
-            out = torch.where(mask, unmask_chance_noised_i, float('-inf')).argmax(dim=-1)
-            out[all_0_mask.any(dim=-1)] = mask.int().argmax(dim=1)[all_0_mask.any(dim=-1)]
-            out[full_unmask_chance_mask.any(dim=-1)] = full_unmask_chance_mask.int().argmax(dim=1)[full_unmask_chance_mask.any(dim=-1)]
+            # Get next-hitting time from availabel tokens
+            t = self.inverse_noise(uniform_samp[:, i] * mask_chance * mask).max(dim=-1).values
+            unmask_chance = 1 - self.total_noise(t)
 
-            if ((out - i).abs() > window_size).any():
-                raise ValueError(f'Window size violation at step {i}')
+            # Hard-code unmasking probability for prompt/pad tokens
+            unmask_chance_filtered = torch.where(is_beginning, 1.0, unmask_chance)
+            unmask_chance_filtered = torch.where(is_end, 0.0, unmask_chance_filtered)
 
-            perms[:, i] = out
-            mask.scatter_(1, out.unsqueeze(-1), False)
+            # Ignore previously sampled tokens
+            unmask_chance_filtered *= mask
+
+            # For tie-breakers where unmasking chance is 1.0, prioritize leftmost token
+            full_unmask_chance_mask = (unmask_chance_filtered == 1.0)
+            unmask_chance_filtered[(full_unmask_chance_mask).any(dim=-1)] = ((full_unmask_chance_mask.cumsum(-1) == 1) * (unmask_chance_filtered == 1.0))[(full_unmask_chance_mask).any(dim=-1)].float()
+            if (unmask_chance_filtered.sum(-1) <= 0).any():
+                unmask_chance_filtered[unmask_chance_filtered <= 0] = ((mask.cumsum(-1) == 1) * mask > 0)[unmask_chance_filtered <= 0].float()
+
+            # Sample a token
+            perms[:, i] = gumbel_noise(unmask_chance_filtered, g[:, i]).argmax(dim=-1)
+            mask.scatter_(1, perms[:, i].unsqueeze(-1), False)
+            
+            if i == block_size - 1:
+                break
+            mask_chance = self.total_noise(t)
+    
 
         perms = perms.reshape(batch_size, -1, block_size)
         perms += torch.arange(num_blocks, device=device)[None, :, None] * block_size
         perms = perms.reshape(batch_size, -1)
-        max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
+        max_deviation = (perms - torch.arange(0, block_size, device=device)[None, :]).abs()
         if max_deviation.max() > window_size:
             raise ValueError(f'Window size violation at final step', max_deviation.max(), window_size, self.scale[0][0])
 

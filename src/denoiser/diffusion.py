@@ -158,14 +158,21 @@ class MDLM(Denoiser):
         self.neg_infinity = -1e12
 
     def _create_static_mask(self) -> None:
-        static_mask = torch.ones(
-            self.config.length, self.config.length, dtype=torch.bool
-        )
+        static_mask = self.generate_static_mask()
         self.register_buffer(
             "static_attention_mask",
             static_mask,
         )
         self.skip_params_for_push.append("static_attention_mask")
+
+    def generate_static_mask(self) -> torch.Tensor:
+        static_mask = torch.ones(
+            self.config.length, self.config.length, dtype=torch.bool
+        )
+        return static_mask
+
+    def update_static_mask(self, new_static_mask: torch.Tensor) -> None:
+        self.static_attention_mask.copy_(new_static_mask)
 
     def _sample_q_xt(
         self,
@@ -799,23 +806,19 @@ class BD3LM(MDLM):
         return block_diagonal | offset_block_causal | block_causal
 
     def _create_static_mask(self) -> None:
-        if self.config.attn_backend == "sdpa":
-            static_mask = self._block_mask(
-                b=None,
-                h=None,
-                q_idx=torch.arange(self.config.length * 2)[:, None],
-                kv_idx=torch.arange(self.config.length * 2)[None, :],
-                block_size=self.config.block_size
-                if self.training
-                else self.config.eval_block_size,
-                seq_length=self.config.length,
-            )
+        static_mask = self.generate_static_mask()
+
+        if self.config.attn_backend == "flex_attention":
+            self.static_attention_mask = static_mask
+        else:
             self.register_buffer(
                 "static_attention_mask",
                 static_mask,
             )
             self.skip_params_for_push.append("static_attention_mask")
-        elif self.config.attn_backend == "flex_attention":
+
+    def generate_static_mask(self) -> Union[torch.Tensor, BlockMask]:
+        if self.config.attn_backend == "flex_attention":
             mask = partial(
                 self._block_mask,
                 block_size=self.config.block_size
@@ -823,13 +826,29 @@ class BD3LM(MDLM):
                 else self.config.eval_block_size,
                 seq_length=self.config.length,
             )
-            self.static_attention_mask = create_block_mask(
+            return create_block_mask(
                 mask,
                 B=None,
                 H=None,
                 Q_LEN=self.config.length * 2,
                 KV_LEN=self.config.length * 2,
             )
+        else:
+            static_mask = self._block_mask(
+                b=None,
+                h=None,
+                q_idx=torch.arange(self.config.length * 2)[:, None],
+                kv_idx=torch.arange(self.config.length * 2)[None, :],
+                block_size=self.config.block_size,
+                seq_length=self.config.length,
+            )
+            return static_mask
+
+    def update_static_mask(
+        self,
+        new_static_mask: Union[torch.Tensor, BlockMask],
+    ) -> None:
+        self.static_attention_mask.copy_(new_static_mask)
 
     def _ensure_no_unmasked_blocks(
         self,
@@ -837,6 +856,10 @@ class BD3LM(MDLM):
         xt: torch.LongTensor,
         context_mask: Optional[torch.FloatTensor] = None,
     ) -> torch.Tensor:
+        pad_length = self.config.block_size - (xt.shape[1] % self.config.block_size)
+        if pad_length > 0:
+            xt = F.pad(xt, (0, pad_length), value=self.pad_token_id)
+            context_mask = F.pad(context_mask, (0, pad_length), value=0)
         n_blocks = xt.shape[1] // self.config.block_size
         # If context overlaps w/block, ignore it
         blocks_without_masks = ((xt == self.mask_token_id) + context_mask).reshape(
@@ -864,6 +887,9 @@ class BD3LM(MDLM):
             )
             if self.config.keep_clean_bos:
                 xt[..., 0] = input_ids[..., 0]
+        if pad_length > 0:
+            xt = xt[:, :-pad_length]
+            context_mask = context_mask[:, :-pad_length]
         return xt
 
     def _prepare_inputs(
@@ -970,13 +996,7 @@ class BD3LM(MDLM):
                     attention_mask.bool().repeat(2, 2).bool()
                 )
                 dec_masks = [
-                    partial(
-                        self._block_mask,
-                        block_size=self.config.block_size
-                        if self.training
-                        else self.config.eval_block_size,
-                        seq_length=self.config.length,
-                    ),
+                    partial(self._block_mask, block_size=self.config.block_size),
                     padding_mask,
                 ]
                 decoder_attention_mask = create_block_mask(
