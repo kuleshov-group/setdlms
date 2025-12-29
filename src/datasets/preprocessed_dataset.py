@@ -4,6 +4,7 @@ from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 from datasets import Dataset, DatasetDict, load_from_disk
 from src.utils import fsspec_exists
+import torch
 
 Tokenizer = Union[PreTrainedTokenizer, PreTrainedTokenizerFast]
 
@@ -13,6 +14,10 @@ def load_preprocessed_dataset(
     keep_in_memory: bool | None = None,
     storage_options: dict | None = None,
     limit_size: int | None = None,
+    inject_context_mask: bool = False,
+    token_to_split: str | None = None,
+    split_offset: int | None = None,
+    tokenizer: Tokenizer | None = None,
     # Unused tokenizer arg (compat. with other dataset loading functions/classes)
     **_: Dict[str, Any],
 ) -> Dataset | DatasetDict:
@@ -41,5 +46,9 @@ def load_preprocessed_dataset(
 
     if limit_size is not None:
         dataset = dataset.select(range(limit_size))
-
+    if inject_context_mask:
+        tokens_to_split = tokenizer.encode(token_to_split)[0]
+        map_fn = lambda x: {
+            "context_mask": (torch.arange(x["input_ids"].shape[-1]) <= (x["input_ids"] == tokens_to_split).nonzero()[-1]+split_offset).to(torch.int)}
+        dataset = dataset.map(map_fn)
     return dataset

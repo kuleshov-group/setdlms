@@ -1,0 +1,7 @@
+_target_: src.noise_schedule.noise_schedules.EaseOutPowerNoise
+eps: 1e-3
+plot_schedule: false
+max_block_size: ${block_size}
+block_size: ${block_size}
+desired_block_size: ${block_size}
+length: ${model.config.length}

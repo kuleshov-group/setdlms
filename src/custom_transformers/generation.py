@@ -34,26 +34,21 @@ class HydraCompatibleStoppingCriteriaList(StoppingCriteriaList):
 
 
 class RegexStoppingCriteria(StoppingCriteria):
-    def __init__(self, tokenizer, pattern):
-        self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
+    def __init__(self, tokenizer, pattern, num_matches: int = 1):
+        self.tokenizer = tokenizer
         self.pattern = pattern
+        self.num_matches = num_matches
 
     def __call__(
         self, input_ids: torch.LongTensor, scores: None | torch.FloatTensor, **kwargs
     ) -> torch.BoolTensor:
         if input_ids.numel() == 0:
             return torch.tensor([False], device=input_ids.device, dtype=torch.bool)
-        all_matches = []
+        matches = []
         if input_ids.ndim > 1:
             text = self.tokenizer.batch_decode(input_ids)
         else:
             text = [self.tokenizer.decode(input_ids)]
         for i in range(len(text)):
-            matches = re.finditer(self.pattern, text[i])
-            valid_match_found = False
-            for match in matches:
-                if self.tokenizer.mask_token not in text[i][:match.span()[-1]]:
-                    valid_match_found = True
-                    break
-            all_matches.append(valid_match_found)
-        return torch.tensor(all_matches, device=input_ids.device, dtype=torch.bool)
+            matches.append(len(re.findall(self.pattern, text[i])) >= self.num_matches)
+        return torch.tensor(matches, device=input_ids.device, dtype=torch.bool)

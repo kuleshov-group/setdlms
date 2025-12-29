@@ -5,13 +5,17 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=768
-EVAL_BLOCK_SIZE=768
+BLOCK_SIZE=1024
+EVAL_BLOCK_SIZE=${BLOCK_SIZE}
 N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=false
 
-# Hyperparametersg
+DESIRED_BLOCK_SIZE=16
+MAX_BLOCK_SIZE=32
+ANNEAL_STEPS="0ba"
+
+# Hyperparameters
 LR=1e-5
 WARMUP_DURATION="100ba"
 ALPHA_F=0.5
@@ -26,7 +30,7 @@ MAX_EVAL_SAMPLES=null  # Set to null or remove this line to use full dataset
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="aoarm_v2"
+TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_distill_v2"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -43,9 +47,8 @@ NUM_WORKERS=0
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
-  dataset@train_dataset=gsm8k_train \
-  dataset@eval_dataset=gsm8k_eval \
-  train_dataset.num_shot=${NUM_SHOT} \
+  dataset@train_dataset=gsm8k_train_distill \
+  dataset@eval_dataset=gsm8k_eval_distill \
   +train_dataset.max_samples=${MAX_TRAIN_SAMPLES} \
   +eval_dataset.max_samples=${MAX_EVAL_SAMPLES} \
   composer.optimizer.lr=${LR} \
@@ -58,7 +61,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.alpha_f=${ALPHA_F} \
   training.compile_backbone=false \
   model=aoarm_efficient \
-  model.config.length=768 \
+  model.config.length=1024 \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=${REINIT_MODEL} \
   model.config.backbone_config.num_layers=${N_LAYERS} \
@@ -73,4 +76,18 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  eval_dataloader.batch_size=4
+  composer.callbacks.log_gradient_variance.accumulation_steps=2 \
+  eval_dataloader.batch_size=4 \
+  noise@model.config.noise_config=power \
+  model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
+  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
+  model.config.noise_config.length=1024 \
+  model.config.noise_config.plot_schedule=false
+  
+  #  \
+  # +composer/algorithms=noise_level_annealing \
+  # composer.algorithms.noise_level_annealing.anneal_duration=${ANNEAL_STEPS} \
+  # composer.algorithms.noise_level_annealing.final_scale=1.0 \
+  # +composer/callbacks=log_noise_level_annealing \
+  # composer.callbacks.save_best_checkpointing.start=${ANNEAL_STEPS}
+

@@ -12,6 +12,8 @@ from transformers import (
 )
 from transformers.cache_utils import Cache, DynamicCache
 import math
+from dataclasses import dataclass
+from transformers.modeling_outputs import ModelOutput
 try:
     from torch.nn.attention.flex_attention import (
         BlockMask,
@@ -125,6 +127,56 @@ class DiffusionGenerationConfig(GenerationConfig):
         self.align_inputs_to_blocks = align_inputs_to_blocks
 
 
+@dataclass
+class DiffusionGenerationOutput(ModelOutput):
+    """
+    Outputs of decoder-only generation models, when using non-beam methods.
+
+    Args:
+        sequences (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+            The generated sequences. The second dimension (sequence_length) is either
+            equal to `max_length` or shorter if all batches finished early due to the
+            `eos_token_id`.
+        scores (`tuple(torch.FloatTensor)` *optional*, returned when
+            `output_scores=True`):
+            Processed prediction scores of the language modeling head (scores for each
+            vocabulary token before SoftMax) at each generation step.
+            Tuple of `torch.FloatTensor` with up to `max_new_tokens` elements (one
+            element for each generated token), with each tensor of shape
+            `(batch_size, config.vocab_size)`.
+        logits (`tuple(torch.FloatTensor)` *optional*, returned when
+            `output_logits=True`):
+            Unprocessed prediction scores of the language modeling head (scores for each
+            vocabulary token before SoftMax) at each generation step.
+            Tuple of `torch.FloatTensor` with up to `max_new_tokens` elements (one
+            element for each generated token), with each tensor of shape
+            `(batch_size, config.vocab_size)`.
+        attentions (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when
+            `output_attentions=True`):
+            Tuple (one element for each generated token) of tuples (one element for each
+            layer of the decoder) of `torch.FloatTensor` of shape
+            `(batch_size, num_heads, generated_length, sequence_length)`.
+        hidden_states (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when
+            `output_hidden_states=True`):
+            Tuple (one element for each generated token) of tuples (one element for each
+            layer of the decoder) of `torch.FloatTensor` of shape
+            `(batch_size, generated_length, hidden_size)`.
+        past_key_values (`Cache`, *optional*, returned when `use_cache=True`):
+            Returns the model cache, used to speed up decoding. Different models have a
+            different cache format, check the model's documentation.
+            Usually, a [`~cache_utils.Cache`] instance.
+        parallelism_factor (float): The parallelism factor of the generation.
+            Defaults to -1.0.
+    """
+
+    sequences: torch.LongTensor
+    scores: Optional[tuple[torch.FloatTensor]] = None
+    logits: Optional[tuple[torch.FloatTensor]] = None
+    attentions: Optional[tuple[tuple[torch.FloatTensor]]] = None
+    hidden_states: Optional[tuple[tuple[torch.FloatTensor]]] = None
+    past_key_values: Optional[Cache] = None
+    parallelism_factor: Optional[float] = None
+
 class MDLMConfig(DenoiserConfig):
     """Configuration class for MDLM models."""
 
@@ -227,6 +279,8 @@ class MDLM(Denoiser):
             alpha_t=alpha_t,
             mask=noise_mask,
         )
+        if self.config.keep_clean_bos:
+            xt[..., 0] = input_ids[..., 0]
         if (
             context_mask is not None
             and context_mask.sum() == 0
@@ -317,8 +371,14 @@ class MDLM(Denoiser):
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
         ).squeeze(-1)
+        if self.config.keep_clean_bos and not self.training:
+            log_p_theta = log_p_theta[:, 1:]
+            denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask[:, 1:]
+            denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[:, 1:]
+            denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[:, 1:]
+            denoiser_inputs.xt = denoiser_inputs.xt[:, 1:]
         block_size = getattr(self.config, "block_size", denoiser_inputs.x0.shape[-1])
-        if block_size > 1:
+        if block_size > 1 or getattr(self.config, "train_on_nelbo", False):
             nlls = (
                 log_p_theta
                 * denoiser_inputs.alpha_t_prime
@@ -327,19 +387,22 @@ class MDLM(Denoiser):
             )
         else:
             nlls = - log_p_theta * denoiser_inputs.tokens_mask
+
         if self.training or block_size == 1:
             batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
         else:
             batch_nll = nlls.sum(dim=-1)
-        # Average over masked tokens during training
+
         if (self.training and not getattr(self.config, "train_on_nelbo", False)) or block_size == 1:
+            # Average over masked tokens during training
             batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
             mask_token_indicator = (denoiser_inputs.xt == self.mask_token_id).float()
             count = mask_token_indicator.sum(dim=-1)
             token_nll = torch.where(count > 0, batch_nll / count, torch.zeros_like(batch_nll)).mean()
         else:
+            # NELBO; average over response tokens
             count = denoiser_inputs.tokens_mask.sum(dim=-1)
-            token_nll = (batch_nll / count).mean()
+            token_nll = torch.where(count > 0, batch_nll / count, torch.zeros_like(batch_nll)).mean()
         return LossAndNllOutput(
             loss=token_nll,  # type: ignore
             nlls=nlls,
@@ -515,6 +578,7 @@ class MDLM(Denoiser):
                 f"Sampling strategy {generation_config.sampling_strategy} not"
                 " implemented."
             )
+        import ipdb ; ipdb.set_trace()
         return output, model_output_cache, cache  # type: ignore
 
     @torch.no_grad()
@@ -526,6 +590,7 @@ class MDLM(Denoiser):
         stopping_criteria: Optional[StoppingCriteriaList] = None,
         max_length: Optional[int] = None,
         max_new_tokens: Optional[int] = None,
+        return_dict_in_generate: Optional[bool] = False,
         batch_size: Optional[int] = None,
         device: Optional[str] = None,
         tokenizer: Optional[PreTrainedTokenizer] = None,
@@ -622,6 +687,7 @@ class MDLM(Denoiser):
             leave=True,
             disable=disable_pbar,
         )
+        num_tokens_generated_per_step = []
         for block_id in block_pbar:
             block_NFEs = 0
             if getattr(self.config, "block_size", self.config.length) == self.config.length:
@@ -688,23 +754,24 @@ class MDLM(Denoiser):
                     running_generation=running_generation,  # type: ignore
                     logits_processor=logits_processor,
                     tokenizer=tokenizer,
-                    sample_indices=sample_indices,
+                    sample_indices=sample_indices if not generation_config.use_cache else None,
                     **kwargs,
                 )
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
                 )
-
+                num_tokens_generated_per_step.append(
+                    (xs != denoiser_inputs.xt).sum().item()
+                )
                 if not torch.allclose(xs, denoiser_inputs.xt):
                     model_output_cache = None
                 if not generation_config.use_cache:
-                    xt[..., sample_indices] = xs[..., sample_indices]                    
+                    xt[..., sample_indices] = xs[..., sample_indices]   
+                    if (xt[..., sample_indices] == self.mask_token_id).sum().item() == 0:
+                        break                 
                 else:
                     xt = xs
-                if sample_indices is not None:
-                    if (xt[..., sample_indices] == self.mask_token_id).sum().item() == 0:
-                        break
                 if (xt == self.mask_token_id).sum().item() == 0:
                     break
             if not generation_config.use_cache:
@@ -719,7 +786,7 @@ class MDLM(Denoiser):
                 is_done = stopping_criteria(
                     input_ids=accumulated_samples[  # type: ignore
                         :,
-                        inputs_offset : inputs_offset + ((block_id + 1) * block_size),
+                        : inputs_offset + ((block_id + 1) * block_size),
                     ],
                     scores=None,  # type: ignore
                 )
@@ -736,6 +803,14 @@ class MDLM(Denoiser):
                 )
         if pad_length is not None:
             accumulated_samples = accumulated_samples[:, : -pad_length]
+        parallelism_factor = sum(num_tokens_generated_per_step) / len(
+            num_tokens_generated_per_step
+        )
+        if return_dict_in_generate:
+            return DiffusionGenerationOutput(
+                sequences=accumulated_samples,
+                parallelism_factor=parallelism_factor,
+            )
         return accumulated_samples  # type: ignore
 
 
@@ -1574,6 +1649,11 @@ class AnyOrderBD3LM(BD3LM):
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None] #.repeat(1, num_repetitions, 1)
         ).squeeze(-1)
+        if self.config.keep_clean_bos and not self.training:
+            log_p_theta = log_p_theta[:, 1:]
+            denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask[:, 1:]
+            denoiser_inputs.x0 = denoiser_inputs.x0[:, 1:]
+            denoiser_inputs.attention_mask = denoiser_inputs.attention_mask[:, 1:]
         loss = -log_p_theta
         if not self.training:
             denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask * (
@@ -1646,6 +1726,8 @@ class AnyOrderBD3LM(BD3LM):
         # permute input ids (where context_mask > 0 and attention_mask > 0)
         noise_mask = context_mask | ~(attention_mask.bool())
         permute_flag = noise_mask != 1
+        if self.config.keep_clean_bos:
+            permute_flag[:, 0] = False
         perm_indices = None
         xt = input_ids.clone()
         evaluate_nll_flag = getattr(self.config, "eval_nll", False) and not self.training and self.config.block_size > 1
@@ -1839,6 +1921,7 @@ class AnyOrderBD3LM(BD3LM):
         stopping_criteria: StoppingCriteriaList | None = None,
         max_length: int | None = None,
         max_new_tokens: int | None = None,
+        return_dict_in_generate: Optional[bool] = False,
         batch_size: int | None = None,
         device: str | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
@@ -1927,6 +2010,7 @@ class AnyOrderBD3LM(BD3LM):
             leave=True,
             disable=disable_pbar,
         )
+        num_tokens_generated_per_step = []
         if self.mask_token_id in accumulated_samples:
             inputs_offset = (accumulated_samples == self.mask_token_id)[0].nonzero().min()
         else:
@@ -1992,6 +2076,9 @@ class AnyOrderBD3LM(BD3LM):
                     logits_processor=logits_processor,
                     **kwargs,
                 )
+                num_tokens_generated_per_step.append(
+                    (xs != self.mask_token_id).sum().item()
+                )
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
@@ -2002,6 +2089,7 @@ class AnyOrderBD3LM(BD3LM):
                 ):
                     model_output_cache = None
                 accumulated_samples[:, xt_position_ids[masked_positions]] = xs
+                import ipdb ; ipdb.set_trace()
                 if generation_config.use_cache:
                     # Enode unmasked tokens only
                     cache = self.update_cache(
@@ -2019,8 +2107,7 @@ class AnyOrderBD3LM(BD3LM):
                     is_done = stopping_criteria(
                         input_ids=accumulated_samples[  # type: ignore
                             :,
-                            inputs_offset : inputs_offset
-                            + ((block_id + 1) * block_size)
+                            : inputs_offset + ((block_id + 1) * block_size)
                         ],
                         scores=None,  # type: ignore
                     )
@@ -2036,6 +2123,14 @@ class AnyOrderBD3LM(BD3LM):
                 break
         if pad_length is not None:
             accumulated_samples = accumulated_samples[:, : -pad_length]
+        parallelism_factor = sum(num_tokens_generated_per_step) / len(
+            num_tokens_generated_per_step
+        )
+        if return_dict_in_generate:
+            return DiffusionGenerationOutput(
+                sequences=accumulated_samples,
+                parallelism_factor=parallelism_factor,
+            )
         return accumulated_samples  # type: ignore
 
     def _forward(

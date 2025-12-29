@@ -12,9 +12,9 @@ HIDDEN_SIZE=768
 INTERMEDIATE_SIZE=3072
 N_LAYERS=12
 N_HEADS=12
-VOCAB_SIZE=50258
+VOCAB_SIZE=30522
 DROPOUT=0.1
-NORM_TYPE=qknorm
+NORM_TYPE=layernorm
 ATTN_BACKEND=sdpa
 
 # Hyperparameters
@@ -23,9 +23,9 @@ WARMUP_DURATION="2500ba"
 BATCH_SIZE=512
 MAX_DURATION="1000000ba"
 
-PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
+PRETRAINED_MODEL_NAME_OR_PATH=null
 
-TAG="aoarm_dropout${DROPOUT}_norm${NORM_TYPE}_v2"
+TAG="aoarm_dropout${DROPOUT}_norm${NORM_TYPE}_cleanbos_v1"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=lm1b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -35,7 +35,7 @@ if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
     MICRO_BATCH_SIZE=32
 else
-    MICRO_BATCH_SIZE=32
+    MICRO_BATCH_SIZE=16
 fi
 NUM_WORKERS=0
 
@@ -74,4 +74,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="10000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  model.config.keep_clean_bos=true

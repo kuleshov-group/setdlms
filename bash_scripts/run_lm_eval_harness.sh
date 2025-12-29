@@ -40,21 +40,32 @@ NUM_FEW_SHOT=0
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block32_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_comp_false_maskfalse_dummyfalse_4dummy_v4"
 
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_v2"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block768_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_comp_false_maskfalse_dummyfalse_v1"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block768_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_comp_false_maskfalse_dummyfalse_v1"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block768_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_comp_true_maskfalse_dummyfalse_v1"
 # MODEL_PATH="${RUN_DIR}/<PATH_TO_E2D2_SAVED_MODEL_DIR>"
 
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"
+# BLOCK_SIZE=4
+
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs16_v10"
+# BLOCK_SIZE=16
+
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max8_distill_v2"
+BLOCK_SIZE=1024
+
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max32_distill_v2"
+# BLOCK_SIZE=1024
+
 echo "MODEL_PATH: ${MODEL_PATH}"
 
-BLOCK_SIZE=768
 KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=true
+ALIGN_INPUTS_TO_BLOCKS=false
 USE_EMA=true
-
 OUTPUT_DIR="outputs/${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 
-L=768
+L=512
+RETURN_DICT_IN_GENERATE=true
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 T=${BLOCK_SIZE}
@@ -94,6 +105,7 @@ accelerate launch scripts/eval/harness_eval.py \
   generation_config.confidence_threshold=${CONFIDENCE_THRESHOLD} \
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
+  gen_kwargs.return_dict_in_generate=${RETURN_DICT_IN_GENERATE} \
   ~generation/logits_processor@logits_processor_list \
   gen_kwargs.logits_processor=null \
-  generation/stopping_criteria@stopping_criteria_list='[eos_token_criteria,max_length_criteria,gsm8k_regex_stopping_criteria]'
+  generation/stopping_criteria@stopping_criteria_list='[eos_token_criteria,gsm8k_regex_stopping_criteria]'

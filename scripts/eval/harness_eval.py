@@ -12,6 +12,7 @@ import accelerate
 import hydra
 import numpy as np
 import torch
+import torch.distributed as dist
 from lm_eval.api.model import LM
 from lm_eval.loggers.evaluation_tracker import EvaluationTracker
 from lm_eval.utils import make_table
@@ -22,6 +23,7 @@ from transformers import (
     AutoModelForMaskedLM,
     PreTrainedTokenizer,
 )
+from transformers.modeling_outputs import ModelOutput
 
 from datasets import Dataset
 from scripts.utils import (
@@ -32,6 +34,17 @@ from scripts.utils import (
 )
 from src.utils import fsspec_exists, fsspec_mkdirs
 
+def gather_results(results, world_size):
+    # Each GPU has local 'results' (any pickle-able object)
+    gathered_results = [None for _ in range(world_size)]
+    dist.all_gather_object(gathered_results, results)
+
+    # gathered_results is now a list of lists (one per rank)
+    all_results = []
+    for partial in gathered_results:
+        all_results.extend(partial)  # type: ignore
+
+    return all_results
 
 class LMEvalHarnessModel(LM):
     def __init__(
@@ -170,6 +183,7 @@ class LMEvalHarnessModel(LM):
         res_for_json = []
         correct, total = 0, 0
         tputs = []
+        parallelism_factors = []
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
         ):
@@ -197,12 +211,21 @@ class LMEvalHarnessModel(LM):
                 start_event.record()
             else:
                 start_event, end_event = None, None
-            sample = self.model.generate(
+            generation_outputs = self.model.generate(
                 inputs=elem["prefix"][None, ...].to(self.device),
                 disable_pbar=(self.rank != 0),
                 # tokenizer=self.tokenizer,  # Uncomment for debugging
                 **self.gen_kwargs,
             )
+            if isinstance(generation_outputs, ModelOutput):
+                sample = generation_outputs.sequences
+                parallelism_factor = generation_outputs.get("parallelism_factor", -1.0)
+                if parallelism_factor is None:
+                    parallelism_factor = -1.0
+            else:
+                sample = generation_outputs
+                parallelism_factor = -1.0
+            parallelism_factors.append(parallelism_factor)
             if self.rank == 0:
                 end_event.record()
                 torch.cuda.synchronize()
@@ -226,6 +249,9 @@ class LMEvalHarnessModel(LM):
                 print("prefix: ", elem["prefix_text"], result)
                 print("(Ground truth): ", requests[i].doc["answer"])
                 print("=" * 20, end="\n\n")
+                print(
+                    f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+                )
             res.append(result)
 
             # log accuracy
@@ -257,6 +283,11 @@ class LMEvalHarnessModel(LM):
                 indent=2,
             )
         print(f"RANK {self.rank} completed!")
+        parallelism_factors = gather_results(parallelism_factors, self.world_size)
+        if self.rank == 0:
+            print(
+                f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+            )
         return res
 
 

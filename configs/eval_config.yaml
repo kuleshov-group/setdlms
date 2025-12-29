@@ -34,3 +34,4 @@ gen_kwargs:
     stopping_criteria_dict: ${stopping_criteria_list}
   max_length: ${max_length}
   max_new_tokens: ${max_new_tokens}
+  return_dict_in_generate: false
