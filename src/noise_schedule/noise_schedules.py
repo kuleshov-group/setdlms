@@ -6,6 +6,7 @@ import math
 import torch
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
+import plotly.colors as pc
 
 
 class Noise(ABC):
@@ -78,44 +79,117 @@ class LinearNoise(Noise):
         self.length = length
         self.plot_schedule = plot_schedule
         if length is not None and plot_schedule and self.length < 128:
-            figdir = f"/share/kuleshov/ma2238/dllm-dev-new-/dllm-devnoise_schedules/ar_step/bs{self.block_size}/"
-            figdir += f'scale{self.scale}'
+            figdir = f"/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/noise_schedules/ar_step/bs{self.block_size}"
             figdir += '/'
             if not os.path.exists(figdir):
                 os.makedirs(figdir)
             self._plot_schedule(figdir)
         
     def _plot_schedule(self, figdir):
+        import numpy as np
+        import torch
+        import plotly.graph_objects as go
+        import plotly.colors as pc
+
         num_blocks = self.length // self.block_size
-        t = torch.linspace(0, 1, 1000).unsqueeze(-1).repeat(1, self.length).repeat_interleave(num_blocks, dim=1)
-        move_chance = self.total_noise(t)
-        move_chance = move_chance.cpu().numpy()
+        t = (
+            torch.linspace(0, 1, 1000)
+            .unsqueeze(-1)
+            .repeat(1, self.block_size)
+            .repeat_interleave(num_blocks, dim=1)
+        )
+        loc = (
+            -torch.linspace(0.0, 1 - 1 / num_blocks, num_blocks)
+            .repeat_interleave(self.block_size, dim=-1)
+            .flip(0)
+        )
 
-        # scale by num_blocks
-        move_chance = move_chance * num_blocks
+        move_chance = (t + loc) * num_blocks
+        move_chance = move_chance.clamp(0, 1).cpu().numpy()
 
-        # offset by block index
-        move_chance = move_chance + torch.arange(num_blocks, device=move_chance.device)[None, :] / num_blocks
+        x = np.linspace(0, 1, 1000)
+
+        colorscale = pc.sequential.Viridis
+        n = max(self.length - 1, 1)
 
         fig = go.Figure()
+        
+        active = (move_chance != 0) & (move_chance != 1)
+        overlap_per_x = active.sum(axis=1)  # (999,)
+        max_overlap = int(overlap_per_x.max())
+
+        # --- plot all traces ---
         for i in range(self.length):
-            fig.add_trace(go.Scatter(
-                x=np.linspace(0, 1, 1000),
-                y=move_chance[:, i],
-                mode='lines',
-                name=str(i) if self.length <= 8 else None
-            ))
+            u = i / n  # 0..1
+            color = pc.sample_colorscale(colorscale, u)[0]
+
+            is_first = (i == 0)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=x,
+                    y=move_chance[:, i],
+                    mode="lines",
+                    line=dict(color=color, width=2),
+                    name=str(i) if self.length <= 8 else None,
+                    showlegend=(self.length <= 8),
+                    # Shade area under the last curve
+                    fill="tozeroy" if is_first else None,
+                    fillcolor="rgba(68, 1, 84, 0.15)" if is_first else None,  # subtle tint
+                )
+            )
+
+        # --- AUC for the first index ---
+        y_first = move_chance[:, 0]
+        auc_first = float(np.trapz(y_first, x))
+
+        # pick a nice point on the first curve to attach an annotation
+        x_anno = 0.85
+        idx = int(np.clip(np.searchsorted(x, x_anno), 0, len(x) - 1))
+        y_anno = float(y_first[idx])
+
+        fig.add_annotation(
+            x=x[idx],
+            y=y_anno,
+            text=f"AUC(first) = {auc_first:.4f}",
+            showarrow=True,
+            arrowhead=2,
+            ax=40,
+            ay=-40,
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="rgba(0,0,0,0.2)",
+            borderwidth=1,
+        )
+
+        fig.add_annotation(
+            x=0.01,
+            y=0.99,
+            xref="paper",
+            yref="paper",
+            xanchor="left",
+            yanchor="top",
+            text=f"max block size = {max_overlap}",
+            showarrow=False,
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="rgba(0,0,0,0.2)",
+            borderwidth=1,
+        )
+
         fig.update_layout(
-            title="Line Plot with Colormap",
+            title="Schedule (last-curve AUC + max derivative-overlap)",
             xaxis_title="X-axis",
             yaxis_title="Y-axis",
-            showlegend=(self.length <= 8),
-            template="plotly"
+            template="plotly",
         )
-        fig.write_image(f'{figdir}{self.length}schedule.jpg')
-        print('min move chance', move_chance[0].max())
-        print('max move chance', move_chance[-1].min())
-        print('saved to ', f'{figdir}{self.length}schedule.jpg')
+
+        outpath = f"{figdir}{self.length}schedule.jpg"
+        fig.write_image(outpath)
+
+        print("min move chance", move_chance[0].max())
+        print("max move chance", move_chance[-1].min())
+        print("AUC first index", auc_first)
+        print("max block size", max_overlap)
+        print("saved to", outpath)
 
     def inverse(self, alpha_t):
         return 1 - alpha_t
@@ -157,8 +231,8 @@ class StaggeredNoise(Noise):
         self.init_schedule()
         
         if plot_schedule and self.length < 128:
-            figdir = f"/share/kuleshov/ma2238/dllm-dev-new-/dllm-devnoise_schedules/ar_step/bs{self.block_size}/"
-            figdir += f'scale{self.scale}'
+            figdir = f"/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/noise_schedules/staggered/bs{self.block_size}"
+            figdir += f'/scale{self.scale[0][0].item():.2f}'
             figdir += '/'
             if not os.path.exists(figdir):
                 os.makedirs(figdir)
@@ -185,31 +259,106 @@ class StaggeredNoise(Noise):
         self.loc =  - torch.linspace(0, 1 - 1 / scale, block_size).flip(0)
         self.loc = self.loc[None, :]
     
+        
     def _plot_schedule(self, figdir):
+        import numpy as np
+        import torch
+        import plotly.graph_objects as go
+        import plotly.colors as pc
+
         num_blocks = self.length // self.block_size
-        t = torch.linspace(0, 1, 1000).unsqueeze(-1).repeat(1, self.length).repeat_interleave(num_blocks, dim=1)
-        move_chance = self.total_noise(t)
-        move_chance = move_chance.cpu().numpy()
+        t = (
+            torch.linspace(0, 1, 1000)
+            .unsqueeze(-1)
+            .repeat(1, self.block_size)
+            .repeat_interleave(num_blocks, dim=1)
+        )
+
+        move_chance = self.total_noise(t).cpu().numpy()
+
+        x = np.linspace(0, 1, 1000)
+
+        colorscale = pc.sequential.Viridis
+        n = max(self.length - 1, 1)
 
         fig = go.Figure()
+        
+        active = (move_chance != 0) & (move_chance != 1)
+        overlap_per_x = active.sum(axis=1)  # (999,)
+        max_overlap = int(overlap_per_x.max())
+
+        # --- plot all traces ---
         for i in range(self.length):
-            fig.add_trace(go.Scatter(
-                x=np.linspace(0, 1, 1000),
-                y=move_chance[:, i],
-                mode='lines',
-                name=str(i) if self.length <= 8 else None
-            ))
+            u = i / n  # 0..1
+            color = pc.sample_colorscale(colorscale, u)[0]
+
+            is_first = (i == 0)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=x,
+                    y=move_chance[:, i],
+                    mode="lines",
+                    line=dict(color=color, width=2),
+                    name=str(i) if self.length <= 8 else None,
+                    showlegend=(self.length <= 8),
+                    # Shade area under the last curve
+                    fill="tozeroy" if is_first else None,
+                    fillcolor="rgba(68, 1, 84, 0.15)" if is_first else None,  # subtle tint
+                )
+            )
+
+        # --- AUC for the first index ---
+        y_first = move_chance[:, 0]
+        auc_first = float(np.trapz(y_first, x))
+
+        # pick a nice point on the first curve to attach an annotation
+        x_anno = 0.85
+        idx = int(np.clip(np.searchsorted(x, x_anno), 0, len(x) - 1))
+        y_anno = float(y_first[idx])
+
+        fig.add_annotation(
+            x=x[idx],
+            y=y_anno,
+            text=f"AUC(first) = {auc_first:.4f}",
+            showarrow=True,
+            arrowhead=2,
+            ax=40,
+            ay=-40,
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="rgba(0,0,0,0.2)",
+            borderwidth=1,
+        )
+
+        fig.add_annotation(
+            x=0.01,
+            y=0.99,
+            xref="paper",
+            yref="paper",
+            xanchor="left",
+            yanchor="top",
+            text=f"max block size = {max_overlap}",
+            showarrow=False,
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="rgba(0,0,0,0.2)",
+            borderwidth=1,
+        )
+
         fig.update_layout(
-            title="Line Plot with Colormap",
+            title="Schedule (last-curve AUC + max derivative-overlap)",
             xaxis_title="X-axis",
             yaxis_title="Y-axis",
-            showlegend=(self.length <= 8),
-            template="plotly"
+            template="plotly",
         )
-        fig.write_image(f'{figdir}{self.length}schedule.jpg')
-        print('min move chance', move_chance[0].max())
-        print('max move chance', move_chance[-1].min())
-        print('saved to ', f'{figdir}{self.length}schedule.jpg')
+
+        outpath = f"{figdir}{self.length}schedule.jpg"
+        fig.write_image(outpath)
+
+        print("min move chance", move_chance[0].max())
+        print("max move chance", move_chance[-1].min())
+        print("AUC first index", auc_first)
+        print("max block size", max_overlap)
+        print("saved to", outpath)
 
     def total_noise(self, t):
         if self.block_size == 1:
@@ -364,7 +513,13 @@ class EaseOutPowerNoise(StaggeredNoise):
         self.eps = eps
         self.name = "easeoutpower"
         self.block_size = block_size
-        self.b = max_block_size / length
+        # self.b = max_block_size / length
+        if desired_block_size == length:
+            self.b = 1
+        else:
+            fraction = (max_block_size) / (length - 1)
+            self.b = fraction / (1 + fraction)
+        self.window_size = max_block_size
         desired_num_blocks = length / desired_block_size
         desired_area = (desired_num_blocks / 2) * (1 / desired_num_blocks)**2 # using block diffusion slope
         self.k = desired_area / (self.b - desired_area)
@@ -375,8 +530,8 @@ class EaseOutPowerNoise(StaggeredNoise):
         self.loc = torch.linspace(0., 1.0 - self.b, self.length).flip(0)
         self.loc = self.loc[None, :]
         if plot_schedule and self.length < 128:
-            figdir = f"/share/kuleshov/ma2238/dllm-dev-new-/dllm-devnoise_schedules/ar_step/bs{self.block_size}/"
-            figdir += f'easeoutpower{self.k}'
+            figdir = f"/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/noise_schedules/ar_step/bs{self.block_size}"
+            figdir += f'/easeoutpower{self.k}b{self.b}'
             figdir += '/'
             if not os.path.exists(figdir):
                 os.makedirs(figdir)
@@ -393,7 +548,6 @@ class EaseOutPowerNoise(StaggeredNoise):
         move_chance = torch.where(x < 0, 0, move_chance)
         move_chance = torch.clamp(move_chance, min=0, max=1)
         return move_chance
-
 
     def __call__(self, t):
         t = t.to(torch.float32)
@@ -414,7 +568,7 @@ class EaseOutPowerNoise(StaggeredNoise):
     def sample_permutation_order(self, t, to_permute, block_size=None, masked_tokens=None, **kwargs):
         return super().sample_permutation_order(t, to_permute, block_size, masked_tokens, **kwargs)
     def compute_window_size(self):
-        return math.floor(self.b * self.length)
+        return self.window_size
     def init_schedule(self, scale=None, block_size=None):
         return
     def _plot_schedule(self, figdir):

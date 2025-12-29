@@ -11,8 +11,8 @@ N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=false
 
-DESIRED_BLOCK_SIZE=16
-MAX_BLOCK_SIZE=32
+DESIRED_BLOCK_SIZE=4
+MAX_BLOCK_SIZE=8
 ANNEAL_STEPS="0ba"
 
 # Hyperparameters
@@ -30,7 +30,7 @@ MAX_EVAL_SAMPLES=null  # Set to null or remove this line to use full dataset
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_distill_v2"
+TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_distill_v4"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else

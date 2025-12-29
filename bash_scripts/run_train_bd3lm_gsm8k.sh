@@ -5,11 +5,14 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=768
-EVAL_BLOCK_SIZE=768
+BLOCK_SIZE=8
+MAX_BLOCK_SIZE=8
+EVAL_BLOCK_SIZE=${MAX_BLOCK_SIZE}
 N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=false
+
+ANNEAL_STEPS="0ba"
 
 # Hyperparameters
 LR=1e-5
@@ -22,10 +25,8 @@ PRECISION="amp_bf16"
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TRAIN_COMPLEMENT=false
-RM_ATTN_TO_MASKED_TOKENS=false
-ATTEND_TO_DUMMY_TOKENS=false
-TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_v1"
+
+TAG="bd3lm_distill_anneal${ANNEAL_STEPS}_maxbs${MAX_BLOCK_SIZE}_v10"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -42,9 +43,8 @@ NUM_WORKERS=0
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
-  dataset@train_dataset=gsm8k_train \
-  dataset@eval_dataset=gsm8k_eval \
-  train_dataset.num_shot=${NUM_SHOT} \
+  dataset@train_dataset=gsm8k_train_distill \
+  dataset@eval_dataset=gsm8k_eval_distill \
   composer.optimizer.lr=${LR} \
   composer.trainer.precision=${PRECISION} \
   composer.trainer.eval_interval="1000ba" \
@@ -55,7 +55,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.alpha_f=${ALPHA_F} \
   training.compile_backbone=false \
   model=bd3lm \
-  model.config.length=768 \
+  model.config.length=1024 \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=${REINIT_MODEL} \
   model.config.backbone_config.num_layers=${N_LAYERS} \
@@ -70,8 +70,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  eval_dataloader.batch_size=4 \
-  +model.config.train_complement=${TRAIN_COMPLEMENT} \
-  +model.config.rm_attn_to_masked_tokens=${RM_ATTN_TO_MASKED_TOKENS} \
-  +model.config.attend_to_dummy_tokens=${ATTEND_TO_DUMMY_TOKENS} \
-  +model.config.num_dummy_tokens=4
+  composer.callbacks.log_gradient_variance.accumulation_steps=2 \
+  eval_dataloader.batch_size=1

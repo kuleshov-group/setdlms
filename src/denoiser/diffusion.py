@@ -542,7 +542,7 @@ class MDLM(Denoiser):
                 est_noise_indices = ((1 - alpha_s) * generation_config.block_size).to(torch.int)
             else:
                 # Multivariate noise schedule: sum masking probabilities for timestep s
-                est_noise_indices = torch.floor((1 - alpha_s).sum(dim=-1)).to(torch.int)
+                est_noise_indices = torch.ceil((1 - alpha_s).sum(dim=-1)).to(torch.int)
             num_noise_indices = torch.minimum(est_noise_indices, (xt_block == self.mask_token_id).sum() - 1)  # type: ignore
             if generation_config.confidence_based_noising:
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
@@ -565,8 +565,17 @@ class MDLM(Denoiser):
                 )
                 noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
             else:
-                # TODO: implement random noise indices selection
-                raise NotImplementedError
+                # Always decode the most confident token
+                conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
+                conf = torch.where(  # already decoded tokens have 'inf' confidence
+                    (denoiser_inputs.xt == self.mask_token_id).bool(),  # type: ignore
+                    conf,
+                    torch.inf,
+                )
+                if sample_indices is not None:
+                    noise_indices = conf[..., sample_indices].argsort(dim=-1)[..., :-1] + sample_indices[0]
+                else:
+                    noise_indices = conf.argsort(dim=-1)[..., :-1]
             output[..., noise_indices] = self.mask_token_id
             if sample_indices is not None and sample_indices[-1] < self.config.length:
                 output[..., sample_indices[-1]+1:] = self.mask_token_id
@@ -578,7 +587,6 @@ class MDLM(Denoiser):
                 f"Sampling strategy {generation_config.sampling_strategy} not"
                 " implemented."
             )
-        import ipdb ; ipdb.set_trace()
         return output, model_output_cache, cache  # type: ignore
 
     @torch.no_grad()
@@ -2089,7 +2097,6 @@ class AnyOrderBD3LM(BD3LM):
                 ):
                     model_output_cache = None
                 accumulated_samples[:, xt_position_ids[masked_positions]] = xs
-                import ipdb ; ipdb.set_trace()
                 if generation_config.use_cache:
                     # Enode unmasked tokens only
                     cache = self.update_cache(

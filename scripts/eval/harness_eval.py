@@ -6,7 +6,7 @@ import json
 import os
 import re
 import sys
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import accelerate
 import hydra
@@ -34,8 +34,11 @@ from scripts.utils import (
 )
 from src.utils import fsspec_exists, fsspec_mkdirs
 
+
 def gather_results(results, world_size):
     # Each GPU has local 'results' (any pickle-able object)
+    if world_size == 1:
+        return results
     gathered_results = [None for _ in range(world_size)]
     dist.all_gather_object(gathered_results, results)
 
@@ -45,6 +48,7 @@ def gather_results(results, world_size):
         all_results.extend(partial)  # type: ignore
 
     return all_results
+
 
 class LMEvalHarnessModel(LM):
     def __init__(
@@ -61,7 +65,6 @@ class LMEvalHarnessModel(LM):
         throughput_samples: int = 100,
         throughput_warmup: int = 100,
         model_config_overrides: dict[str, Any] | None = None,
-        **kwargs: Any,
     ):
         """
         Args:
@@ -150,6 +153,19 @@ class LMEvalHarnessModel(LM):
     def loglikelihood_rolling(self, requests) -> List[float]:
         raise NotImplementedError
 
+    @property
+    def tokenizer_name(self):
+        return self.tokenizer.name_or_path
+
+    def apply_chat_template(
+        self, chat_history: List[Dict[str, str]], add_generation_prompt: bool = True
+    ):
+        return self.tokenizer.apply_chat_template(
+            chat_history,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+        )
+
     def generate_until(self, requests, **generation_kwargs):
         # TODO: Move this to utils file / perhaps use chat template
         def _tokenize(
@@ -160,14 +176,32 @@ class LMEvalHarnessModel(LM):
             ),
         ):
             ctx = e["prefix"]
-            ctx = re.sub(
-                r"^####\s*(\d+)\s*$",
-                r"$\\boxed{\1}$" + self.tokenizer.eos_token,
-                ctx,
-                flags=re.MULTILINE,
-            )
-            ctx = ctx.replace("Question: ", prefix_text)
-            ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}Answer:")
+            if self.tokenizer.chat_template is not None:
+                # Extract question part (before "Answer:" if it exists)
+                if "\nAnswer:" in ctx:
+                    question_part = ctx.split("\nAnswer:")[0]
+                else:
+                    question_part = ctx
+
+                # Remove "Question: " prefix if present
+                if question_part.startswith("Question: "):
+                    question_text = question_part.replace("Question: ", prefix_text)
+                else:
+                    question_text = question_part
+
+                messages = [
+                    {"role": "user", "content": question_text},
+                ]
+                ctx = self.apply_chat_template(messages)
+            else:
+                ctx = re.sub(
+                    r"^####\s*(\d+)\s*$",
+                    r"$\\boxed{\1}$" + self.tokenizer.eos_token,
+                    ctx,
+                    flags=re.MULTILINE,
+                )
+                ctx = ctx.replace("Question: ", prefix_text)
+                ctx = ctx.replace("\nAnswer:", f"{self.tokenizer.eos_token}Answer:")
             prefix_tokens = self.tokenizer(ctx)["input_ids"]
             return {
                 "prefix_text": ctx,

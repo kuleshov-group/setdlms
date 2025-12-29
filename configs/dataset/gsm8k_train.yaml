@@ -11,3 +11,4 @@ source_key: "question"
 target_key: "answer"
 source_prompt_text: "Please reason step by step, and put your final answer within $\\boxed{}$. "
 target_prompt_text: "Answer: "
+use_chat_template: false
