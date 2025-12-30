@@ -572,10 +572,11 @@ class MDLM(Denoiser):
                     conf,
                     torch.inf,
                 )
+                num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum() + 1
                 if sample_indices is not None:
-                    noise_indices = conf[..., sample_indices].argsort(dim=-1)[..., :-1] + sample_indices[0]
+                    noise_indices = conf[..., sample_indices].argsort(dim=-1)[..., :-num_clean_indices] + sample_indices[0]
                 else:
-                    noise_indices = conf.argsort(dim=-1)[..., :-1]
+                    noise_indices = conf.argsort(dim=-1)[..., :-num_clean_indices]
             output[..., noise_indices] = self.mask_token_id
             if sample_indices is not None and sample_indices[-1] < self.config.length:
                 output[..., sample_indices[-1]+1:] = self.mask_token_id
