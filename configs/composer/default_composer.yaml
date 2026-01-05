@@ -10,6 +10,9 @@ defaults:
       - runtime_estimator
       - save_best_checkpointing
       - speed_monitor
+      - log_gradient_norms
+      - log_gradient_variance
+      - use_eval_block_size
   - loggers: wandb
   - lr_scheduler: constant_with_warmup
   - optimizer: decoupled_adamw

@@ -78,12 +78,32 @@ class LinearNoise(Noise):
         self.block_size = block_size
         self.length = length
         self.plot_schedule = plot_schedule
+        if length is not None and block_size is not None:
+            self.num_blocks = self.length // self.block_size
+            self.b = 1 / self.num_blocks
+            self.loc = (
+                -torch.linspace(0.0, 1 - 1 / self.num_blocks, self.num_blocks)
+                .repeat_interleave(self.block_size, dim=-1)
+                .flip(0)
+            )
+        else:
+            self.num_blocks = 1
+            self.b = 1
+            self.loc = torch.tensor([0.0])
+    
+        print("variance", (self.num_blocks - 1) / (6* self.num_blocks))
         if length is not None and plot_schedule and self.length < 128:
             figdir = f"/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/noise_schedules/ar_step/bs{self.block_size}"
             figdir += '/'
             if not os.path.exists(figdir):
                 os.makedirs(figdir)
             self._plot_schedule(figdir)
+
+    def total_noise(self, t):
+        loc = self.loc.to(t.device)
+        move_chance = (t + loc) * self.num_blocks
+        move_chance = move_chance.clamp(0.0, 1.0)
+        return move_chance
         
     def _plot_schedule(self, figdir):
         import numpy as np
@@ -91,20 +111,14 @@ class LinearNoise(Noise):
         import plotly.graph_objects as go
         import plotly.colors as pc
 
-        num_blocks = self.length // self.block_size
         t = (
             torch.linspace(0, 1, 1000)
             .unsqueeze(-1)
             .repeat(1, self.block_size)
-            .repeat_interleave(num_blocks, dim=1)
-        )
-        loc = (
-            -torch.linspace(0.0, 1 - 1 / num_blocks, num_blocks)
-            .repeat_interleave(self.block_size, dim=-1)
-            .flip(0)
+            .repeat_interleave(self.num_blocks, dim=1)
         )
 
-        move_chance = (t + loc) * num_blocks
+        move_chance = (t + self.loc) * self.num_blocks
         move_chance = move_chance.clamp(0, 1).cpu().numpy()
 
         x = np.linspace(0, 1, 1000)
@@ -117,6 +131,7 @@ class LinearNoise(Noise):
         active = (move_chance != 0) & (move_chance != 1)
         overlap_per_x = active.sum(axis=1)  # (999,)
         max_overlap = int(overlap_per_x.max())
+        avg_overlap = float(overlap_per_x.mean())
 
         # --- plot all traces ---
         for i in range(self.length):
@@ -134,8 +149,8 @@ class LinearNoise(Noise):
                     name=str(i) if self.length <= 8 else None,
                     showlegend=(self.length <= 8),
                     # Shade area under the last curve
-                    fill="tozeroy" if is_first else None,
-                    fillcolor="rgba(68, 1, 84, 0.15)" if is_first else None,  # subtle tint
+                    # fill="tozeroy" if is_first else None,
+                    # fillcolor="rgba(68, 1, 84, 0.15)" if is_first else None,  # subtle tint
                 )
             )
 
@@ -148,38 +163,40 @@ class LinearNoise(Noise):
         idx = int(np.clip(np.searchsorted(x, x_anno), 0, len(x) - 1))
         y_anno = float(y_first[idx])
 
-        fig.add_annotation(
-            x=x[idx],
-            y=y_anno,
-            text=f"AUC(first) = {auc_first:.4f}",
-            showarrow=True,
-            arrowhead=2,
-            ax=40,
-            ay=-40,
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="rgba(0,0,0,0.2)",
-            borderwidth=1,
-        )
+        # fig.add_annotation(
+        #     x=x[idx],
+        #     y=y_anno,
+        #     text=f"AUC(first) = {auc_first:.4f}",
+        #     showarrow=True,
+        #     arrowhead=2,
+        #     ax=40,
+        #     ay=-40,
+        #     bgcolor="rgba(255,255,255,0.8)",
+        #     bordercolor="rgba(0,0,0,0.2)",
+        #     borderwidth=1,
+        # )
 
-        fig.add_annotation(
-            x=0.01,
-            y=0.99,
-            xref="paper",
-            yref="paper",
-            xanchor="left",
-            yanchor="top",
-            text=f"max block size = {max_overlap}",
-            showarrow=False,
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="rgba(0,0,0,0.2)",
-            borderwidth=1,
-        )
+        # fig.add_annotation(
+        #     x=0.01,
+        #     y=0.99,
+        #     xref="paper",
+        #     yref="paper",
+        #     xanchor="left",
+        #     yanchor="top",
+        #     text=f"max # tokens predicted = {max_overlap}, avg # tokens predicted = {auc_first*self.length:.2f}",
+        #     showarrow=False,
+        #     bgcolor="rgba(255,255,255,0.8)",
+        #     bordercolor="rgba(0,0,0,0.2)",
+        #     borderwidth=1,
+        # )
 
         fig.update_layout(
-            title="Schedule (last-curve AUC + max derivative-overlap)",
-            xaxis_title="X-axis",
-            yaxis_title="Y-axis",
+            title=f"<b>Linear noise schedule for block size {self.block_size}</b><br>Max # tokens actively being unmasked: {max_overlap}<br>Expected # tokens actively being unmasked: {auc_first*self.length:.2f}",
+            title_x=0.5,
+            xaxis_title="t",
+            yaxis_title="Mask prob.",
             template="plotly",
+            legend_title_text="Token index",
         )
 
         outpath = f"{figdir}{self.length}schedule.jpg"
@@ -189,6 +206,7 @@ class LinearNoise(Noise):
         print("max move chance", move_chance[-1].min())
         print("AUC first index", auc_first)
         print("max block size", max_overlap)
+        print("avg block size", avg_overlap)
         print("saved to", outpath)
 
     def inverse(self, alpha_t):
@@ -196,8 +214,12 @@ class LinearNoise(Noise):
 
     def __call__(self, t):
         t = t.to(torch.float32)
-        alpha_t_prime = -torch.ones_like(t)
-        move_chance = t
+        move_chance = self.total_noise(t)
+        if self.length is not None and self.block_size is not None:
+            num_blocks = self.length // self.block_size
+            alpha_t_prime = torch.where(torch.logical_and(t > self.loc, t < self.loc + 1 / num_blocks), -self.num_blocks, 0.)
+        else:
+            alpha_t_prime = -torch.ones_like(t)
         return 1 - move_chance, alpha_t_prime
 
     def sample_permutation_order(self, t, to_permute: torch.Tensor, block_size: Optional[int] = None, **kwargs: Any) -> torch.Tensor:
@@ -228,6 +250,11 @@ class StaggeredNoise(Noise):
         self.scale = scale
         self.block_size = block_size
         self.length = length
+        self.b = 1 / self.scale
+        # M = (20 * scale**3) - (30 * scale**2) + (5 * scale) + 16
+        # M /= ((60 * scale) * (scale - 1)**2)
+        # var = (1/2 - (1 / (scale * 6))) - M
+        # print("variance", var)
         self.init_schedule()
         
         if plot_schedule and self.length < 128:
@@ -300,11 +327,11 @@ class StaggeredNoise(Noise):
                     y=move_chance[:, i],
                     mode="lines",
                     line=dict(color=color, width=2),
-                    name=str(i) if self.length <= 8 else None,
+                    name=str(i+1) if self.length <= 8 else None,
                     showlegend=(self.length <= 8),
                     # Shade area under the last curve
-                    fill="tozeroy" if is_first else None,
-                    fillcolor="rgba(68, 1, 84, 0.15)" if is_first else None,  # subtle tint
+                    # fill="tozeroy" if is_first else None,
+                    # fillcolor="rgba(68, 1, 84, 0.15)" if is_first else None,  # subtle tint
                 )
             )
 
@@ -312,43 +339,52 @@ class StaggeredNoise(Noise):
         y_first = move_chance[:, 0]
         auc_first = float(np.trapz(y_first, x))
 
+        # auc of last curve from 1-b to b
+        # ts_check = torch.linspace(1-self.b, self.b, 100000)
+        # y_check = self.total_noise(ts_check)[:,-1]
+        # auc_last = float(np.trapz(y_check, ts_check))
+        # assert auc_last >= self.int_min, f"auc of last curve {auc_last} is less than specified int_min {self.int_min}"
+        # print(f"auc of last curve {auc_last} is greater than/equal to specified int_min {self.int_min}")
+
         # pick a nice point on the first curve to attach an annotation
         x_anno = 0.85
         idx = int(np.clip(np.searchsorted(x, x_anno), 0, len(x) - 1))
         y_anno = float(y_first[idx])
 
-        fig.add_annotation(
-            x=x[idx],
-            y=y_anno,
-            text=f"AUC(first) = {auc_first:.4f}",
-            showarrow=True,
-            arrowhead=2,
-            ax=40,
-            ay=-40,
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="rgba(0,0,0,0.2)",
-            borderwidth=1,
-        )
+        # fig.add_annotation(
+        #     x=x[idx],
+        #     y=y_anno,
+        #     text=f"AUC(first) = {auc_first:.4f}",
+        #     showarrow=True,
+        #     arrowhead=2,
+        #     ax=40,
+        #     ay=-40,
+        #     bgcolor="rgba(255,255,255,0.8)",
+        #     bordercolor="rgba(0,0,0,0.2)",
+        #     borderwidth=1,
+        # )
 
-        fig.add_annotation(
-            x=0.01,
-            y=0.99,
-            xref="paper",
-            yref="paper",
-            xanchor="left",
-            yanchor="top",
-            text=f"max block size = {max_overlap}",
-            showarrow=False,
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="rgba(0,0,0,0.2)",
-            borderwidth=1,
-        )
+        # fig.add_annotation(
+        #     x=0.01,
+        #     y=0.99,
+        #     xref="paper",
+        #     yref="paper",
+        #     xanchor="left",
+        #     yanchor="top",
+        #     text=f"max # tokens predicted = {max_overlap}, avg # tokens predicted = {auc_first*self.block_size:.2f}",
+        #     showarrow=False,
+        #     bgcolor="rgba(255,255,255,0.8)",
+        #     bordercolor="rgba(0,0,0,0.2)",
+        #     borderwidth=1,
+        # )
 
         fig.update_layout(
-            title="Schedule (last-curve AUC + max derivative-overlap)",
-            xaxis_title="X-axis",
-            yaxis_title="Y-axis",
+            title=f"<b>Staggered noise schedule</b><br>Max # tokens actively being unmasked: {max_overlap}<br>Expected # tokens actively being unmasked: {auc_first*self.length:.2f}",
+            title_x=0.5,
+            xaxis_title="t",
+            yaxis_title="Mask prob.",
             template="plotly",
+            legend_title_text="Token index",
         )
 
         outpath = f"{figdir}{self.length}schedule.jpg"
@@ -358,6 +394,7 @@ class StaggeredNoise(Noise):
         print("max move chance", move_chance[-1].min())
         print("AUC first index", auc_first)
         print("max block size", max_overlap)
+        # print("avg block size", avg_overlap)
         print("saved to", outpath)
 
     def total_noise(self, t):
@@ -469,15 +506,25 @@ class StaggeredNoise(Noise):
             g = torch.where(logits == 0, -float('inf'), g)
             g = torch.where(logits == 1, float('inf'), g)
             return (logits + g)
-
+        
+        ts = []
         for i in range(block_size):
             # Get next-hitting time from available tokens
-            t = (self.inverse(uniform_samp[:, i] * mask_chance) * mask).max(dim=-1).values
+            move_chance_next = uniform_samp[:, i] * mask_chance
+            # TODO: problem, this ends up becoming close to 1
+            # t = (self.inverse(move_chance_next) * mask).max(dim=-1).values
+            # get the first nonzero mask index
+            first_nonzero_mask_index = (mask != 0).float().argmax(dim=-1)
+            t = (self.inverse(move_chance_next) * mask)[:, first_nonzero_mask_index]
+            
             unmask_chance = 1 - self.total_noise(t)
 
             # Hard-code unmasking probability for prompt/pad tokens
             unmask_chance_filtered = torch.where(is_beginning, 1.0, unmask_chance)
             unmask_chance_filtered = torch.where(is_end, 0.0, unmask_chance_filtered)
+
+            # if not is_beginning[0, i] and not is_end[0, i]:
+            #     import ipdb ; ipdb.set_trace()
 
             # Ignore previously sampled tokens
             unmask_chance_filtered *= mask
@@ -491,44 +538,41 @@ class StaggeredNoise(Noise):
             # Sample a token
             perms[:, i] = gumbel_noise(unmask_chance_filtered, g[:, i]).argmax(dim=-1)
             mask.scatter_(1, perms[:, i].unsqueeze(-1), False)
-            
+            ts.append(t)
             if i == block_size - 1:
                 break
             mask_chance = self.total_noise(t)
     
-
         perms = perms.reshape(batch_size, -1, block_size)
+        max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
         perms += torch.arange(num_blocks, device=device)[None, :, None] * block_size
-        perms = perms.reshape(batch_size, -1)
-        max_deviation = (perms - torch.arange(0, block_size, device=device)[None, :]).abs()
 
-        if max_deviation.max() > window_size:
-            raise ValueError(f'Window size violation at final step', max_deviation.max(), window_size, self.scale[0][0])
+        # if max_deviation.max() > window_size:
+        #     raise ValueError(f'Window size violation at final step', max_deviation.max(), window_size, self.scale[0][0])
 
-        return perms
+        return perms.reshape(batch_size, -1)
 
 class EaseOutPowerNoise(StaggeredNoise):
-    def __init__(self, eps=1e-3, block_size=1, desired_block_size=1, max_block_size=1, length=1, plot_schedule=False):
-        super().__init__()
+    def __init__(self,
+            eps=1e-4,
+            block_size=1,
+            desired_block_size=1,
+            max_block_size=1,
+            length=1,
+            k=None,
+            b=None,
+            plot_schedule=False,
+            int_min=None):
+        self.int_min = int_min
+        if int_min is not None:
+            assert int_min >= 0.0 and int_min <= 0.5, f"int_min {int_min} must be between 0.0 and 0.5"
         self.eps = eps
         self.name = "easeoutpower"
-        self.block_size = block_size
-        # self.b = max_block_size / length
-        if desired_block_size == length:
-            self.b = 1
-        else:
-            fraction = (max_block_size) / (length - 1)
-            self.b = fraction / (1 + fraction)
-        self.window_size = max_block_size
-        desired_num_blocks = length / desired_block_size
-        desired_area = (desired_num_blocks / 2) * (1 / desired_num_blocks)**2 # using block diffusion slope
-        self.k = desired_area / (self.b - desired_area)
-        cur_area = self.k / (self.k + 1) * self.b
-        assert abs(cur_area - desired_area) < 1e-6, f"Current area {cur_area} does not match desired area {desired_area}"
-        self.scale = torch.tensor(self.k)[None, None]
         self.length = length
-        self.loc = torch.linspace(0., 1.0 - self.b, self.length).flip(0)
-        self.loc = self.loc[None, :]
+        self.desired_block_size = desired_block_size
+        self.max_block_size = max_block_size
+        self.init_schedule(block_size, desired_block_size, max_block_size, k, b, int_min)
+        print("max active:", (((self.loc + self.b)[-1][-1] - self.loc) > self.eps).sum().item())
         if plot_schedule and self.length < 128:
             figdir = f"/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/noise_schedules/ar_step/bs{self.block_size}"
             figdir += f'/easeoutpower{self.k}b{self.b}'
@@ -537,9 +581,60 @@ class EaseOutPowerNoise(StaggeredNoise):
                 os.makedirs(figdir)
             self._plot_schedule(figdir)
 
+    def init_schedule(self, block_size=None, desired_block_size=None, max_block_size=None, k=None, b=None, int_min=None):
+        if desired_block_size is None:
+            desired_block_size = self.desired_block_size
+        if max_block_size is None:
+            max_block_size = self.max_block_size
+        self.block_size = block_size
+        desired_num_blocks = self.length / desired_block_size
+        desired_area = 1 / (2 * desired_num_blocks)
+        frac = (max_block_size - 1) / (self.block_size - 1)
+        if int_min is not None:
+            # print("w must be at least", frac / (1 + frac))
+            # print("k must be less than", desired_area / (frac - desired_area))
+            b = (2 + int_min + math.sqrt(int_min * (4 + int_min))) / 4
+        if k is not None:
+            self.k = k
+            self.b = desired_area * (self.k + 1) / self.k
+        elif b is not None:
+            self.b = b
+            self.k = desired_area / (self.b - desired_area)
+        else:
+            ub_block_size = max_block_size + 1
+            frac = (ub_block_size - 1) / (self.block_size - 1)
+            lb = frac / (1 + frac)
+            denominator = lb - desired_area
+            self.b = lb
+            self.k = desired_area / denominator
+        print(f"k: {self.k}, b: {self.b}")
+        assert self.b <= 1.0, f"b {self.b} must be less than or equal to 1.0"
+        cur_area = self.k / (self.k + 1) * self.b
+        print(f"cur_area: {cur_area}, desired_area: {desired_area}, avg unmasked tokens: {self.block_size * cur_area}")
+        # assert abs(cur_area - desired_area) < 1e-6, f"Current area {cur_area} does not match desired area {desired_area}"
+        self.scale = torch.tensor(-1.0)[None, None]
+        self.loc = torch.linspace(0., 1.0 - self.b, self.block_size).flip(0)
+        self.loc = self.loc[None, :]
+        
+        # lower_bound = 1 / (self.b * self.block_size)
+        lower_bound = 1 / self.block_size
+
+        if self.b < 1.0:
+            i = self.b * (1 - lower_bound)**(1 / self.k) / (1 - self.b) * (self.block_size - 1) + 1
+            print(f"i <= {i}")
+            move_chance = self.total_noise(torch.tensor([self.b]))
+            print("max active above lower bound", (move_chance >= lower_bound).sum().item())
+            print("prob. of masking max_block_size", move_chance[0, -(max_block_size-1)].item())
+            print("uniform prob", 1 / self.block_size)
+            print("uniform prob wrt window size", 1 / (self.b * self.block_size))
+            
+
     def total_noise(self, t):
+        batch_size = t.shape[0]
         loc = self.loc.to(t.device).to(t.dtype)
         t = t.to(torch.float32)
+        if t.ndim > 1 and t.shape[-1] > 1:
+            t = t.reshape(-1, self.block_size)
         if t.ndim == 1:
             t = t.unsqueeze(-1)
         x = (t - loc) / self.b
@@ -547,29 +642,41 @@ class EaseOutPowerNoise(StaggeredNoise):
         move_chance = torch.where(x > 1, 1, move_chance)
         move_chance = torch.where(x < 0, 0, move_chance)
         move_chance = torch.clamp(move_chance, min=0, max=1)
-        return move_chance
+        return move_chance.reshape(batch_size, -1)
 
-    def __call__(self, t):
-        t = t.to(torch.float32)
+    def rate_noise(self, t):
+        batch_size = t.shape[0]
         loc = self.loc.to(t.device).to(t.dtype)
+        t = t.to(torch.float32)
+        if t.ndim > 1 and t.shape[-1] > 1:
+            t = t.reshape(-1, self.block_size)
         if t.ndim == 1:
             t = t.unsqueeze(-1)
         x = (t - loc) / self.b
-        move_chance = self.total_noise(t)
         alpha_t_prime = -self.k / self.b * torch.pow(1 - x, self.k - 1)
+        alpha_t_prime = torch.where(x > 1, 0, alpha_t_prime)
+        alpha_t_prime = torch.where(x < 0, 0, alpha_t_prime)
+        return alpha_t_prime.reshape(batch_size, -1)
+
+    def __call__(self, t):
+        move_chance = self.total_noise(t)
+        alpha_t_prime = self.rate_noise(t)
         return 1 - move_chance, alpha_t_prime
 
-    def inverse(self, p):
-        loc = self.loc.to(p.device).to(p.dtype)
-        t = loc + self.b * (1 - torch.pow(1 - p, 1 / self.k))
+    def inverse(self, move_chance):
+        if move_chance.ndim > 1 and move_chance.shape[-1] > 1:
+            move_chance = move_chance.reshape(-1, self.block_size)
+        if move_chance.ndim == 1:
+            move_chance = move_chance.unsqueeze(-1)
+        batch_size = move_chance.shape[0]
+        loc = self.loc.to(move_chance.device).to(move_chance.dtype)
+        t = loc + self.b * (1 - torch.pow(1 - move_chance, 1 / self.k))
         t = torch.clamp(t, min=0, max=1)
-        return t
+        return t.reshape(batch_size, -1)
         
     def sample_permutation_order(self, t, to_permute, block_size=None, masked_tokens=None, **kwargs):
         return super().sample_permutation_order(t, to_permute, block_size, masked_tokens, **kwargs)
     def compute_window_size(self):
-        return self.window_size
-    def init_schedule(self, scale=None, block_size=None):
-        return
+        return math.floor(self.b * self.length)
     def _plot_schedule(self, figdir):
         return super()._plot_schedule(figdir)

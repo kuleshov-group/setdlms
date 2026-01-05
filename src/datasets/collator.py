@@ -99,7 +99,8 @@ class DenoisingCollator:
             t = t[..., torch.randperm(t.shape[-1])]
             return t.repeat_interleave(self.block_size, dim=1)[:, :self.max_length]
         # Remove extra padding
-        t = t[:, :self.max_length]
+        if t.ndim == 2:
+            t = t[:, :self.max_length]
         return t
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:

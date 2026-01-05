@@ -30,6 +30,7 @@ from src.denoiser.base import (
     DenoiserInput,
     LossAndNllOutput,
 )
+from composer import State, Logger
 
 
 def create_attn_mask(attn_mask):
@@ -1663,6 +1664,8 @@ class AnyOrderBD3LM(BD3LM):
             denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask[:, 1:]
             denoiser_inputs.x0 = denoiser_inputs.x0[:, 1:]
             denoiser_inputs.attention_mask = denoiser_inputs.attention_mask[:, 1:]
+            denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[:, 1:]
+            denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[:, 1:]
         loss = -log_p_theta
         if not self.training:
             denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask * (
@@ -1672,7 +1675,7 @@ class AnyOrderBD3LM(BD3LM):
             coeff = denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
             coeff = torch.where(torch.isnan(coeff), torch.zeros_like(coeff), coeff)
             seq_len = denoiser_inputs.x0.shape[1]
-            masked_indices = denoiser_inputs.xt[:, seq_len:] == self.mask_token_id
+            masked_indices = denoiser_inputs.xt[:, -seq_len:] == self.mask_token_id
             nlls = (
                 log_p_theta
                 * coeff
@@ -1759,7 +1762,7 @@ class AnyOrderBD3LM(BD3LM):
                 perm_indices = self.noise_schedule.sample_permutation_order(
                     t,
                     permute_flag,
-                    self.config.block_size,
+                    self.config.block_size if self.training else self.config.eval_block_size,
                     masked_tokens=(xt[:, seq_len:] == self.mask_token_id) if evaluate_nll_flag else None,
                 )
         num_repetitions = self.static_attention_mask.shape[1] // input_ids.shape[1]

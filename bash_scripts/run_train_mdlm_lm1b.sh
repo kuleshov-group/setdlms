@@ -24,7 +24,7 @@ MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=null
 
-TAG="mdlm_adaln_v8"
+TAG="mdlm_adaln_cleanbos_antithetic_hparam_v2"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=lm1b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -34,7 +34,7 @@ if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
     MICRO_BATCH_SIZE=128
 else
-    MICRO_BATCH_SIZE=64
+    MICRO_BATCH_SIZE=128
 fi
 NUM_WORKERS=0
 
@@ -72,4 +72,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="10000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  composer.optimizer.betas=[0.9,0.999] \
+  composer.optimizer.weight_decay=0 \
+  model.config.keep_clean_bos=true

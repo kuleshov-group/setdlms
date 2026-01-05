@@ -2669,3 +2669,26 @@ class LogBlockSize(Callback):
         else:
             block_size = state.model.model.config.block_size
         logger.log_metrics({"block_size": block_size})
+
+class UseEvalBlockSize(Callback):
+    def __init__(self, eval_block_size: int, block_size: int):
+        super().__init__()
+        self.eval_block_size = eval_block_size
+        self.block_size = block_size
+
+    @staticmethod
+    def _select_model_from_state(state: State):
+        if hasattr(state.model, "module"):
+            return state.model.module.model
+        else:
+            return state.model.model
+
+    def eval_before_all(self, state: State, logger: Logger) -> None:
+        model = self._select_model_from_state(state)
+        if hasattr(model.noise_schedule, "init_schedule"):
+            model.noise_schedule.init_schedule(block_size=self.eval_block_size)
+
+    def eval_end(self, state: State, logger: Logger) -> None:
+        model = self._select_model_from_state(state)
+        if hasattr(model.noise_schedule, "init_schedule"):
+            model.noise_schedule.init_schedule(block_size=self.block_size)

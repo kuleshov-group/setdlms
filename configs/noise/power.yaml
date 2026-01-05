@@ -5,3 +5,4 @@ max_block_size: ${block_size}
 block_size: ${block_size}
 desired_block_size: ${block_size}
 length: ${model.config.length}
+int_min: null

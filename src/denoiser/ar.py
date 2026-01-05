@@ -75,8 +75,7 @@ class AR(Denoiser):
             context_mask = torch.zeros_like(input_ids)
         elif (
             context_mask.sum() == 0
-            and attention_mask is None
-            or (attention_mask == 1).all()
+            and (attention_mask is None or (attention_mask == 1).all())
         ):
             attention_mask = None
         else:

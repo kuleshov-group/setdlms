@@ -13,13 +13,13 @@ LR=1e-5
 WARMUP_DURATION="100ba"
 ALPHA_F=0.5
 BATCH_SIZE=1
-MAX_DURATION="30000ba"
+MAX_DURATION="75000ba"
 PRECISION="amp_bf16"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="ar"
+TAG="ar_distill_v5"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=gsm8k-${NUM_SHOT}shot_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
 
@@ -29,9 +29,8 @@ NUM_WORKERS=0
 composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoiser.py \
   run_name=${RUN_NAME} \
   pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
-  dataset@train_dataset=gsm8k_train \
-  dataset@eval_dataset=gsm8k_eval \
-  train_dataset.num_shot=${NUM_SHOT} \
+  dataset@train_dataset=gsm8k_train_distill \
+  dataset@eval_dataset=gsm8k_eval_distill \
   composer.optimizer.lr=${LR} \
   composer.trainer.precision=${PRECISION} \
   composer.trainer.eval_interval="1000ba" \
@@ -42,7 +41,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.alpha_f=${ALPHA_F} \
   model=ar \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
-  model.config.length=768 \
+  model.config.length=1024 \
   model.config.backbone_config.reinit_model=false \
   model.config.backbone_config.num_layers=${N_LAYERS} \
   model.config.backbone_config.keep_top_layers=false \
@@ -53,4 +52,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  eval_dataloader.batch_size=8 \
+  eval_dataloader.batch_size=4 \
+  composer.callbacks.log_gradient_variance.accumulation_steps=2

@@ -3,19 +3,25 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block32_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_og_test_v1"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block32_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_comp_true_maskfalse_dummyfalse_4dummy_v4"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block32_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_comp_false_maskfalse_dummyfalse_4dummy_v4"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_v1"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_v2"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers-1_mdlm_v3"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_scale768"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_scale8" # 128,1.33333333333
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max8_distill_v5"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_staggered_scale256_distill_v1"
 
 # MODEL_PATH="outputs/<PATH_TO_SAVED_MODEL_DIR>"
 REVISION=null
 
 EVAL_DATASET="gsm8k_eval"
-BLOCK_SIZE=32  # TODO: Change as needed
+BLOCK_SIZE=8  # TODO: Change as needed
 BATCH_SIZE=1
 PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-1.7B-Base"  # TODO: Change as needed
 CKPT_FILE="best-rank0.pt"
 USE_EMA=true
+SEED=1
+SCALE=2
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \
@@ -26,10 +32,10 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   +dataset@task.eval_dataset=${EVAL_DATASET} \
   task.load_ema_weights=${USE_EMA} \
   task.ckpt_file=${CKPT_FILE} \
-  seed=1 \
+  seed=${SEED} \
   batch_size=${BATCH_SIZE} \
   block_size=${BLOCK_SIZE} \
-  task.eval_dataloader.batch_size=8 \
+  task.eval_dataloader.batch_size=4 \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   tokenizer.pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
@@ -45,4 +51,9 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   ~generation@generation_config \
   ~generation/logits_processor@logits_processor_list \
   ~generation/stopping_criteria@stopping_criteria_list \
-  gen_kwargs=null
+  gen_kwargs=null \
+  +model_config_overrides.block_size=${BLOCK_SIZE} \
+  +model_config_overrides.eval_block_size=${BLOCK_SIZE} \
+  +model_config_overrides.eval_nll=false \
+  +model_config_overrides.noise_config.block_size=${BLOCK_SIZE} \
+    +model_config_overrides.noise_config.scale=${SCALE}

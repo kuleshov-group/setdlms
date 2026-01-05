@@ -5,4 +5,4 @@ defaults:
 _target_: src.denoiser.diffusion.MDLM
 config:
   _target_: src.denoiser.diffusion.MDLMConfig
-  keep_clean_bos: true
+  keep_clean_bos: false

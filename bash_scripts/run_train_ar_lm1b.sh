@@ -22,7 +22,7 @@ MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=null
 
-TAG="ar_v15"
+TAG="ar_hparam_v1"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=lm1b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -30,9 +30,9 @@ GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
     MICRO_BATCH_SIZE=64
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=64
+    MICRO_BATCH_SIZE=128
 else
-    MICRO_BATCH_SIZE=32
+    MICRO_BATCH_SIZE=128
 fi
 NUM_WORKERS=0
 
@@ -69,4 +69,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="10000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  composer.optimizer.betas=[0.9,0.999] \
+  composer.optimizer.weight_decay=0

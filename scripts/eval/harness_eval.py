@@ -7,7 +7,8 @@ import os
 import re
 import sys
 from typing import Any, Dict, List, Tuple
-
+from datetime import timedelta
+from accelerate.utils import InitProcessGroupKwargs
 import accelerate
 import hydra
 import numpy as np
@@ -327,8 +328,9 @@ class LMEvalHarnessModel(LM):
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
-    accelerator = accelerate.Accelerator()
-    accelerator = accelerate.Accelerator() if accelerator.num_processes > 1 else None
+    ipg = InitProcessGroupKwargs(timeout=timedelta(minutes=60))
+    accelerator = accelerate.Accelerator(kwargs_handlers=[ipg])
+    accelerator = accelerator if accelerator.num_processes > 1 else None
     set_seed(cfg.seed)
     model = hydra.utils.instantiate(cfg.task.model, accelerator=accelerator)
     results = hydra.utils.call(cfg.task, model=model)
