@@ -340,9 +340,11 @@ class StaggeredNoise(Noise):
         auc_first = float(np.trapz(y_first, x))
 
         # auc of last curve from 1-b to b
-        # ts_check = torch.linspace(1-self.b, self.b, 100000)
-        # y_check = self.total_noise(ts_check)[:,-1]
-        # auc_last = float(np.trapz(y_check, ts_check))
+        ts = torch.linspace(1-self.b, self.b, 1000000)[:, None]
+        y = self.total_noise(ts)
+        auc_last = float(np.trapz(y[:, -1].cpu().numpy(), ts[:, -1].cpu().numpy()))
+        print("auc of last curve", auc_last)
+        overlap = (2 * self.b) - 1 - ((self.b / (self.k + 1)) * (2 - (1/self.b))**(self.k+1))
         # assert auc_last >= self.int_min, f"auc of last curve {auc_last} is less than specified int_min {self.int_min}"
         # print(f"auc of last curve {auc_last} is greater than/equal to specified int_min {self.int_min}")
 
@@ -593,7 +595,13 @@ class EaseOutPowerNoise(StaggeredNoise):
         if int_min is not None:
             # print("w must be at least", frac / (1 + frac))
             # print("k must be less than", desired_area / (frac - desired_area))
-            b = (2 + int_min + math.sqrt(int_min * (4 + int_min))) / 4
+            # b = (2 + int_min + math.sqrt(int_min * (4 + int_min))) / 4
+            # b = 1 / (2 * (1 - int_min))
+            b = (
+                desired_area * (1 + self.int_min)
+                - math.sqrt(desired_area)
+                * math.sqrt(desired_area * (1 + self.int_min)**2 - 2*self.int_min)
+            ) / (2 * self.int_min)
         if k is not None:
             self.k = k
             self.b = desired_area * (self.k + 1) / self.k
@@ -611,6 +619,7 @@ class EaseOutPowerNoise(StaggeredNoise):
         assert self.b <= 1.0, f"b {self.b} must be less than or equal to 1.0"
         cur_area = self.k / (self.k + 1) * self.b
         print(f"cur_area: {cur_area}, desired_area: {desired_area}, avg unmasked tokens: {self.block_size * cur_area}")
+        
         # assert abs(cur_area - desired_area) < 1e-6, f"Current area {cur_area} does not match desired area {desired_area}"
         self.scale = torch.tensor(-1.0)[None, None]
         self.loc = torch.linspace(0., 1.0 - self.b, self.block_size).flip(0)
