@@ -314,6 +314,21 @@ class StaggeredNoise(Noise):
         overlap_per_x = active.sum(axis=1)  # (999,)
         max_overlap = int(overlap_per_x.max())
 
+        # --- AUC for the first index ---
+        y_first = move_chance[:, 0]
+        auc_first = float(np.trapz(y_first, x))
+
+        # auc of last curve from 1-b to b
+        ts = torch.linspace(1-self.b, self.b, 10000)[:, None]
+        y = self.total_noise(ts)
+        auc_last = float(np.trapz(y[:, -1].cpu().numpy(), ts[:, -1].cpu().numpy()))
+        overlap = (2 * self.b) - 1 - ((self.b / (self.k + 1)) * (2 - (1/self.b))**(self.k+1))
+        print("auc of last curve", auc_last)
+        print("overlap", overlap)
+        # assert auc_last >= self.int_min, f"auc of last curve {auc_last} is less than specified int_min {self.int_min}"
+        # print(f"auc of last curve {auc_last} is greater than/equal to specified int_min {self.int_min}")
+
+
         # --- plot all traces ---
         for i in range(self.length):
             u = i / n  # 0..1
@@ -334,19 +349,6 @@ class StaggeredNoise(Noise):
                     # fillcolor="rgba(68, 1, 84, 0.15)" if is_first else None,  # subtle tint
                 )
             )
-
-        # --- AUC for the first index ---
-        y_first = move_chance[:, 0]
-        auc_first = float(np.trapz(y_first, x))
-
-        # auc of last curve from 1-b to b
-        ts = torch.linspace(1-self.b, self.b, 1000000)[:, None]
-        y = self.total_noise(ts)
-        auc_last = float(np.trapz(y[:, -1].cpu().numpy(), ts[:, -1].cpu().numpy()))
-        print("auc of last curve", auc_last)
-        overlap = (2 * self.b) - 1 - ((self.b / (self.k + 1)) * (2 - (1/self.b))**(self.k+1))
-        # assert auc_last >= self.int_min, f"auc of last curve {auc_last} is less than specified int_min {self.int_min}"
-        # print(f"auc of last curve {auc_last} is greater than/equal to specified int_min {self.int_min}")
 
         # pick a nice point on the first curve to attach an annotation
         x_anno = 0.85
@@ -593,15 +595,8 @@ class EaseOutPowerNoise(StaggeredNoise):
         desired_area = 1 / (2 * desired_num_blocks)
         frac = (max_block_size - 1) / (self.block_size - 1)
         if int_min is not None:
-            # print("w must be at least", frac / (1 + frac))
-            # print("k must be less than", desired_area / (frac - desired_area))
-            # b = (2 + int_min + math.sqrt(int_min * (4 + int_min))) / 4
-            # b = 1 / (2 * (1 - int_min))
-            b = (
-                desired_area * (1 + self.int_min)
-                - math.sqrt(desired_area)
-                * math.sqrt(desired_area * (1 + self.int_min)**2 - 2*self.int_min)
-            ) / (2 * self.int_min)
+            int_min = desired_area / 2 # NOTE: HARDCODED
+            b = desired_area / ((2 * desired_area) - int_min)
         if k is not None:
             self.k = k
             self.b = desired_area * (self.k + 1) / self.k
@@ -615,6 +610,9 @@ class EaseOutPowerNoise(StaggeredNoise):
             denominator = lb - desired_area
             self.b = lb
             self.k = desired_area / denominator
+        if int_min is not None:
+            overlap = (2 * self.b) - 1 - ((self.b / (self.k + 1)) * (2 - (1/self.b))**(self.k+1))
+            assert overlap >= int_min, f"overlap {overlap} is less than int_min {int_min}"
         print(f"k: {self.k}, b: {self.b}")
         assert self.b <= 1.0, f"b {self.b} must be less than or equal to 1.0"
         cur_area = self.k / (self.k + 1) * self.b
