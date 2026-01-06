@@ -519,7 +519,8 @@ class StaggeredNoise(Noise):
             # t = (self.inverse(move_chance_next) * mask).max(dim=-1).values
             # get the first nonzero mask index
             first_nonzero_mask_index = (mask != 0).float().argmax(dim=-1)
-            t = (self.inverse(move_chance_next) * mask)[:, first_nonzero_mask_index]
+            t = (self.inverse(move_chance_next) * mask)[torch.arange(num_total_blocks), first_nonzero_mask_index]
+
             
             unmask_chance = 1 - self.total_noise(t)
 
