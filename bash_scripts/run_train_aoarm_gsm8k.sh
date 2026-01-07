@@ -7,7 +7,7 @@ source setup_env.sh
 # Model arch
 BLOCK_SIZE=1024
 EVAL_BLOCK_SIZE=1024
-N_LAYERS=28
+N_LAYERS=1
 TOP_LAYERS=false
 REINIT_MODEL=false
 

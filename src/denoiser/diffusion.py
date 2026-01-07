@@ -575,7 +575,7 @@ class MDLM(Denoiser):
                     conf,
                     torch.inf,
                 )
-                num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum() + 1
+                num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum() + num_to_decode
                 if sample_indices is not None:
                     noise_indices = conf[..., sample_indices].argsort(dim=-1)[..., :-num_clean_indices] + sample_indices[0]
                 else:
@@ -586,7 +586,8 @@ class MDLM(Denoiser):
             #     import ipdb ; ipdb.set_trace()
             if sample_indices is not None and sample_indices[-1] < self.config.length:
                 output[..., sample_indices[-1]+num_to_decode:] = self.mask_token_id
-            output = torch.where(                xs_probs >= generation_config.confidence_threshold, xs, output
+            output = torch.where(
+                xs_probs >= generation_config.confidence_threshold, xs, output
             )
         else:
             raise NotImplementedError(
@@ -654,7 +655,7 @@ class MDLM(Denoiser):
             num_mask_tokens = self.config.length - inputs.shape[-1]
             max_blocks = math.ceil(num_mask_tokens / block_size)
         else:
-            max_blocks = max_new_tokens // block_size
+            max_blocks = max(1, max_new_tokens // block_size)
             num_mask_tokens = max_blocks * block_size
 
         # Sample max generation length tensor from prior
@@ -758,7 +759,7 @@ class MDLM(Denoiser):
                     context=context,
                     cache=cache if generation_config.use_cache else None,
                 )
-                num_to_decode = max(int(dt * block_size), 1)
+                num_to_decode = max(1, math.ceil(dt * block_size))
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t,
@@ -1979,7 +1980,8 @@ class AnyOrderBD3LM(BD3LM):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         block_size = generation_config.block_size
-        window_size = self.noise_schedule.compute_window_size()
+        # window_size = self.noise_schedule.compute_window_size()
+        window_size = 32
         pad_length = None
         if is_infill_task:
             if generation_config.align_inputs_to_blocks:
@@ -2082,7 +2084,7 @@ class AnyOrderBD3LM(BD3LM):
                     inputs.shape[-1] : inputs.shape[-1]
                     + (block_id * block_size)
                 ]
-
+                num_to_decode = max(1, math.ceil(dt * block_size))
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t[masked_positions],
@@ -2092,6 +2094,7 @@ class AnyOrderBD3LM(BD3LM):
                     xt=xt,
                     running_generation=running_generation,
                     logits_processor=logits_processor,
+                    num_to_decode=num_to_decode,
                     **kwargs,
                 )
                 num_tokens_generated_per_step.append(
@@ -2143,7 +2146,6 @@ class AnyOrderBD3LM(BD3LM):
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
         )
-        import ipdb ; ipdb.set_trace()
         if return_dict_in_generate:
             return DiffusionGenerationOutput(
                 sequences=accumulated_samples,

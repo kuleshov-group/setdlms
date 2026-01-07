@@ -487,10 +487,9 @@ class StaggeredNoise(Noise):
         T = loc[None, :] + self.b * (1.0 - torch.exp(-E / k))           # closed-form times
 
         # hard constraints
-        T = torch.where(is_beginning, -float('inf'), T)            # force earliest
-        T = torch.where(is_end,      float('inf'),  T)             # force latest / never
-
-        perms = torch.argsort(T, dim=-1, stable=True)               # earliest-to-latest
+        T = torch.where(is_beginning, float('inf'), T)            # force earliest
+        T = torch.where(is_end,      -float('inf'),  T)             # force latest / never
+        perms = torch.argsort(T, dim=-1, stable=True, descending=True)               # earliest-to-latest
         perms = perms.reshape(batch_size, -1, block_size)
         max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
         perms += torch.arange(num_blocks, device=device)[None, :, None] * block_size
@@ -535,8 +534,8 @@ class EaseOutPowerNoise(StaggeredNoise):
         desired_area = 1 / (2 * desired_num_blocks)
         frac = (max_block_size - 1) / (self.block_size - 1)
         if int_min is not None:
-            # int_min = desired_area / 4 # NOTE: HARDCODED
-            int_min = 1 / self.block_size
+            int_min = desired_area / 2 # NOTE: HARDCODED
+            # int_min = 1 / self.block_size
             b = desired_area / ((2 * desired_area) - int_min)
         if k is not None:
             self.k = k

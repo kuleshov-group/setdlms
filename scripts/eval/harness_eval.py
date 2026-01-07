@@ -185,8 +185,8 @@ class LMEvalHarnessModel(LM):
                     question_part = ctx
 
                 # Remove "Question: " prefix if present
-                if question_part.startswith("Question: "):
-                    question_text = question_part.replace("Question: ", prefix_text)
+                if "Question: " in question_part:
+                    question_text = prefix_text + question_part.split("Question: ")[1]
                 else:
                     question_text = question_part
 
@@ -212,6 +212,14 @@ class LMEvalHarnessModel(LM):
 
         ds = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
         ds = Dataset.from_list(ds)
+        # from src.datasets.preprocessed_dataset import load_preprocessed_dataset
+        # ds = load_preprocessed_dataset(
+        #     dataset_path="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_train",
+        #     inject_context_mask=True,
+        #     tokenizer=self.tokenizer,
+        #     token_to_split="<|im_start|>",
+        #     split_offset=2
+        # )
         ds = ds.map(_tokenize)
         ds = ds.with_format("torch")
         res = []
@@ -222,6 +230,9 @@ class LMEvalHarnessModel(LM):
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
         ):
+            # text = self.tokenizer.decode(elem["input_ids"])
+            # elem["prefix"] = torch.tensor(self.tokenizer(text.split("<|im_start|>assistant\n")[0] + "<|im_start|>assistant\n")["input_ids"])
+            # elem["target"] = torch.tensor(self.tokenizer(text.split("<|im_start|>assistant\n")[1])["input_ids"])
             if (
                 self.throughput_run
                 and i >= self.throughput_samples + self.throughput_warmup
