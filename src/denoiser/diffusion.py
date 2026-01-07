@@ -476,6 +476,7 @@ class MDLM(Denoiser):
         running_generation: Optional[torch.LongTensor] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         sample_indices: Optional[Tuple[int, int]] = None,
+        num_to_decode: Optional[int] = None,
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
@@ -544,6 +545,7 @@ class MDLM(Denoiser):
             else:
                 # Multivariate noise schedule: sum masking probabilities for timestep s
                 est_noise_indices = torch.ceil((1 - alpha_s).sum(dim=-1)).to(torch.int)
+            # import ipdb ; ipdb.set_trace()
             num_noise_indices = torch.minimum(est_noise_indices, (xt_block == self.mask_token_id).sum() - 1)  # type: ignore
             if generation_config.confidence_based_noising:
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
@@ -579,10 +581,12 @@ class MDLM(Denoiser):
                 else:
                     noise_indices = conf.argsort(dim=-1)[..., :-num_clean_indices]
             output[..., noise_indices] = self.mask_token_id
+            # if conf.argsort(-1)[0, -1] > 3:
+            #     print(self.tokenizer.decode(output[0]))
+            #     import ipdb ; ipdb.set_trace()
             if sample_indices is not None and sample_indices[-1] < self.config.length:
-                output[..., sample_indices[-1]+1:] = self.mask_token_id
-            output = torch.where(
-                xs_probs >= generation_config.confidence_threshold, xs, output
+                output[..., sample_indices[-1]+num_to_decode:] = self.mask_token_id
+            output = torch.where(                xs_probs >= generation_config.confidence_threshold, xs, output
             )
         else:
             raise NotImplementedError(
@@ -754,6 +758,7 @@ class MDLM(Denoiser):
                     context=context,
                     cache=cache if generation_config.use_cache else None,
                 )
+                num_to_decode = max(int(dt * block_size), 1)
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t,
@@ -765,6 +770,7 @@ class MDLM(Denoiser):
                     logits_processor=logits_processor,
                     tokenizer=tokenizer,
                     sample_indices=sample_indices if not generation_config.use_cache else None,
+                    num_to_decode=num_to_decode,
                     **kwargs,
                 )
                 block_pbar.set_postfix(
@@ -2137,6 +2143,7 @@ class AnyOrderBD3LM(BD3LM):
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
         )
+        import ipdb ; ipdb.set_trace()
         if return_dict_in_generate:
             return DiffusionGenerationOutput(
                 sequences=accumulated_samples,

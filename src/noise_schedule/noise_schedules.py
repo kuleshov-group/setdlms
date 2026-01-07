@@ -251,10 +251,6 @@ class StaggeredNoise(Noise):
         self.block_size = block_size
         self.length = length
         self.b = 1 / self.scale
-        # M = (20 * scale**3) - (30 * scale**2) + (5 * scale) + 16
-        # M /= ((60 * scale) * (scale - 1)**2)
-        # var = (1/2 - (1 / (scale * 6))) - M
-        # print("variance", var)
         self.init_schedule()
         
         if plot_schedule and self.length < 128:
@@ -485,76 +481,19 @@ class StaggeredNoise(Noise):
         is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :1] == False)
         is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, -1:] == False))
 
-        if masked_tokens is not None:
-            masked_tokens = masked_tokens.reshape(-1, block_size)
+        E = torch.empty(num_total_blocks, block_size, device=device).exponential_()    # Exp(1)
+        loc = self.loc.to(device)
+        k = self.k if hasattr(self, 'k') else 1.0
+        T = loc[None, :] + self.b * (1.0 - torch.exp(-E / k))           # closed-form times
 
-        # Start with full noise
-        t = torch.ones(num_total_blocks, 1, device=device)
+        # hard constraints
+        T = torch.where(is_beginning, -float('inf'), T)            # force earliest
+        T = torch.where(is_end,      float('inf'),  T)             # force latest / never
 
-        # Per-token masking probabilities
-        mask_chance = self.total_noise(t)
-        
-        # Pre-allocate random numbers for entire loop (use float32 for efficiency)
-        uniform_samp = torch.rand(num_total_blocks, self.block_size, self.block_size, device=device, dtype=torch.float32)
-        g = -torch.empty(num_total_blocks, self.block_size, self.block_size, device=device, dtype=torch.float32).exponential_().log()
-
-        # Sample next-hitting time for every token, based on current unmasking probs
-        unmask_chance_list = []
-
-        # (B x L/S) x S
-        perms = torch.full((num_total_blocks, block_size), fill_value=-1, dtype=torch.long, device=device)
-        mask = torch.full((num_total_blocks, block_size), fill_value=True, dtype=torch.bool, device=device)
-        window_size = self.compute_window_size()
-
-        def gumbel_noise(logits, g):
-            g = torch.where(logits == 0, -float('inf'), g)
-            g = torch.where(logits == 1, float('inf'), g)
-            return (logits + g)
-        
-        ts = []
-        for i in range(block_size):
-            # Get next-hitting time from available tokens
-            move_chance_next = uniform_samp[:, i] * mask_chance
-            # TODO: problem, this ends up becoming close to 1
-            # t = (self.inverse(move_chance_next) * mask).max(dim=-1).values
-            # get the first nonzero mask index
-            first_nonzero_mask_index = (mask != 0).float().argmax(dim=-1)
-            t = (self.inverse(move_chance_next) * mask)[torch.arange(num_total_blocks), first_nonzero_mask_index]
-
-            
-            unmask_chance = 1 - self.total_noise(t)
-
-            # Hard-code unmasking probability for prompt/pad tokens
-            unmask_chance_filtered = torch.where(is_beginning, 1.0, unmask_chance)
-            unmask_chance_filtered = torch.where(is_end, 0.0, unmask_chance_filtered)
-
-            # if not is_beginning[0, i] and not is_end[0, i]:
-            #     import ipdb ; ipdb.set_trace()
-
-            # Ignore previously sampled tokens
-            unmask_chance_filtered *= mask
-
-            # For tie-breakers where unmasking chance is 1.0, prioritize leftmost token
-            full_unmask_chance_mask = (unmask_chance_filtered == 1.0)
-            unmask_chance_filtered[(full_unmask_chance_mask).any(dim=-1)] = ((full_unmask_chance_mask.cumsum(-1) == 1) * (unmask_chance_filtered == 1.0))[(full_unmask_chance_mask).any(dim=-1)].float()
-            if (unmask_chance_filtered.sum(-1) <= 0).any():
-                unmask_chance_filtered[unmask_chance_filtered <= 0] = ((mask.cumsum(-1) == 1) * mask > 0)[unmask_chance_filtered <= 0].float()
-
-            # Sample a token
-            perms[:, i] = gumbel_noise(unmask_chance_filtered, g[:, i]).argmax(dim=-1)
-            mask.scatter_(1, perms[:, i].unsqueeze(-1), False)
-            ts.append(t)
-            if i == block_size - 1:
-                break
-            mask_chance = self.total_noise(t)
-    
+        perms = torch.argsort(T, dim=-1, stable=True)               # earliest-to-latest
         perms = perms.reshape(batch_size, -1, block_size)
         max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
         perms += torch.arange(num_blocks, device=device)[None, :, None] * block_size
-
-        # if max_deviation.max() > window_size:
-        #     raise ValueError(f'Window size violation at final step', max_deviation.max(), window_size, self.scale[0][0])
-
         return perms.reshape(batch_size, -1)
 
 class EaseOutPowerNoise(StaggeredNoise):
@@ -596,7 +535,8 @@ class EaseOutPowerNoise(StaggeredNoise):
         desired_area = 1 / (2 * desired_num_blocks)
         frac = (max_block_size - 1) / (self.block_size - 1)
         if int_min is not None:
-            int_min = desired_area / 2 # NOTE: HARDCODED
+            # int_min = desired_area / 4 # NOTE: HARDCODED
+            int_min = 1 / self.block_size
             b = desired_area / ((2 * desired_area) - int_min)
         if k is not None:
             self.k = k
@@ -619,7 +559,7 @@ class EaseOutPowerNoise(StaggeredNoise):
         cur_area = self.k / (self.k + 1) * self.b
         print(f"cur_area: {cur_area}, desired_area: {desired_area}, avg unmasked tokens: {self.block_size * cur_area}")
         
-        # assert abs(cur_area - desired_area) < 1e-6, f"Current area {cur_area} does not match desired area {desired_area}"
+        assert abs(cur_area - desired_area) < 1e-6, f"Current area {cur_area} does not match desired area {desired_area}"
         self.scale = torch.tensor(-1.0)[None, None]
         self.loc = torch.linspace(0., 1.0 - self.b, self.block_size).flip(0)
         self.loc = self.loc[None, :]
@@ -685,6 +625,6 @@ class EaseOutPowerNoise(StaggeredNoise):
     def sample_permutation_order(self, t, to_permute, block_size=None, masked_tokens=None, **kwargs):
         return super().sample_permutation_order(t, to_permute, block_size, masked_tokens, **kwargs)
     def compute_window_size(self):
-        return math.floor(self.b * self.length)
+        return self.block_size
     def _plot_schedule(self, figdir):
         return super()._plot_schedule(figdir)

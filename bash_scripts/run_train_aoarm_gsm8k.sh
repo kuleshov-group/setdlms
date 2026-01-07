@@ -30,7 +30,7 @@ MAX_EVAL_SAMPLES=null  # Set to null or remove this line to use full dataset
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_distill_v11"
+TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_distill_v23"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -76,7 +76,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  composer.callbacks.log_gradient_variance.accumulation_steps=2 \
   eval_dataloader.batch_size=4 \
   noise@model.config.noise_config=power \
   model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
