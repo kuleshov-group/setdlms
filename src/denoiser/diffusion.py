@@ -398,7 +398,7 @@ class MDLM(Denoiser):
             # Average over masked tokens during training
             batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
             mask_token_indicator = (denoiser_inputs.xt == self.mask_token_id).float()
-            count = mask_token_indicator.sum(dim=-1)
+            count = mask_token_indicator.sum(dim=-1) # override count to be masked tokens
             token_nll = torch.where(count > 0, batch_nll / count, torch.zeros_like(batch_nll)).mean()
         else:
             # NELBO; average over response tokens
@@ -1851,7 +1851,6 @@ class AnyOrderBD3LM(BD3LM):
         decoder_attention_mask = self._preprocess_attention_mask(
             decoder_attention_mask[:, None], dtype=torch.float
         )
-
 
         position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, num_repetitions).to(input_ids.device)
 

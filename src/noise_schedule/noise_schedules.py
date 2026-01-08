@@ -457,6 +457,8 @@ class StaggeredNoise(Noise):
             to_permute = to_permute.reshape(batch_size, num_blocks, block_size)
             ranking = torch.rand(batch_size, num_blocks, block_size, device=device)
             is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :, :1] == False)
+            if masked_tokens is not None:
+                is_beginning = is_beginning | ~masked_tokens
             is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, :, -1:] == False))
 
             ranking = torch.where(is_beginning, float('inf'), ranking)
@@ -469,6 +471,8 @@ class StaggeredNoise(Noise):
         num_total_blocks = t.shape[-1] // block_size * t.shape[0]
         to_permute = to_permute.reshape(-1, block_size)
         is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :1] == False)
+        if masked_tokens is not None:
+            is_beginning = is_beginning | ~masked_tokens
         is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, -1:] == False))
 
         # sample and sort first-hitting times
