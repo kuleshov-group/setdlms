@@ -7,16 +7,22 @@ filename = f"line_plot_block{avg_block_size}.png"
 # ----- Initialize data -----
 groups = [
     {
-        "name": "Block diffusion (S=16)",
+        "name": "Block diff (S=16)",
         "x": np.array([1.0, 2.0]),
         "x_std": np.array([0.0, 0.0]),
         "y": np.array([50.57, 46.02]),
     },
     {
-        "name": "Ours: Staggered-linear (S=16)",
+        "name": "Soft block diff: linear (match w/ S=16)",
         "x": np.array([1.0, 2.0]),
         "x_std": np.array([0.0, 0.0]),
         "y": np.array([61.64, 57.54]),
+    },
+    {
+        "name": "Soft block diff: power (match w/ S=16)",
+        "x": np.array([1.0, 2.0]),
+        "x_std": np.array([0.0, 0.0]),
+        "y": np.array([63.91, 60.88]),
     },
     {
         "name": "AR",
@@ -25,6 +31,23 @@ groups = [
         "y": np.array([79.38]),
     }
 ]
+# ----- Initialize data -----
+groups = [
+    {
+        "name": "Block diff (S=4)",
+        "x": np.array([2.0]),
+        "x_std": np.array([0.0]),
+        "y": np.array([53.07]),
+    },
+    {
+        "name": "AR",
+        "x": np.array([1.0]),
+        "x_std": np.array([0.0]),
+        "y": np.array([79.38]),
+    }
+]
+
+
 
 # ----- Create figure -----
 fig = go.Figure()

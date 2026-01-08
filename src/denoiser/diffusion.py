@@ -476,7 +476,6 @@ class MDLM(Denoiser):
         running_generation: Optional[torch.LongTensor] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         sample_indices: Optional[Tuple[int, int]] = None,
-        num_to_decode: Optional[int] = None,
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
@@ -544,9 +543,12 @@ class MDLM(Denoiser):
                 est_noise_indices = ((1 - alpha_s) * generation_config.block_size).to(torch.int)
             else:
                 # Multivariate noise schedule: sum masking probabilities for timestep s
-                est_noise_indices = torch.ceil((1 - alpha_s).sum(dim=-1)).to(torch.int)
-            # import ipdb ; ipdb.set_trace()
-            num_noise_indices = torch.minimum(est_noise_indices, (xt_block == self.mask_token_id).sum() - 1)  # type: ignore
+                est_noise_indices = torch.floor((1 - alpha_s).sum(dim=-1)).to(torch.int)
+            # Subtract tokens outside of decoding window
+            est_noise_indices -= (generation_config.block_size - xt_block.shape[-1]) - running_generation.shape[-1]
+            num_masked_indices = (xt_block == self.mask_token_id).sum()
+            num_noise_indices = torch.minimum(est_noise_indices, num_masked_indices - 1)  # type: ignore
+            num_to_decode = num_masked_indices - num_noise_indices
             if generation_config.confidence_based_noising:
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
                 conf = torch.where(  # already decoded tokens have 'inf' confidence
@@ -581,9 +583,6 @@ class MDLM(Denoiser):
                 else:
                     noise_indices = conf.argsort(dim=-1)[..., :-num_clean_indices]
             output[..., noise_indices] = self.mask_token_id
-            # if conf.argsort(-1)[0, -1] > 3:
-            #     print(self.tokenizer.decode(output[0]))
-            #     import ipdb ; ipdb.set_trace()
             if sample_indices is not None and sample_indices[-1] < self.config.length:
                 output[..., sample_indices[-1]+num_to_decode:] = self.mask_token_id
             output = torch.where(
@@ -750,8 +749,12 @@ class MDLM(Denoiser):
                     block_NFEs += 1
                     total_NFEs += 1
                 # t is 0-dim tensor, reshape to (1, 1, 1) for broadcasting
-                alpha_t, _ = self.noise_schedule(t)
-                alpha_s, _ = self.noise_schedule(t - dt)
+                if generation_config.linear_unmasking:
+                    alpha_t = torch.ones_like(t) - t
+                    alpha_s = torch.ones_like(t) - (t - dt)
+                else:
+                    alpha_t, _ = self.noise_schedule(t)
+                    alpha_s, _ = self.noise_schedule(t - dt)
                 alpha_t = alpha_t[None, None, None]
                 alpha_s = alpha_s[None, None, None]
                 denoiser_inputs, cache = self._prepare_inputs_inference(
@@ -759,7 +762,6 @@ class MDLM(Denoiser):
                     context=context,
                     cache=cache if generation_config.use_cache else None,
                 )
-                num_to_decode = max(1, math.ceil(dt * block_size))
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t,
@@ -771,7 +773,6 @@ class MDLM(Denoiser):
                     logits_processor=logits_processor,
                     tokenizer=tokenizer,
                     sample_indices=sample_indices if not generation_config.use_cache else None,
-                    num_to_decode=num_to_decode,
                     **kwargs,
                 )
                 block_pbar.set_postfix(
@@ -1980,19 +1981,20 @@ class AnyOrderBD3LM(BD3LM):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         block_size = generation_config.block_size
-        # window_size = self.noise_schedule.compute_window_size()
-        window_size = 32
+        window_size = self.noise_schedule.compute_window_size()
+        window_size = min(generation_config.max_window_size, window_size)
+
         pad_length = None
         if is_infill_task:
+            mask_tokens = (inputs == self.mask_token_id)
             if generation_config.align_inputs_to_blocks:
                 pad_length = block_size - inputs.shape[-1] % block_size
                 inputs = F.pad(inputs, (0, pad_length), value=self.mask_token_id)
-                mask_tokens = (inputs == self.mask_token_id)
                 mask_tokens[:, -pad_length:] = False
                 mask_tokens = mask_tokens.view(-1, block_size)
                 max_blocks = (mask_tokens.max(dim=-1).values == 1).sum()
             else:
-                max_blocks = math.ceil(num_mask_tokens / block_size)
+                max_blocks = math.ceil(mask_tokens.sum() / block_size)
             all_position_ids = torch.arange(inputs.shape[-1], device=device)[None, :]
         else:
             max_blocks = max(max_new_tokens // block_size, 1)
@@ -2065,8 +2067,12 @@ class AnyOrderBD3LM(BD3LM):
                 total_NFEs += 1
                 if t.ndim == 0:
                     t = t[None, None].repeat(1, block_size)
-                alpha_t, _ = self.noise_schedule(t)
-                alpha_s, _ = self.noise_schedule(t - dt)
+                if generation_config.linear_unmasking:
+                    alpha_t = torch.ones_like(t) - t
+                    alpha_s = torch.ones_like(t) - (t - dt)
+                else:
+                    alpha_t, _ = self.noise_schedule(t)
+                    alpha_s, _ = self.noise_schedule(t - dt)
                 masked_positions = (xt == self.mask_token_id)
                 window_start = inputs_offset + (block_id * block_size) + masked_positions[0].nonzero(as_tuple=False)[0].item()
                 masked_positions = masked_positions & (xt_position_ids < window_start + window_size)
@@ -2079,22 +2085,16 @@ class AnyOrderBD3LM(BD3LM):
                 )
 
                 # Used for logit processing
-                running_generation = accumulated_samples[
-                    :,
-                    inputs.shape[-1] : inputs.shape[-1]
-                    + (block_id * block_size)
-                ]
-                num_to_decode = max(1, math.ceil(dt * block_size))
+                running_generation = xt[xt != self.mask_token_id]
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
-                    alpha_t=alpha_t[masked_positions],
-                    alpha_s=alpha_s[masked_positions],
+                    alpha_t=alpha_t,
+                    alpha_s=alpha_s,
                     denoiser_inputs=denoiser_inputs,
                     cache=cache,
                     xt=xt,
                     running_generation=running_generation,
                     logits_processor=logits_processor,
-                    num_to_decode=num_to_decode,
                     **kwargs,
                 )
                 num_tokens_generated_per_step.append(

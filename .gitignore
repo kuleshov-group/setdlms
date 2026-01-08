@@ -8,3 +8,5 @@ __pycache__/
 .DS_Store
 outputs/
 watch_folder
+*.png
+*.jpg

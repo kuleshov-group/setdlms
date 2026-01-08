@@ -11,3 +11,5 @@ confidence_based_noising: true
 confidence_margin_based_noising: false
 confidence_threshold: 1.0
 align_inputs_to_blocks: false
+max_window_size: ${block_size}
+linear_unmasking: true

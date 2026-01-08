@@ -251,6 +251,7 @@ class StaggeredNoise(Noise):
         self.block_size = block_size
         self.length = length
         self.b = 1 / self.scale
+        self.k = 1.0
         self.init_schedule()
         
         if plot_schedule and self.length < 128:
@@ -323,7 +324,6 @@ class StaggeredNoise(Noise):
         print("overlap", overlap)
         # assert auc_last >= self.int_min, f"auc of last curve {auc_last} is less than specified int_min {self.int_min}"
         # print(f"auc of last curve {auc_last} is greater than/equal to specified int_min {self.int_min}")
-
 
         # --- plot all traces ---
         for i in range(self.length):
@@ -449,17 +449,13 @@ class StaggeredNoise(Noise):
         masked_tokens: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> torch.Tensor:
+        batch_size = t.shape[0]
+        block_size = block_size if block_size is not None else self.block_size
+        num_blocks = to_permute.shape[-1] // block_size
+        device = t.device
         if self.scale[0][0] == 1.0:
-            t = t.to(torch.float32)
-            seq_len = t.shape[-1]
-            block_size = block_size
-            num_blocks = seq_len // block_size
-            batch_size = t.shape[0]
-            device = t.device
-
             to_permute = to_permute.reshape(batch_size, num_blocks, block_size)
             ranking = torch.rand(batch_size, num_blocks, block_size, device=device)
-            position_indices = torch.arange(block_size, device=device)[None, None, :]
             is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :, :1] == False)
             is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, :, -1:] == False))
 
@@ -467,31 +463,32 @@ class StaggeredNoise(Noise):
             ranking = torch.where(is_end, float('-inf'), ranking)
             perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
             perm_indices = perm_indices.reshape(batch_size, num_blocks * block_size)
-            max_deviation = (perm_indices - torch.arange(0, block_size, device=device)[None, :]).abs()
+            # max_deviation = (perm_indices - torch.arange(0, block_size, device=device)[None, :]).abs()
             return perm_indices
-
-        batch_size = to_permute.shape[0]
-        block_size = block_size if block_size is not None else self.block_size
-        device = to_permute.device
-
+        assert num_blocks == 1, "staggered noise schedule only supports one block currently"
         num_total_blocks = t.shape[-1] // block_size * t.shape[0]
-        num_blocks = to_permute.shape[-1] // block_size
-
         to_permute = to_permute.reshape(-1, block_size)
         is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :1] == False)
         is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, -1:] == False))
 
-        E = torch.empty(num_total_blocks, block_size, device=device).exponential_()    # Exp(1)
+        # sample and sort first-hitting times
+
+        # stable reparametrization, numerically stable for k -> 0
+        E = torch.empty(num_total_blocks, block_size, device=device).exponential_()
         loc = self.loc.to(device)
-        k = self.k if hasattr(self, 'k') else 1.0
-        T = loc[None, :] + self.b * (1.0 - torch.exp(-E / k))           # closed-form times
+        T = loc[None, :] + self.b * (-torch.expm1(-E / self.k))
+
+        # equivalent, but less numerically stable for k -> 0
+        # U = 1 - torch.exp(-E)
+        # T_alt = loc[None, :] + self.b * (1 - (1.0 - U)**(1/k))
+        # assert (T - T_alt).abs().max() < 1e-4
 
         # hard constraints
-        T = torch.where(is_beginning, float('inf'), T)            # force earliest
-        T = torch.where(is_end,      -float('inf'),  T)             # force latest / never
-        perms = torch.argsort(T, dim=-1, stable=True, descending=True)               # earliest-to-latest
+        T = torch.where(is_beginning, float('inf'), T)  # force earliest
+        T = torch.where(is_end,      -float('inf'),  T) # force latest
+        perms = torch.argsort(T, dim=-1, stable=True, descending=True) # earliest-to-latest
         perms = perms.reshape(batch_size, -1, block_size)
-        max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
+        # max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
         perms += torch.arange(num_blocks, device=device)[None, :, None] * block_size
         return perms.reshape(batch_size, -1)
 
@@ -505,7 +502,8 @@ class EaseOutPowerNoise(StaggeredNoise):
             k=None,
             b=None,
             plot_schedule=False,
-            int_min=None):
+            int_min=None,
+            precision=torch.float64):
         self.int_min = int_min
         if int_min is not None:
             assert int_min >= 0.0 and int_min <= 0.5, f"int_min {int_min} must be between 0.0 and 0.5"
@@ -514,7 +512,8 @@ class EaseOutPowerNoise(StaggeredNoise):
         self.length = length
         self.desired_block_size = desired_block_size
         self.max_block_size = max_block_size
-        self.init_schedule(block_size, desired_block_size, max_block_size, k, b, int_min)
+        self.precision = precision
+        self.init_schedule(block_size, desired_block_size, max_block_size, k, b, int_min, precision)
         print("max active:", (((self.loc + self.b)[-1][-1] - self.loc) > self.eps).sum().item())
         if plot_schedule and self.length < 128:
             figdir = f"/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/noise_schedules/ar_step/bs{self.block_size}"
@@ -524,11 +523,12 @@ class EaseOutPowerNoise(StaggeredNoise):
                 os.makedirs(figdir)
             self._plot_schedule(figdir)
 
-    def init_schedule(self, block_size=None, desired_block_size=None, max_block_size=None, k=None, b=None, int_min=None):
+    def init_schedule(self, block_size=None, desired_block_size=None, max_block_size=None, k=None, b=None, int_min=None, precision=torch.float64):
         if desired_block_size is None:
             desired_block_size = self.desired_block_size
         if max_block_size is None:
             max_block_size = self.max_block_size
+            
         self.block_size = block_size
         desired_num_blocks = self.length / desired_block_size
         desired_area = 1 / (2 * desired_num_blocks)
@@ -560,50 +560,63 @@ class EaseOutPowerNoise(StaggeredNoise):
         
         assert abs(cur_area - desired_area) < 1e-6, f"Current area {cur_area} does not match desired area {desired_area}"
         self.scale = torch.tensor(-1.0)[None, None]
-        self.loc = torch.linspace(0., 1.0 - self.b, self.block_size).flip(0)
+        self.loc = torch.linspace(0., 1.0 - self.b, self.block_size, dtype=precision).flip(0)
         self.loc = self.loc[None, :]
-        
-        # lower_bound = 1 / (self.b * self.block_size)
-        lower_bound = 1 / self.block_size
 
         if self.b < 1.0:
+            lower_bound = 1 / self.block_size
             i = self.b * (1 - lower_bound)**(1 / self.k) / (1 - self.b) * (self.block_size - 1) + 1
             print(f"i <= {i}")
             move_chance = self.total_noise(torch.tensor([self.b]))
             print("max active above lower bound", (move_chance >= lower_bound).sum().item())
             print("prob. of masking max_block_size", move_chance[0, -(max_block_size-1)].item())
             print("uniform prob", 1 / self.block_size)
-            print("uniform prob wrt window size", 1 / (self.b * self.block_size))
-            
 
     def total_noise(self, t):
+        original_precision = t.dtype
         batch_size = t.shape[0]
-        loc = self.loc.to(t.device).to(t.dtype)
-        t = t.to(torch.float32)
+        loc = self.loc.to(t.device)
+        t = t.to(self.precision)
         if t.ndim > 1 and t.shape[-1] > 1:
             t = t.reshape(-1, self.block_size)
         if t.ndim == 1:
             t = t.unsqueeze(-1)
         x = (t - loc) / self.b
-        move_chance = 1 - torch.pow(1 - x, self.k)
-        move_chance = torch.where(x > 1, 1, move_chance)
-        move_chance = torch.where(x < 0, 0, move_chance)
-        move_chance = torch.clamp(move_chance, min=0, max=1)
-        return move_chance.reshape(batch_size, -1)
+        eps = torch.finfo(t.dtype).eps
+
+        # numerically stable for k -> 0
+        log1m = torch.log1p(-x.clamp(min=0.0, max=1.0 - eps))
+        move_chance = -torch.expm1(self.k * log1m)
+
+        # equivalent, but less numerically stable for k -> 0
+        # move_chance = 1 - torch.pow(1 - x, self.k)
+
+        move_chance = torch.where(x >= 1.0, 1.0, move_chance)
+        move_chance = torch.where(x <= 0.0, 0.0, move_chance)
+        return move_chance.reshape(batch_size, -1).to(original_precision)
 
     def rate_noise(self, t):
+        original_precision = t.dtype
         batch_size = t.shape[0]
-        loc = self.loc.to(t.device).to(t.dtype)
-        t = t.to(torch.float32)
+        loc = self.loc.to(t.device)
+        t = t.to(self.precision)
         if t.ndim > 1 and t.shape[-1] > 1:
             t = t.reshape(-1, self.block_size)
         if t.ndim == 1:
             t = t.unsqueeze(-1)
         x = (t - loc) / self.b
-        alpha_t_prime = -self.k / self.b * torch.pow(1 - x, self.k - 1)
-        alpha_t_prime = torch.where(x > 1, 0, alpha_t_prime)
-        alpha_t_prime = torch.where(x < 0, 0, alpha_t_prime)
-        return alpha_t_prime.reshape(batch_size, -1)
+        eps = torch.finfo(t.dtype).eps
+
+        # numerically stable for k -> 0
+        log1m = torch.log1p(-x.clamp(min=0.0, max=1.0 - eps))
+        alpha_t_prime = - self.k / self.b * torch.exp((self.k - 1.0) * log1m)
+
+        # equivalent, but less numerically stable for k -> 0
+        # alpha_t_prime = -self.k / self.b * torch.pow(1 - x, self.k - 1)
+
+        alpha_t_prime = torch.where(x > 1.0, 0.0, alpha_t_prime)
+        alpha_t_prime = torch.where(x <= 0.0, 0.0, alpha_t_prime)
+        return alpha_t_prime.reshape(batch_size, -1).to(original_precision)
 
     def __call__(self, t):
         move_chance = self.total_noise(t)
@@ -611,15 +624,24 @@ class EaseOutPowerNoise(StaggeredNoise):
         return 1 - move_chance, alpha_t_prime
 
     def inverse(self, move_chance):
+        original_precision = move_chance.dtype
         if move_chance.ndim > 1 and move_chance.shape[-1] > 1:
             move_chance = move_chance.reshape(-1, self.block_size)
         if move_chance.ndim == 1:
             move_chance = move_chance.unsqueeze(-1)
         batch_size = move_chance.shape[0]
-        loc = self.loc.to(move_chance.device).to(move_chance.dtype)
-        t = loc + self.b * (1 - torch.pow(1 - move_chance, 1 / self.k))
-        t = torch.clamp(t, min=0, max=1)
-        return t.reshape(batch_size, -1)
+        loc = self.loc.to(move_chance.device)
+        eps = torch.finfo(move_chance.dtype).eps
+
+        # numerically stable for k -> 0
+        log1m = torch.log1p(-move_chance.clamp(min=0.0, max=1.0 - eps))
+        t = loc + self.b * (-torch.expm1((1.0 / self.k) * log1m))
+
+        # equivalent, but less numerically stable for k -> 0
+        # t = loc + self.b * (1 - torch.pow(1 - move_chance, 1 / self.k))
+
+        t = torch.clamp(t, min=0.0, max=1.0)
+        return t.reshape(batch_size, -1).to(original_precision)
         
     def sample_permutation_order(self, t, to_permute, block_size=None, masked_tokens=None, **kwargs):
         return super().sample_permutation_order(t, to_permute, block_size, masked_tokens, **kwargs)

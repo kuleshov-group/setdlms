@@ -17,6 +17,9 @@ DROPOUT=0.1
 NORM_TYPE=layernorm
 ATTN_BACKEND=sdpa
 
+DESIRED_BLOCK_SIZE=16
+MAX_BLOCK_SIZE=${LENGTH}
+
 # Hyperparameters
 LR=3e-4
 WARMUP_DURATION="2500ba"
@@ -25,7 +28,7 @@ MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=null
 
-TAG="aoarm_dropout${DROPOUT}_norm${NORM_TYPE}_hparam_v2"
+TAG="aoarm_dropout${DROPOUT}_norm${NORM_TYPE}_hparam_desired${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_v1"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=lm1b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -76,4 +79,11 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   composer.optimizer.betas=[0.9,0.999] \
-  composer.optimizer.weight_decay=0
+  composer.optimizer.weight_decay=0 \
+  model.config.keep_clean_bos=true \
+  noise@model.config.noise_config=power \
+  model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
+  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
+  model.config.noise_config.length=${LENGTH} \
+  model.config.noise_config.plot_schedule=false \
+  model.config.noise_config.int_min=0.1

@@ -315,11 +315,11 @@ for j, int_min in enumerate(int_mins, start=1):
     max_overlap = ((y != 0) & (y != 1)).sum(-1).max().item() - 1
     expected_active = float(np.trapz(y[:, 0], ts[:, 0])) * L
     if j == 2:
-        subplot_titles += [f'<b>Power-staggered noise</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:green;">Max lookahead = {max_overlap:d}</span>']
+        subplot_titles += [f'<b>Staggered noise: power</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:green;">Max lookahead = {max_overlap:d}</span>']
         # subplot_titles += [f'<b>Unmasking width: {ns.b:.1f}</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:green;">Max lookahead = {max_overlap:d}</span>']
     else:
         # subplot_titles += [f'<b>Unmasking width: {ns.b:.1f}</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:red;">Max lookahead = {max_overlap:d}</span>']
-        subplot_titles += [f'<b>Linear-staggered noise</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:red;">Max lookahead = {max_overlap:d}</span>']
+        subplot_titles += [f'<b>Staggered noise: linear</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:red;">Max lookahead = {max_overlap:d}</span>']
 fig2 = make_subplots(
     rows=1,
     cols=ncols2,

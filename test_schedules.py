@@ -394,10 +394,10 @@ def plot_pattern_probabilities_multi_schedule(
         percent_masking_patterns = num_masking_patterns / num_total_patterns * 100
         if col_idx == n:
             color = "green"
-            title = f'Power-staggered noise<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
+            title = f'Staggered noise: power<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
         else:
             color = "red"
-            title = f'Linear-staggered noise<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
+            title = f'Staggered noise: linear<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
 
         # title = f'Unmasking width: {ns.b:.1f}<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
         titles.append(title)  # Store title for later annotation
