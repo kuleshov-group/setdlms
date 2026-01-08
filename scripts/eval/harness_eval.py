@@ -330,9 +330,15 @@ class LMEvalHarnessModel(LM):
             )
         print(f"RANK {self.rank} completed!")
         parallelism_factors = gather_results(parallelism_factors, self.world_size)
+        throughputs = gather_results(tputs, self.world_size)
         if self.rank == 0:
+            print("=" * 20)
+            print("Metrics aggregated across ranks:")
             print(
                 f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+            )
+            print(
+                f"Thput (tok/s): {np.mean(throughputs):0.2f} +/- {np.std(throughputs):0.2f}"
             )
         return res
 

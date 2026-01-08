@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 from transformers.generation import StopStringCriteria
+from transformers.modeling_outputs import ModelOutput
 
 from scripts.utils import (
     count_parameters,
@@ -172,6 +173,7 @@ def main(cfg: DictConfig) -> None:
     # Iterate through the dataset and sample
     generated_samples = []
     tputs = []
+    parallelism_factors = []
     references = dataset.target_references
     for elem_id, elem in tqdm(
         enumerate(dataloader),
@@ -215,12 +217,21 @@ def main(cfg: DictConfig) -> None:
             input_ids = torch.cat((input_ids, prompt_ids), dim=-1)
         # Generate samples
         with torch.no_grad():
-            outputs = model.generate(
+            generation_outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=(local_rank != 0),
                 # tokenizer=tokenizer,  # For debugging: prints intermediate generation
                 **gen_kwargs,
             )
+            if isinstance(generation_outputs, ModelOutput):
+                outputs = generation_outputs.sequences
+                parallelism_factor = generation_outputs.get("parallelism_factor", -1.0)
+                if parallelism_factor is None:
+                    parallelism_factor = -1.0
+            else:
+                outputs = generation_outputs
+                parallelism_factor = -1.0
+            parallelism_factors.append(parallelism_factor)
             if local_rank == 0:
                 end_event.record()
                 torch.cuda.synchronize()
@@ -243,6 +254,9 @@ def main(cfg: DictConfig) -> None:
             print("Input:", tokenizer.decode(input_ids[0]))
             print("Output:", decoded_samples)
             print("Ground truth:", references[elem_id])
+            print(
+                f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+            )
             if elem_id >= THROUGHPUT_WARMUP:
                 print(f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
         generated_samples.append(decoded_samples)
@@ -254,6 +268,8 @@ def main(cfg: DictConfig) -> None:
     world_size = dist.get_world_size()
     generated_samples = gather_results(generated_samples, world_size)
     references = gather_results(references, world_size)
+    parallelism_factors = gather_results(parallelism_factors, world_size)
+    throughputs = gather_results(tputs, world_size)
     if local_rank == 0:
         rouge = evaluate.load("rouge")
         bleu = evaluate.load("sacrebleu")
@@ -277,7 +293,12 @@ def main(cfg: DictConfig) -> None:
         print(f"| ROUGE-L | {rouge_scores['rougeL']:>7.4f} |")
         print(f"| BLEU    | {bleu_score['score']:>7.4f} |")
         print(f"| METEOR  | {meteor_score['meteor']:>7.4f} |")
-
+        print(
+            f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+        )
+        print(
+            f"Thput (tok/s): {np.mean(throughputs):0.2f} +/- {np.std(throughputs):0.2f}"
+        )
         res_for_json = [
             {"ground_truth": references[i], "result": generated_samples[i]}
             for i in range(len(generated_samples))
