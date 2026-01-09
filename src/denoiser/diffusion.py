@@ -191,11 +191,12 @@ class MDLMConfig(DenoiserConfig):
     def __init__(
         self,
         keep_clean_bos: Optional[bool] = None,  # Whether to enforce un-noised BOS token
+        eval_nll: Optional[bool] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.keep_clean_bos = keep_clean_bos
-
+        self.eval_nll = eval_nll
 
 class MDLM(Denoiser):
     """Denoiser class for MDLM models.
@@ -1681,7 +1682,7 @@ class AnyOrderBD3LM(BD3LM):
             )
         if not self.training and getattr(self.config, "eval_nll", False) and self.config.block_size > 1:
             coeff = denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
-            coeff = torch.where(torch.isnan(coeff), torch.zeros_like(coeff), coeff)
+            coeff = torch.where(torch.isinf(coeff) | torch.isnan(coeff), torch.zeros_like(coeff), coeff)
             seq_len = denoiser_inputs.x0.shape[1]
             masked_indices = denoiser_inputs.xt[:, -seq_len:] == self.mask_token_id
             nlls = (
