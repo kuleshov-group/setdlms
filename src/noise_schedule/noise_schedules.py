@@ -212,6 +212,9 @@ class LinearNoise(Noise):
     def inverse(self, alpha_t):
         return 1 - alpha_t
 
+    def compute_inf_budget(self):
+        return self.block_size / 2
+
     def __call__(self, t):
         t = t.to(torch.float32)
         move_chance = self.total_noise(t)
@@ -221,6 +224,17 @@ class LinearNoise(Noise):
         else:
             alpha_t_prime = -torch.ones_like(t)
         return 1 - move_chance, alpha_t_prime
+
+    def compute_first_hitting_times(self, batch_size, length, device, dtype=torch.float64):
+        timesteps = torch.FloatTensor([1.0]).to(device).repeat(batch_size, 1)
+        for i in range(length, 0, -1):
+            eps = torch.finfo(dtype).tiny
+            u = torch.rand(batch_size, device=device).clamp_min(eps)
+            # next_t = timesteps[:, -1] * u ** (1 / i)
+            next_t = timesteps[:, -1] * torch.exp(torch.log(u) / i)
+            timesteps = torch.cat((timesteps, next_t), dim=0)
+        return timesteps[1:].to(device, dtype=dtype)  # type: ignore
+
 
     def sample_permutation_order(self, t, to_permute: torch.Tensor, block_size: Optional[int] = None, **kwargs: Any) -> torch.Tensor:
         t = t.to(torch.float32)
@@ -283,6 +297,8 @@ class StaggeredNoise(Noise):
         self.loc =  - torch.linspace(0, 1 - 1 / scale, block_size).flip(0)
         self.loc = self.loc[None, :]
     
+    def compute_inf_budget(self):
+        return self.block_size * self.b * self.k / (self.k + 1)
         
     def _plot_schedule(self, figdir):
         import numpy as np
@@ -437,6 +453,16 @@ class StaggeredNoise(Noise):
         at_prime = torch.clamp(at_prime, max=scale)
         return at_prime.reshape(batch_size, -1)
 
+    def compute_first_hitting_times(self, batch_size, length, device, dtype=torch.float64):
+        E = torch.empty(batch_size, length, dtype=dtype, device=device).exponential_()
+        loc = self.loc.to(device)
+        T = loc[None, :] + self.b * (-torch.expm1(-E / self.k))
+        # equivalent, but less numerically stable for k -> 0
+        # U = 1 - torch.exp(-E)
+        # T_alt = loc[None, :] + self.b * (1 - (1.0 - U)**(1/k))
+        # assert (T - T_alt).abs().max() < 1e-4
+        return T.reshape(batch_size, -1)
+
     def __call__(self, t):
         t = t.to(torch.float32)
         return 1 - self.total_noise(t), - self.rate_noise(t)
@@ -478,14 +504,7 @@ class StaggeredNoise(Noise):
         # sample and sort first-hitting times
 
         # stable reparametrization, numerically stable for k -> 0
-        E = torch.empty(num_total_blocks, block_size, device=device).exponential_()
-        loc = self.loc.to(device)
-        T = loc[None, :] + self.b * (-torch.expm1(-E / self.k))
-
-        # equivalent, but less numerically stable for k -> 0
-        # U = 1 - torch.exp(-E)
-        # T_alt = loc[None, :] + self.b * (1 - (1.0 - U)**(1/k))
-        # assert (T - T_alt).abs().max() < 1e-4
+        T = self.compute_first_hitting_times(num_total_blocks, block_size, device, dtype=t.dtype)
 
         # hard constraints
         T = torch.where(is_beginning, float('inf'), T)  # force earliest

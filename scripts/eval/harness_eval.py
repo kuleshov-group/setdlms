@@ -227,6 +227,7 @@ class LMEvalHarnessModel(LM):
         correct, total = 0, 0
         tputs = []
         parallelism_factors = []
+        inf_budgets = []
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
         ):
@@ -272,6 +273,9 @@ class LMEvalHarnessModel(LM):
                 sample = generation_outputs
                 parallelism_factor = -1.0
             parallelism_factors.append(parallelism_factor)
+            if "inf_budget" in generation_outputs:
+                inf_budget = generation_outputs["inf_budget"]
+                inf_budgets.append(inf_budget)
             if self.rank == 0:
                 end_event.record()
                 torch.cuda.synchronize()
@@ -298,6 +302,10 @@ class LMEvalHarnessModel(LM):
                 print(
                     f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
                 )
+                if "inf_budget" in generation_outputs:
+                    print(
+                        f"Inference prediction budget: {np.mean(inf_budgets):0.2f} +/- {np.std(inf_budgets):0.2f}"
+                    )
             res.append(result)
 
             # log accuracy
@@ -331,6 +339,8 @@ class LMEvalHarnessModel(LM):
         print(f"RANK {self.rank} completed!")
         parallelism_factors = gather_results(parallelism_factors, self.world_size)
         throughputs = gather_results(tputs, self.world_size)
+        if "inf_budget" in generation_outputs:
+            inf_budgets = gather_results(inf_budgets, self.world_size)
         if self.rank == 0:
             print("=" * 20)
             print("Metrics aggregated across ranks:")
@@ -340,6 +350,10 @@ class LMEvalHarnessModel(LM):
             print(
                 f"Thput (tok/s): {np.mean(throughputs):0.2f} +/- {np.std(throughputs):0.2f}"
             )
+            if "inf_budget" in generation_outputs:
+                print(
+                    f"Inference prediction budget: {np.mean(inf_budgets):0.2f} +/- {np.std(inf_budgets):0.2f}"
+                )
         return res
 
 

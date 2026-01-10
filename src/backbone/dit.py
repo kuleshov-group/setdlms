@@ -31,7 +31,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 try:
-  from torch.nn.attention.flex_attention import flex_attention, create_block_mask, BlockMask, DynamicCache
+  from torch.nn.attention.flex_attention import flex_attention
   FLEX_ATTN_AVAILABLE = True
 except:
   FLEX_ATTN_AVAILABLE = False

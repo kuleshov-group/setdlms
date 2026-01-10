@@ -85,18 +85,19 @@ class DenoisingCollator:
             _eps_t = torch.rand(batch_size, device=device)
         if self.antithetic_sampling:
             offset = torch.arange(
-                start=t_index[0] * num_blocks,
-                end=t_index[1] * num_blocks,
+                start=t_index[0],
+                end=t_index[1],
                 device=device,
-            ) / (global_batch_size * num_blocks)
-            offset = offset.view(batch_size, num_blocks)
-            _eps_t = (_eps_t / (global_batch_size * num_blocks) + offset) % 1
+            ) / global_batch_size
+            offset = offset.view(batch_size)
+            if self.block_size is not None and self.block_size > 0:
+                offset = offset.unsqueeze(1)
+            _eps_t = (_eps_t / global_batch_size + offset) % 1
         t = (1 - self.sampling_eps) * _eps_t + self.sampling_eps
         if self.restricted_t_range is not None:
             low, high = self.restricted_t_range
             t = (low - high) * t + high
         if self.block_size is not None and self.block_size > 0:
-            t = t[..., torch.randperm(t.shape[-1])]
             return t.repeat_interleave(self.block_size, dim=1)[:, :self.max_length]
         # Remove extra padding
         if t.ndim == 2:

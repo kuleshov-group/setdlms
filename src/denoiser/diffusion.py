@@ -48,7 +48,7 @@ class DiffusionGenerationConfig(GenerationConfig):
         min_t: float = 1e-5,
         block_size: Optional[int] = None,
         first_hitting: bool = False,
-        sampling_strategy: Literal["posterior", "predict_then_noise"] = "posterior",
+        sampling_strategy: Literal["posterior", "predict_and_noise"] = "posterior",
         confidence_based_noising: bool = False,
         confidence_margin_based_noising: bool = False,
         confidence_threshold: float = 1e6,
@@ -81,16 +81,16 @@ class DiffusionGenerationConfig(GenerationConfig):
                 Options:
                     - "posterior" - Compute and sample from the posterior
                         q(x_s | x_t, x_theta).
-                    - "predict_then_noise" - Sample from the denoising model x_theta,
+                    - "predict_and_noise" - Sample from the denoising model x_theta,
                         then add back noise to produce x_s.
                         Only implemented for absorbing diffusion.
                 Defaults to "posterior".
-            confidence_based_noising (bool): When using the "predict_then_noise"
+            confidence_based_noising (bool): When using the "predict_and_noise"
                 strategy, whether to add noise to random positions or to those that have
                 the lowest probability under x_theta.
                 Cannot be used in conjunction with confidence_margin_based_noising.
                 Defaults to False.
-            confidence_margin_based_noising (bool): When using the "predict_then_noise"
+            confidence_margin_based_noising (bool): When using the "predict_and_noise"
                 strategy, whether to add noise to random positions or to those that have
                 the lowest probability margins under x_theta, where margin is defined as
                 the absolute difference between the top two probabilities at a given
@@ -177,6 +177,7 @@ class DiffusionGenerationOutput(ModelOutput):
     hidden_states: Optional[tuple[tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Cache] = None
     parallelism_factor: Optional[float] = None
+    inf_budget: Optional[float] = None
 
 class MDLMConfig(DenoiserConfig):
     """Configuration class for MDLM models."""
@@ -191,12 +192,11 @@ class MDLMConfig(DenoiserConfig):
     def __init__(
         self,
         keep_clean_bos: Optional[bool] = None,  # Whether to enforce un-noised BOS token
-        eval_nll: Optional[bool] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.keep_clean_bos = keep_clean_bos
-        self.eval_nll = eval_nll
+
 
 class MDLM(Denoiser):
     """Denoiser class for MDLM models.
@@ -431,16 +431,18 @@ class MDLM(Denoiser):
             alpha_t (Tensor): Noise schedule parameter at time t (B, 1, 1).
             alpha_s (Tensor): Noise schedule parameter at time s (B, 1, 1).
         """
-        q_xs = x * (alpha_s - alpha_t)
-        q_xs[..., self.mask_token_id] = 1 - alpha_s[..., 0]
-        q_xs /= 1 - alpha_t
+        q_xs = x * (alpha_s[..., None] - alpha_t[..., None])
+        q_xs[..., self.mask_token_id] = 1 - alpha_s
+        # removed in mdlm: 
+        # q_xs = torch.where(alpha_t[..., None] != 1, q_xs / (1 - alpha_t[..., None]), x)
         return q_xs  # type: ignore
 
-    @staticmethod
     def _sample_generation_timesteps(
+        self,
         generation_config: DiffusionGenerationConfig,
         max_length: Optional[int] = None,
         device: Optional[str] = None,
+        dtype: Optional[torch.dtype] = torch.float64,
     ) -> torch.FloatTensor:
         """Sample timesteps for diffusion generation process."""
         if device is None:
@@ -450,20 +452,17 @@ class MDLM(Denoiser):
 
         if (
             generation_config.first_hitting
-            # TODO: first-hitting does not work with posterior
             and generation_config.sampling_strategy == "posterior"
         ):
-            timesteps = torch.FloatTensor([1.0])
-            for i in range(max_length, 0, -1):
-                u = torch.rand(1)
-                next_t = timesteps[-1] * u ** (1 / i)
-                timesteps = torch.cat((timesteps, next_t), dim=0)
-            return timesteps[1:].to(device)  # type: ignore
+            fhs_times = self.noise_schedule.compute_first_hitting_times(
+                batch_size=1, length=max_length, device=device, dtype=dtype)[0].sort(descending=True).values
+            return fhs_times
         return torch.linspace(  # type: ignore
             1.0,
             generation_config.min_t,
             generation_config.num_steps + 1,
             device=device,
+            dtype=dtype,
         )[:-1]
 
     def _generate_unconditional(
@@ -513,10 +512,10 @@ class MDLM(Denoiser):
             q_xs = self._compute_posterior(
                 x_theta, denoiser_inputs.xt, alpha_t, alpha_s
             )
-
-            assert abs((q_xs.sum() / prob_check_denom).item() - 1.0) < 1e-6, (
-                "Posterior probabilities not summing to 1."
-            )
+            # removed in mdlm (from removing denominator)
+            # assert abs((q_xs.sum() / prob_check_denom).item() - 1.0) < 1e-6, (
+            #     "Posterior probabilities not summing to 1."
+            # )
             assert q_xs.isnan().sum().item() == 0, "NaN found in the posterior."
             xs = self._sample_categorical(q_xs, generation_config.do_sample)
             output = torch.where(
@@ -544,7 +543,7 @@ class MDLM(Denoiser):
                 est_noise_indices = ((1 - alpha_s) * generation_config.block_size).to(torch.int)
             else:
                 # Multivariate noise schedule: sum masking probabilities for timestep s
-                est_noise_indices = torch.floor((1 - alpha_s).sum(dim=-1)).to(torch.int)
+                est_noise_indices = torch.ceil((1 - alpha_s).sum(dim=-1)).to(torch.int)
             # Subtract tokens outside of decoding window
             est_noise_indices -= (generation_config.block_size - xt_block.shape[-1]) - running_generation.shape[-1]
             num_masked_indices = (xt_block == self.mask_token_id).sum()
@@ -584,7 +583,7 @@ class MDLM(Denoiser):
                 else:
                     noise_indices = conf.argsort(dim=-1)[..., :-num_clean_indices]
             output[..., noise_indices] = self.mask_token_id
-            if sample_indices is not None and sample_indices[-1] < self.config.length:
+            if sample_indices is not None and sample_indices[-1] + num_to_decode < self.config.length:
                 output[..., sample_indices[-1]+num_to_decode:] = self.mask_token_id
             output = torch.where(
                 xs_probs >= generation_config.confidence_threshold, xs, output
@@ -703,6 +702,7 @@ class MDLM(Denoiser):
             disable=disable_pbar,
         )
         num_tokens_generated_per_step = []
+        inf_budget_per_step = []
         for block_id in block_pbar:
             block_NFEs = 0
             if getattr(self.config, "block_size", self.config.length) == self.config.length:
@@ -756,8 +756,8 @@ class MDLM(Denoiser):
                 else:
                     alpha_t, _ = self.noise_schedule(t)
                     alpha_s, _ = self.noise_schedule(t - dt)
-                alpha_t = alpha_t[None, None, None]
-                alpha_s = alpha_s[None, None, None]
+                alpha_t = alpha_t[None, None]
+                alpha_s = alpha_s[None, None]
                 denoiser_inputs, cache = self._prepare_inputs_inference(
                     input_ids=xt,
                     context=context,
@@ -783,6 +783,10 @@ class MDLM(Denoiser):
                 num_tokens_generated_per_step.append(
                     (xs != denoiser_inputs.xt).sum().item()
                 )
+                if getattr(generation_config, "compute_inf_budget", False):
+                    alpha_t_prime = alpha_s - alpha_t
+                    inf_budget = ((denoiser_inputs.xt == self.mask_token_id) & (alpha_t_prime != 0.0)).sum().item()
+                    inf_budget_per_step.append(inf_budget)
                 if not torch.allclose(xs, denoiser_inputs.xt):
                     model_output_cache = None
                 if not generation_config.use_cache:
@@ -825,10 +829,13 @@ class MDLM(Denoiser):
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
         )
+        if getattr(generation_config, "compute_inf_budget", False):
+            inf_budget = sum(inf_budget_per_step) / len(inf_budget_per_step)
         if return_dict_in_generate:
             return DiffusionGenerationOutput(
                 sequences=accumulated_samples,
                 parallelism_factor=parallelism_factor,
+                inf_budget=inf_budget,
             )
         return accumulated_samples  # type: ignore
 
@@ -1682,7 +1689,7 @@ class AnyOrderBD3LM(BD3LM):
             )
         if not self.training and getattr(self.config, "eval_nll", False) and self.config.block_size > 1:
             coeff = denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
-            coeff = torch.where(torch.isinf(coeff) | torch.isnan(coeff), torch.zeros_like(coeff), coeff)
+            coeff = torch.where(torch.isnan(coeff), torch.zeros_like(coeff), coeff)
             seq_len = denoiser_inputs.x0.shape[1]
             masked_indices = denoiser_inputs.xt[:, -seq_len:] == self.mask_token_id
             nlls = (
@@ -2033,6 +2040,7 @@ class AnyOrderBD3LM(BD3LM):
             disable=disable_pbar,
         )
         num_tokens_generated_per_step = []
+        inf_budget_per_step = []
         if self.mask_token_id in accumulated_samples:
             inputs_offset = (accumulated_samples == self.mask_token_id)[0].nonzero().min()
         else:
@@ -2062,17 +2070,24 @@ class AnyOrderBD3LM(BD3LM):
                 inputs_offset + (block_id * block_size) : inputs_offset
                 + ((block_id + 1) * block_size)
             ]
-            for t in step_pbar:
+            for i, t in enumerate(step_pbar):
                 block_NFEs += 1
                 total_NFEs += 1
                 if t.ndim == 0:
                     t = t[None, None].repeat(1, block_size)
+                if generation_config.first_hitting:
+                    num_generated = sum(num_tokens_generated_per_step)
+                    next_t = timesteps[num_generated + 1] if num_generated < timesteps.shape[-1] else timesteps[-1].fill_(0.0)
+                else:
+                    next_t = t - dt
+                if next_t.ndim == 0:
+                    next_t = next_t[None, None].repeat(1, block_size)
                 if generation_config.linear_unmasking:
                     alpha_t = torch.ones_like(t) - t
-                    alpha_s = torch.ones_like(t) - (t - dt)
+                    alpha_s = torch.ones_like(t) - next_t
                 else:
                     alpha_t, _ = self.noise_schedule(t)
-                    alpha_s, _ = self.noise_schedule(t - dt)
+                    alpha_s, _ = self.noise_schedule(next_t)
                 masked_positions = (xt == self.mask_token_id)
                 window_start = inputs_offset + (block_id * block_size) + masked_positions[0].nonzero(as_tuple=False)[0].item()
                 masked_positions = masked_positions & (xt_position_ids < window_start + window_size)
@@ -2088,8 +2103,8 @@ class AnyOrderBD3LM(BD3LM):
                 running_generation = xt[xt != self.mask_token_id]
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
-                    alpha_t=alpha_t,
-                    alpha_s=alpha_s,
+                    alpha_t=alpha_t[masked_positions] if generation_config.sampling_strategy == "posterior" else alpha_t,
+                    alpha_s=alpha_s[masked_positions] if generation_config.sampling_strategy == "posterior" else alpha_s,
                     denoiser_inputs=denoiser_inputs,
                     cache=cache,
                     xt=xt,
@@ -2100,6 +2115,12 @@ class AnyOrderBD3LM(BD3LM):
                 num_tokens_generated_per_step.append(
                     (xs != self.mask_token_id).sum().item()
                 )
+                if getattr(generation_config, "compute_inf_budget", False):
+                    alpha_t_schedule, _ = self.noise_schedule(t)
+                    alpha_s_schedule, _ = self.noise_schedule(next_t)
+                    alpha_t_prime = (alpha_s_schedule - alpha_t_schedule).abs()
+                    inf_budget = ((xt == self.mask_token_id) & (alpha_t_prime != 0.0)).sum().item()
+                    inf_budget_per_step.append(inf_budget)
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
@@ -2110,7 +2131,8 @@ class AnyOrderBD3LM(BD3LM):
                 ):
                     model_output_cache = None
                 accumulated_samples[:, xt_position_ids[masked_positions]] = xs
-                if generation_config.use_cache:
+                # Update cache (w/ unmasked tokens; tokens could remain masked if using posterior sampling)
+                if generation_config.use_cache and (xs != self.mask_token_id).sum().item() > 0:
                     # Enode unmasked tokens only
                     cache = self.update_cache(
                         inputs=xs[xs != self.mask_token_id].unsqueeze(0),
@@ -2123,11 +2145,11 @@ class AnyOrderBD3LM(BD3LM):
 
                 if (xt == self.mask_token_id).sum().item() == 0:
                     break
-                if stopping_criteria is not None:
+                if (not getattr(generation_config, "compute_inf_budget", False)) and stopping_criteria is not None:
                     is_done = stopping_criteria(
                         input_ids=accumulated_samples[  # type: ignore
                             :,
-                            : inputs_offset + ((block_id + 1) * block_size)
+                            inputs_offset : inputs_offset + ((block_id + 1) * block_size)
                         ],
                         scores=None,  # type: ignore
                     )
@@ -2146,10 +2168,14 @@ class AnyOrderBD3LM(BD3LM):
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
         )
+        inf_budget = None
+        if getattr(generation_config, "compute_inf_budget", False):
+            inf_budget = sum(inf_budget_per_step) / len(inf_budget_per_step)
         if return_dict_in_generate:
             return DiffusionGenerationOutput(
                 sequences=accumulated_samples,
                 parallelism_factor=parallelism_factor,
+                inf_budget=inf_budget,
             )
         return accumulated_samples  # type: ignore
 

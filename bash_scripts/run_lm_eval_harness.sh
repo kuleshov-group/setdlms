@@ -39,13 +39,13 @@ NUM_FEW_SHOT=0
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v5"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_distill_staggered_scale64_v3"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_distill_staggered_scale1_v1"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_v28"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_v28"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_v20"
 
-
-
+# uses U/4
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_v29"
 BLOCK_SIZE=1024
-# SCALE=128
-# BLOCK_SIZE=1
+MAX_WINDOW_SIZE=32
 
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max32_distill_v2"
 # BLOCK_SIZE=1024
@@ -60,22 +60,26 @@ REVISION=null
 
 L=1024
 RETURN_DICT_IN_GENERATE=true
+COMPUTE_INF_BUDGET=false
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
-T=512
-FIRST_HITTING=true
+T=1024
+FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
-CONFIDENCE_THRESHOLD=1e6
+CONFIDENCE_THRESHOLD=0.9
 CKPT="best"
+LINEAR_UNMASKING=true
 
-echo "CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD} T: ${T}"
+echo "MAX WINDOW SIZE ${MAX_WINDOW_SIZE}"
+
+echo "CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD} T: ${T} LINEAR_UNMASKING: ${LINEAR_UNMASKING} DO_SAMPLE: ${DO_SAMPLE} SAMPLING_STRATEGY: ${SAMPLING_STRATEGY} FIRST_HITTING: ${FIRST_HITTING} CONFIDENCE_BASED_NOISING: ${CONFIDENCE_BASED_NOISING} CONFIDENCE_MARGIN_BASED_NOISING: ${CONFIDENCE_MARGIN_BASED_NOISING} ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS} CKPT: ${CKPT} USE_EMA: ${USE_EMA}"
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}"
 OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_${NUM_FEW_SHOT}shot_L${L}_block${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hit${FIRST_HITTING}-conf_noise${CONFIDENCE_BASED_NOISING}-conf_margin_noise${CONFIDENCE_MARGIN_BASED_NOISING}-conf_thold${CONFIDENCE_THRESHOLD}-align_to_blocks${ALIGN_INPUTS_TO_BLOCKS}"
 mkdir -p ${OUTPUT_PATH}
 
-PORT=29512
+PORT=$((RANDOM % 10000 + 29500))
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/harness_eval.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \
@@ -91,6 +95,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_length=${L} \
+  max_new_tokens=${L} \
   block_size=${BLOCK_SIZE} \
   generation_config.do_sample=${DO_SAMPLE} \
   generation_config.sampling_strategy=${SAMPLING_STRATEGY} \
@@ -101,7 +106,10 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.confidence_threshold=${CONFIDENCE_THRESHOLD} \
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
+  generation_config.max_window_size=${MAX_WINDOW_SIZE} \
   gen_kwargs.return_dict_in_generate=${RETURN_DICT_IN_GENERATE} \
+  +generation_config.compute_inf_budget=${COMPUTE_INF_BUDGET} \
+  generation_config.linear_unmasking=${LINEAR_UNMASKING} \
   ~generation/logits_processor@logits_processor_list \
   gen_kwargs.logits_processor=null \
   generation/stopping_criteria@stopping_criteria_list='[gsm8k_regex_stopping_criteria]'

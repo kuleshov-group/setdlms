@@ -5,57 +5,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def simulate_masking(noise, L, block_size, max_block_size, t_steps=1000, masking_trials=1000):
-    max_block_sizes = []
-    average_block_sizes = []
-
-    t = torch.linspace(0, 1, t_steps).unsqueeze(-1).repeat(1, L)
-    move_chance = noise.total_noise(t)
-    loc = noise.loc
-    w = noise.b
-    variances = []
-    max_block_sizes = []
-    masking_probs = []
-    for trial in tqdm(range(1, t.shape[0]), desc="Simulating masking"):
-        move_chance_trial = move_chance[trial]
-        active = (t[trial, 0] > loc) & (t[trial, 0] <= loc + w)
-        variances.append(move_chance_trial.var().item())
-        max_block_sizes_trial = []
-
-        # masking for this t
-        tokens_predicted = torch.zeros(L)
-        for _ in range(masking_trials):
-            mask = torch.rand(L) < move_chance_trial.clamp(0, 1)
-            valid = mask & active[0] # active AND masked
-            tokens_predicted[valid] += 1
-
-            # average_block_sizes.append(valid.sum())
-            idx = valid.nonzero()[:, -1]
-            if idx.numel() > 1 and 0 in idx:
-                max_block_sizes_trial.append(idx[-1] - idx[0] + 1)
-
-        masking_prob_t = tokens_predicted / masking_trials
-        masking_probs.append(masking_prob_t)
-        if len(max_block_sizes_trial) > 0:
-            max_block_sizes.extend(max_block_sizes_trial)
-
-    import ipdb ; ipdb.set_trace()
-
-    # if the first token is being predicted, how many tokens ahead are also being predicted?
-    max_block_sizes = torch.tensor(max_block_sizes)
-    counts, frequencies = torch.unique(max_block_sizes, return_counts=True)
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=counts.numpy(), y=(frequencies / frequencies.sum()).numpy()))
-    fig.update_layout(
-        xaxis_title="Max block size",
-        yaxis_title="Frequency",
-        title="Max block size distribution"
-    )
-    fig.write_image(f"max_block_size_distribution_L{L}_block_size{block_size}_max_block_size{max_block_size}.png")
-    print(f"max_block_size_distribution_L{L}_block_size{block_size}_max_block_size{max_block_size}.png saved")
-
-
 def sample_permutation_order(noise, L, num_samples=100):
     t = torch.rand(1, L)
     max_deviations = []
@@ -107,18 +56,22 @@ def simulate_pattern_probs_across_t(
     t_grid = torch.linspace(0, 1, t_steps, device=device).unsqueeze(-1).repeat(1, L)
 
     counts = Counter()
+    num_predicted = []
     total = 0
 
     for ti in range(t_min_index, t_max_index):
         t = t_grid[ti].unsqueeze(0)  # [1, L]
-        p = noise.total_noise(t).squeeze(0)  # [L]
+        # p = noise.total_noise(t).squeeze(0)  # [L]
+        p, alpha_t_prime = noise.total_noise(t), noise.rate_noise(t)
         if clamp_probs:
             p = p.clamp(0, 1)
         masking_trials_per_t_kept = 0
 
         # sample masks at this t
-        mask_samples = (torch.rand(masking_trials_per_t, L, device=device) < p[None, :])
+        mask_samples = (torch.rand(masking_trials_per_t, L, device=device) < p)
         patterns_np = mask_samples.to(torch.int8).cpu().numpy()
+        valid_to_predict = (alpha_t_prime != 0.0) & (patterns_np == 1)
+        num_predicted.extend(valid_to_predict.sum(dim=-1).tolist())
 
         for row in patterns_np:
             # if row.sum() == 0:
@@ -154,7 +107,7 @@ def simulate_pattern_probs_across_t(
     # keep only patterns with at least one masked token
     patterns_cond = patterns[~is_all_clean]
     probs_cond = probs[~is_all_clean] / (1.0 - p0)
-    return patterns_cond, probs_cond
+    return patterns_cond, probs_cond, num_predicted
 
 import numpy as np
 
@@ -381,13 +334,16 @@ def plot_pattern_probabilities_multi_schedule(
 
     titles = []  # Collect titles with pattern counts
     for col_idx, ns in enumerate(noise_schedules, start=1):
-        patterns, probs = simulate_pattern_probs_across_t(
+        patterns, probs, num_predicted = simulate_pattern_probs_across_t(
             noise=ns,
             L=L,
             t_steps=t_steps,
             masking_trials_per_t=masking_trials_per_t,
             device=device,
         )
+        expected_inference_prediction_budget = ns.compute_inf_budget()
+        print("empirical inference prediction budget: ", np.mean(num_predicted), "+/-", np.std(num_predicted))
+        print("expected inference prediction budget: ", expected_inference_prediction_budget)
 
         num_masking_patterns = len(patterns)
         num_total_patterns = 2**L - 1
@@ -542,6 +498,8 @@ def plot_pattern_probabilities_multi_schedule(
                 html_path = savepath.replace('.png', '.html').replace('.jpg', '.html')
                 fig.write_html(html_path)
     print(f"Saved to {savepath}")
+
+
     return fig
 
 
@@ -570,8 +528,8 @@ if __name__ == "__main__":
         plot_schedule=False,
         int_min=0.15)
     # sample_permutation_order(noise, L)
-    L = 4
-    d_fixed = 2
+    L = 1024
+    d_fixed = 16
     int_mins = [-1.0, 0.1]
 
     noise_schedules = []
