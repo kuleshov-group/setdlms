@@ -829,6 +829,7 @@ class MDLM(Denoiser):
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
         )
+        inf_budget = None
         if getattr(generation_config, "compute_inf_budget", False):
             inf_budget = sum(inf_budget_per_step) / len(inf_budget_per_step)
         if return_dict_in_generate:
