@@ -1,0 +1,4 @@
+repeating_token:
+  _target_: src.custom_transformers.generation.RepeatingTokenStoppingCriteria
+  tokenizer: ${tokenizer}
+  min_run_length: 8

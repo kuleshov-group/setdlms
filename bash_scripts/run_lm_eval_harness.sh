@@ -31,7 +31,6 @@ NUM_FEW_SHOT=0
 
 # MODEL_PATH=
 
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block16_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs16_v10"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_staggered_scale64_distill_v1"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_staggered_scale256_distill_v1"
@@ -40,12 +39,22 @@ NUM_FEW_SHOT=0
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_distill_staggered_scale64_v3"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_distill_staggered_scale1_v1"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_v28"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_v20"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_v30"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt8_max1024_distill_v30"
+# MODEL_PATH="Qwen/Qwen3-1.7B-Base"
 
-# uses U/4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_v29"
-BLOCK_SIZE=1024
-MAX_WINDOW_SIZE=32
+
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_v26"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=8
+# ALIGN_INPUTS_TO_BLOCKS=false
+# T=1024
+
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"
+BLOCK_SIZE=4
+MAX_WINDOW_SIZE=4
+ALIGN_INPUTS_TO_BLOCKS=true
+T=4
 
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max32_distill_v2"
 # BLOCK_SIZE=1024
@@ -53,7 +62,6 @@ MAX_WINDOW_SIZE=32
 echo "MODEL_PATH: ${MODEL_PATH}"
 
 KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=false
 USE_EMA=true
 OUTPUT_DIR="outputs/${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
@@ -63,11 +71,10 @@ RETURN_DICT_IN_GENERATE=true
 COMPUTE_INF_BUDGET=false
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
-T=1024
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
-CONFIDENCE_THRESHOLD=0.9
+CONFIDENCE_THRESHOLD=0.85
 CKPT="best"
 LINEAR_UNMASKING=true
 
@@ -112,4 +119,4 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.linear_unmasking=${LINEAR_UNMASKING} \
   ~generation/logits_processor@logits_processor_list \
   gen_kwargs.logits_processor=null \
-  generation/stopping_criteria@stopping_criteria_list='[gsm8k_regex_stopping_criteria]'
+  generation/stopping_criteria@stopping_criteria_list='[gsm8k_regex_stopping_criteria,repeating_token]'

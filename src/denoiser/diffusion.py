@@ -449,10 +449,10 @@ class MDLM(Denoiser):
             device = "cuda" if torch.cuda.is_available() else "cpu"
         if max_length is None:
             max_length = generation_config.max_new_tokens
-
+        sampling_strategy = getattr(generation_config, "sampling_strategy", "posterior")
         if (
-            generation_config.first_hitting
-            and generation_config.sampling_strategy == "posterior"
+            getattr(generation_config, "first_hitting", False)
+            and sampling_strategy == "posterior"
         ):
             fhs_times = self.noise_schedule.compute_first_hitting_times(
                 batch_size=1, length=max_length, device=device, dtype=dtype)[0].sort(descending=True).values
@@ -508,7 +508,8 @@ class MDLM(Denoiser):
             x_theta = model_output_cache["x_theta"]
         model_output_cache = {"x_theta": x_theta}
         prob_check_denom = denoiser_inputs.xt.numel()
-        if generation_config.sampling_strategy == "posterior":
+        sampling_strategy = getattr(generation_config, "sampling_strategy", "posterior")
+        if sampling_strategy == "posterior":
             q_xs = self._compute_posterior(
                 x_theta, denoiser_inputs.xt, alpha_t, alpha_s
             )
@@ -523,7 +524,7 @@ class MDLM(Denoiser):
                 denoiser_inputs.xt,
                 xs,
             )
-        elif generation_config.sampling_strategy == "predict_and_noise":
+        elif sampling_strategy == "predict_and_noise":
             # assert (
             #     abs((x_theta.sum() / prob_check_denom).item() - 1.0) < 1e-6
             # ), "Denoising output probabilities not summing to 1."
@@ -590,7 +591,7 @@ class MDLM(Denoiser):
             )
         else:
             raise NotImplementedError(
-                f"Sampling strategy {generation_config.sampling_strategy} not"
+                f"Sampling strategy {sampling_strategy} not"
                 " implemented."
             )
         return output, model_output_cache, cache  # type: ignore
@@ -605,10 +606,9 @@ class MDLM(Denoiser):
         max_length: Optional[int] = None,
         max_new_tokens: Optional[int] = None,
         return_dict_in_generate: Optional[bool] = False,
-        batch_size: Optional[int] = None,
-        device: Optional[str] = None,
+        batch_size: int = 1,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
         tokenizer: Optional[PreTrainedTokenizer] = None,
-        disable_pbar: bool = False,
         **kwargs: Any,
     ) -> torch.LongTensor:
         # Setup sampling variables
@@ -634,8 +634,6 @@ class MDLM(Denoiser):
                     max_new_tokens = max_length - inputs.shape[-1]
         batch_size = batch_size if batch_size is not None else inputs.shape[0]
         assert batch_size == 1, "Batched sampling not supported yet"
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
         block_size = generation_config.block_size
         is_infill_task = self.mask_token_id in inputs
         pad_length = None
@@ -695,6 +693,13 @@ class MDLM(Denoiser):
             generation_config, max_length=block_size, device=device
         )
         dt = (1 - generation_config.min_t) / len(timesteps)
+        rank = (
+            torch.distributed.get_rank()
+            if torch.distributed.is_available() and torch.distributed.is_initialized()
+            else 0
+        )
+        disable_pbar = rank != 0
+
         block_pbar = tqdm(
             range(max_blocks),
             desc="Blocks",
@@ -721,6 +726,13 @@ class MDLM(Denoiser):
                     continue
             if self.mask_token_id not in xt:
                 continue
+            rank = (
+                torch.distributed.get_rank()
+                if torch.distributed.is_available() and torch.distributed.is_initialized()
+                else 0
+            )
+            disable_pbar = rank != 0
+
             step_pbar = tqdm(
                 timesteps,
                 desc="T",
@@ -750,7 +762,7 @@ class MDLM(Denoiser):
                     block_NFEs += 1
                     total_NFEs += 1
                 # t is 0-dim tensor, reshape to (1, 1, 1) for broadcasting
-                if generation_config.linear_unmasking:
+                if getattr(generation_config, "linear_unmasking", False):
                     alpha_t = torch.ones_like(t) - t
                     alpha_s = torch.ones_like(t) - (t - dt)
                 else:
@@ -796,6 +808,9 @@ class MDLM(Denoiser):
                 else:
                     xt = xs
                 if (xt == self.mask_token_id).sum().item() == 0:
+                    if getattr(generation_config, "compute_inf_budget", False):
+                        remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
+                        inf_budget_per_step.extend([0] * remaining_steps)
                     break
             if not generation_config.use_cache:
                 accumulated_samples[..., sample_indices] = xt[..., sample_indices]
@@ -1950,10 +1965,9 @@ class AnyOrderBD3LM(BD3LM):
         max_length: int | None = None,
         max_new_tokens: int | None = None,
         return_dict_in_generate: Optional[bool] = False,
-        batch_size: int | None = None,
-        device: str | None = None,
+        batch_size: int = 1,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
         tokenizer: PreTrainedTokenizer | None = None,
-        disable_pbar: bool = False,
         **kwargs: Any,
     ) -> torch.LongTensor:
         assert generation_config.use_cache, (
@@ -1983,11 +1997,8 @@ class AnyOrderBD3LM(BD3LM):
                     max_new_tokens = generation_config.max_new_tokens
                 else:
                     max_new_tokens = max_length - inputs.shape[-1]
-        batch_size = batch_size if batch_size is not None else inputs.shape[0]
         assert batch_size == 1, "Batched sampling not supported yet"
         is_infill_task = self.mask_token_id in inputs
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
         block_size = generation_config.block_size
         window_size = self.noise_schedule.compute_window_size()
         window_size = min(generation_config.max_window_size, window_size)
@@ -2034,6 +2045,14 @@ class AnyOrderBD3LM(BD3LM):
 
         total_NFEs = 0
         is_done = False
+        rank = (
+            torch.distributed.get_rank()
+            if torch.distributed.is_available() and torch.distributed.is_initialized()
+            else 0
+        )
+        disable_pbar = rank != 0
+        sampling_strategy = getattr(generation_config, "sampling_strategy", "posterior")
+
         block_pbar = tqdm(
             range(max_blocks),
             desc="Blocks",
@@ -2076,14 +2095,14 @@ class AnyOrderBD3LM(BD3LM):
                 total_NFEs += 1
                 if t.ndim == 0:
                     t = t[None, None].repeat(1, block_size)
-                if generation_config.first_hitting:
+                if getattr(generation_config, "first_hitting", False):
                     num_generated = sum(num_tokens_generated_per_step)
                     next_t = timesteps[num_generated + 1] if num_generated < timesteps.shape[-1] else timesteps[-1].fill_(0.0)
                 else:
                     next_t = t - dt
                 if next_t.ndim == 0:
                     next_t = next_t[None, None].repeat(1, block_size)
-                if generation_config.linear_unmasking:
+                if getattr(generation_config, "linear_unmasking", False):
                     alpha_t = torch.ones_like(t) - t
                     alpha_s = torch.ones_like(t) - next_t
                 else:
@@ -2104,8 +2123,8 @@ class AnyOrderBD3LM(BD3LM):
                 running_generation = xt[xt != self.mask_token_id]
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
-                    alpha_t=alpha_t[masked_positions] if generation_config.sampling_strategy == "posterior" else alpha_t,
-                    alpha_s=alpha_s[masked_positions] if generation_config.sampling_strategy == "posterior" else alpha_s,
+                    alpha_t=alpha_t[masked_positions] if sampling_strategy == "posterior" else alpha_t,
+                    alpha_s=alpha_s[masked_positions] if sampling_strategy == "posterior" else alpha_s,
                     denoiser_inputs=denoiser_inputs,
                     cache=cache,
                     xt=xt,
@@ -2126,11 +2145,6 @@ class AnyOrderBD3LM(BD3LM):
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
                 )
-
-                if (
-                    not torch.allclose(xs, xt[masked_positions].unsqueeze(0))
-                ):
-                    model_output_cache = None
                 accumulated_samples[:, xt_position_ids[masked_positions]] = xs
                 # Update cache (w/ unmasked tokens; tokens could remain masked if using posterior sampling)
                 if generation_config.use_cache and (xs != self.mask_token_id).sum().item() > 0:
@@ -2145,6 +2159,10 @@ class AnyOrderBD3LM(BD3LM):
                 xt_position_ids[masked_positions][xs[0] == self.mask_token_id] = xt_position_ids[masked_positions][xs[0] == self.mask_token_id].unsqueeze(0)
 
                 if (xt == self.mask_token_id).sum().item() == 0:
+                    if getattr(generation_config, "compute_inf_budget", False):
+                        # for avearage inf budget calculation across all t
+                        remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
+                        inf_budget_per_step.extend([0] * remaining_steps)
                     break
                 if (not getattr(generation_config, "compute_inf_budget", False)) and stopping_criteria is not None:
                     is_done = stopping_criteria(

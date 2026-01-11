@@ -214,12 +214,25 @@ class LMEvalHarnessModel(LM):
         ds = Dataset.from_list(ds)
         # from src.datasets.preprocessed_dataset import load_preprocessed_dataset
         # ds = load_preprocessed_dataset(
-        #     dataset_path="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_train",
+        #     dataset_path="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_eval",
         #     inject_context_mask=True,
         #     tokenizer=self.tokenizer,
         #     token_to_split="<|im_start|>",
         #     split_offset=2
         # )
+
+        # target_text = " Jennie is helping at her mom's offi" 
+        # for i,elem in enumerate(ds):
+        #     text = self.tokenizer.decode(elem["input_ids"])
+        #     if target_text in text:
+        #         print(text)
+        #         print(i)
+        #         break
+        
+        # ds = [ds[i]]
+            
+
+
         ds = ds.map(_tokenize)
         ds = ds.with_format("torch")
         res = []
@@ -252,15 +265,11 @@ class LMEvalHarnessModel(LM):
                         indent=2,
                     )
                 sys.exit(0)
-            if self.rank == 0:
-                start_event = torch.cuda.Event(enable_timing=True)
-                end_event = torch.cuda.Event(enable_timing=True)
-                start_event.record()
-            else:
-                start_event, end_event = None, None
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
             generation_outputs = self.model.generate(
                 inputs=elem["prefix"][None, ...].to(self.device),
-                disable_pbar=(self.rank != 0),
                 # tokenizer=self.tokenizer,  # Uncomment for debugging
                 **self.gen_kwargs,
             )
@@ -276,13 +285,12 @@ class LMEvalHarnessModel(LM):
             if "inf_budget" in generation_outputs:
                 inf_budget = generation_outputs["inf_budget"]
                 inf_budgets.append(inf_budget)
-            if self.rank == 0:
-                end_event.record()
-                torch.cuda.synchronize()
-                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
-                tput = (sample.numel() - elem["prefix"].numel()) / elapsed_time_s
-                if i >= self.throughput_warmup:
-                    tputs.append(tput)
+            end_event.record()
+            torch.cuda.synchronize()
+            elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+            tput = (sample.numel() - elem["prefix"].numel()) / elapsed_time_s
+            if i >= self.throughput_warmup:
+                tputs.append(tput)
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
                 "<|eot_id|>",

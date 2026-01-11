@@ -23,7 +23,7 @@ def schedule_curves(noise_schedule, n_points=1000):
 def add_schedule_subplot(fig, noise_schedule, row, col, title_prefix="", ncols=1):
     x, move_chance = schedule_curves(noise_schedule, n_points=1000)
 
-    colorscale = pc.sequential.Viridis
+    colorscale = pc.sequential.Bluered
     n = max(noise_schedule.length - 1, 1)
 
     active = (move_chance != 0) & (move_chance != 1)
@@ -107,8 +107,8 @@ if plot_fig1:
         staggered_noise_expected_active = float(np.trapz(y[:, 0], ts[:, 0])) * L
         staggered_noise_max_overlap = ((y != 0) & (y != 1)).sum(-1).max().item() # - 1
         subplot_titles += [
-            f"<b>Block diffusion</b> <br> Expected # unmasked = {block_diffusion_expected_active:.1f} <br> Max lookahead = {block_diffusion_max_overlap:.1f}",
-            f"<b>Staggered noise</b> <br> Expected # unmasked = {staggered_noise_expected_active:.1f} <br> Max lookahead = {staggered_noise_max_overlap:.1f}",
+            f"<b>Block diffusion</b> <br> Expected # unmasked = {block_diffusion_expected_active:.1f} <br> Max. lookahead = {block_diffusion_max_overlap:.1f}",
+            f"<b>Staggered noise</b> <br> Expected # unmasked = {staggered_noise_expected_active:.1f} <br> Max. lookahead = {staggered_noise_max_overlap:.1f}",
         ]
 
 
@@ -201,7 +201,7 @@ if plot_fig1:
             y=1.15,              # <-- lives INSIDE the top margin band
             xanchor="center",
             yanchor="top",
-            font=dict(size=12),
+            font=dict(size=16),
         ),
     )
     # ---- Force x/y ticks + labels on EVERY subplot in fig1 ----
@@ -271,7 +271,7 @@ if plot_fig1:
                 col=c,
             )
             fig1.update_yaxes(
-                title_text="Mask prob.",
+                title_text="Masking probability",
                 row=r,
                 col=c,
             )
@@ -314,12 +314,8 @@ for j, int_min in enumerate(int_mins, start=1):
     y = ns.total_noise(ts)
     max_overlap = ((y != 0) & (y != 1)).sum(-1).max().item() - 1
     expected_active = float(np.trapz(y[:, 0], ts[:, 0])) * L
-    if j == 2:
-        subplot_titles += [f'<b>Staggered noise: power</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:green;">Max lookahead = {max_overlap:d}</span>']
-        # subplot_titles += [f'<b>Unmasking width: {ns.b:.1f}</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:green;">Max lookahead = {max_overlap:d}</span>']
-    else:
-        # subplot_titles += [f'<b>Unmasking width: {ns.b:.1f}</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:red;">Max lookahead = {max_overlap:d}</span>']
-        subplot_titles += [f'<b>Staggered noise: linear</b><br>Expected # unmasked = {expected_active:.1f}<br><span style="color:red;">Max lookahead = {max_overlap:d}</span>']
+    color = "green" if j == 2 else "red"
+    subplot_titles += [f'<b>w={ns.b:.1f}, k={ns.k:.1f}</b><br>Expected inference budget = {expected_active:.1f} token(s)<br><span style="color:{color};">Max lookahead = {max_overlap:d} token(s)</span>']
 fig2 = make_subplots(
     rows=1,
     cols=ncols2,
@@ -348,7 +344,8 @@ for j, int_min in enumerate(int_mins, start=1):
     )
 
 fig2.update_layout(
-    title=f"<b>Staggered noise matched w/ block size {d_fixed}</b> (expected # unmasked = {expected_active:.1f})",
+    # title=f"<b>Staggered  matched w/ BD3LM block size {d_fixed}</b>",
+    title="",
     title_x=0.5,
     title_y=1.0,
     template="plotly",
@@ -367,12 +364,16 @@ fig2.update_layout(
         y=1.6,          # below title_y=0.97, above subplot titles
         xanchor="center",
         yanchor="top",
-        font=dict(size=12),
+        font=dict(size=16),
     ),
 )
-fig2.update_xaxes(title_text="t", showline=True, linecolor="black", linewidth=2)
-fig2.update_yaxes(title_text="Mask prob.", showline=True, linecolor="black", linewidth=2, range=[0, 1], rangemode="tozero", constrain="domain")
+# yaxis_title = r"$1 - \boldsymbol{\alpha}_t^i$"
+yaxis_title = "Mask probability"
+fig2.update_xaxes(title_text=r"$t$", showline=True, linecolor="black", linewidth=2, title_font_size=16)
+fig2.update_yaxes(title_text=yaxis_title, showline=True, linecolor="black", linewidth=2, range=[0, 1], rangemode="tozero", constrain="domain", title_font_size=16)
 
-fig2.write_image("power_schedule_2.jpg")
+# fig2.write_image("power_schedule_2.jpg")
+# write to pdf
+fig2.write_image("power_schedule_2.pdf")
 
 print("Wrote power_schedule_1.jpg and power_schedule_2.jpg")

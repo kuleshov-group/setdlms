@@ -99,6 +99,9 @@ class LinearNoise(Noise):
                 os.makedirs(figdir)
             self._plot_schedule(figdir)
 
+    def compute_window_size(self):
+        return self.block_size
+
     def total_noise(self, t):
         loc = self.loc.to(t.device)
         move_chance = (t + loc) * self.num_blocks
@@ -220,7 +223,8 @@ class LinearNoise(Noise):
         move_chance = self.total_noise(t)
         if self.length is not None and self.block_size is not None:
             num_blocks = self.length // self.block_size
-            alpha_t_prime = torch.where(torch.logical_and(t > self.loc, t < self.loc + 1 / num_blocks), -self.num_blocks, 0.)
+            loc = self.loc.to(t.device)
+            alpha_t_prime = torch.where(torch.logical_and(t > loc, t < loc + 1 / num_blocks), -self.num_blocks, 0.)
         else:
             alpha_t_prime = -torch.ones_like(t)
         return 1 - move_chance, alpha_t_prime
@@ -558,8 +562,9 @@ class EaseOutPowerNoise(StaggeredNoise):
         frac = (max_block_size - 1) / (self.block_size - 1)
         if int_min is not None:
             int_min = desired_area / 2 # NOTE: HARDCODED
+            # import ipdb ; ipdb.set_trace()
             # int_min = 1 / self.block_size
-            b = desired_area / ((2 * desired_area) - int_min)
+            b = min(desired_area / ((2 * desired_area) - int_min), 1.0)
         if k is not None:
             self.k = k
             self.b = desired_area * (self.k + 1) / self.k

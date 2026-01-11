@@ -270,65 +270,90 @@ def plot_pattern_probabilities_multi_schedule(
     # --- Header row y position (shared)
     header_y = 1.36
 
-    # --- Custom legend centered: [■ Masked]  [□ Clean]  (with spacing)
-    # Masked square - accounting for aspect ratio (fig is 18:5, so width in paper coords must be smaller)
-    # Height in paper coords: 0.03, which is 0.03 * 400px = 12px
-    # For square: width should also be 12px = 12/1440 = 0.00833 in paper coords
-    square_width = 0.06 * (figsize[1] / figsize[0])  # Account for aspect ratio
-    square_half_width = square_width / 2
-    masked_center_x = 0.4475  # Center of masked square
-    fig.add_shape(
-        type="rect",
-        xref="paper", yref="paper",
-        x0=masked_center_x - square_half_width, x1=masked_center_x + square_half_width,
-        y0=header_y-0.015, y1=header_y+0.015,
-        fillcolor="rgb(51, 51, 51)", line=dict(width=0),
-        layer="above",
-    )
+    m = fig.layout.margin
+    ml = m.l or 0
+    mr = m.r or 0
+    mt = m.t or 0
+    mb = m.b or 0
+
+    plot_w = float(fig.layout.width)  - ml - mr
+    plot_h = float(fig.layout.height) - mt - mb
+
+    square_h = 0.08
+    square_w = square_h * (plot_h / plot_w)
+
+    header_y = 1.36
+
+    # Masked: solid square
     fig.add_annotation(
-        text="Masked",
+        xref="paper", yref="paper",
+        x=0.4475, y=header_y,
+        text="■",
+        showarrow=False,
+        xanchor="center", yanchor="middle",
+        font=dict(size=18, color="rgb(51,51,51)"),
+    )
+
+    fig.add_annotation(
         xref="paper", yref="paper",
         x=0.47, y=header_y,
+        text="Masked",
         showarrow=False,
         xanchor="left", yanchor="middle",
         font=dict(size=14),
     )
 
-    # Clean square (outlined) - accounting for aspect ratio to make it square
-    clean_center_x = 0.5875  # Center of clean square
-    fig.add_shape(
-        type="rect",
-        xref="paper", yref="paper",
-        x0=clean_center_x - square_half_width, x1=clean_center_x + square_half_width,
-        y0=header_y-0.015, y1=header_y+0.015,
-        fillcolor="white", line=dict(color="rgb(128, 128, 128)", width=2),
-        layer="above",
-    )
+    # Clean square with clearly thicker border
+    clean_x = 0.5875
+    dx = 0.0005   # horizontal tweak
+    dy = -0.005   # vertical tweak
+
+    # Outer (border)
     fig.add_annotation(
-        text="Clean",
+        xref="paper", yref="paper",
+        x=clean_x, y=header_y,
+        text="■",
+        showarrow=False,
+        xanchor="center", yanchor="middle",
+        font=dict(size=28, color="black"),
+    )
+
+    # Inner (fill)
+    fig.add_annotation(
+        xref="paper", yref="paper",
+        x=clean_x + dx,
+        y=header_y + dy,
+        text="■",
+        showarrow=False,
+        xanchor="center", yanchor="middle",
+        font=dict(size=16, color="white"),
+    )
+
+    fig.add_annotation(
         xref="paper", yref="paper",
         x=0.605, y=header_y,
+        text="Clean",
         showarrow=False,
         xanchor="left", yanchor="middle",
         font=dict(size=14),
     )
 
-    # --- Autoregressive ordering key on the left (same baseline as legend)
-    fig.add_shape(
-        type="rect",
-        xref="paper", yref="paper",
-        x0=0.02, x1=0.035, y0=header_y-0.015, y1=header_y+0.015,
-        fillcolor="orange",
-        line=dict(width=0),
-        layer="above",
-    )
+    # Autoregressive: solid square (orange)
     fig.add_annotation(
-        text="Autoregressive masking",
+        xref="paper", yref="paper",
+        x=0.0275, y=header_y,
+        text="■",
+        showarrow=False,
+        xanchor="center", yanchor="middle",
+        font=dict(size=18, color="orange"),
+    )
+
+    fig.add_annotation(
         xref="paper", yref="paper",
         x=0.04, y=header_y,
+        text="Autoregressive masking",
         showarrow=False,
-        xanchor="left",
-        yanchor="middle",
+        xanchor="left", yanchor="middle",
         font=dict(size=14),
     )
 
@@ -350,10 +375,9 @@ def plot_pattern_probabilities_multi_schedule(
         percent_masking_patterns = num_masking_patterns / num_total_patterns * 100
         if col_idx == n:
             color = "green"
-            title = f'Staggered noise: power<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
         else:
             color = "red"
-            title = f'Staggered noise: linear<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
+        title = f'w={ns.b:.1f}, k={ns.k:.1f}<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
 
         # title = f'Unmasking width: {ns.b:.1f}<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
         titles.append(title)  # Store title for later annotation
@@ -471,17 +495,17 @@ def plot_pattern_probabilities_multi_schedule(
         font=dict(size=14),
     )
 
-    fig.update_layout(
-        margin=dict(t=180),   # create headroom
-        title=dict[str, str | float | dict[str, int | str]](
-            text="Masking patterns for staggered noise matched w/ block size 2, L=4",
-            x=0.5,
-            y=0.85,            # must be ≤ 1
-            xanchor="center",
-            yanchor="top",
-            font=dict(size=18, weight="bold"),
-        ),
-    )
+    # fig.update_layout(
+    #     margin=dict(t=180),   # create headroom
+    #     title=dict[str, str | float | dict[str, int | str]](
+    #         text="Masking patterns for staggered noise matched w/ block size 2, L=4",
+    #         x=0.5,
+    #         y=0.85,            # must be ≤ 1
+    #         xanchor="center",
+    #         yanchor="top",
+    #         font=dict(size=18, weight="bold"),
+    #     ),
+    # )
 
     if savepath is not None:
         # For HTML output
@@ -520,16 +544,15 @@ if __name__ == "__main__":
     #     block_size=L,
     #     plot_schedule=False)
 
-    noise = EaseOutPowerNoise(
-        block_size=L,
-        desired_block_size=block_size,
-        max_block_size=max_block_size,
-        length=L,
-        plot_schedule=False,
-        int_min=0.15)
+    # noise = EaseOutPowerNoise(
+    #     block_size=L,
+    #     desired_block_size=block_size,
+    #     max_block_size=max_block_size,
+    #     length=L,
+    #     plot_schedule=False,
+    #     int_min=0.15)
     # sample_permutation_order(noise, L)
-    L = 1024
-    d_fixed = 16
+    d_fixed = 2
     int_mins = [-1.0, 0.1]
 
     noise_schedules = []
