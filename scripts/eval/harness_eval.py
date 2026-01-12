@@ -172,7 +172,7 @@ class LMEvalHarnessModel(LM):
         def _tokenize(
             e,
             prefix_text: str | None = (
-                f"{self.tokenizer.bos_token}Please reason step by step, and put your "
+                f"Please reason step by step, and put your "
                 + "final answer within $\\boxed{}$. "
             ),
         ):
@@ -214,7 +214,7 @@ class LMEvalHarnessModel(LM):
         ds = Dataset.from_list(ds)
         # from src.datasets.preprocessed_dataset import load_preprocessed_dataset
         # ds = load_preprocessed_dataset(
-        #     dataset_path="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_eval",
+        #     dataset_path="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_train",
         #     inject_context_mask=True,
         #     tokenizer=self.tokenizer,
         #     token_to_split="<|im_start|>",

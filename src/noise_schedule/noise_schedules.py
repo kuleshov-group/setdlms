@@ -463,7 +463,7 @@ class StaggeredNoise(Noise):
         T = loc[None, :] + self.b * (-torch.expm1(-E / self.k))
         # equivalent, but less numerically stable for k -> 0
         # U = 1 - torch.exp(-E)
-        # T_alt = loc[None, :] + self.b * (1 - (1.0 - U)**(1/k))
+        # T_alt = loc[None, :] + self.b * (1 - (1.0 - U)**(1/self.k))
         # assert (T - T_alt).abs().max() < 1e-4
         return T.reshape(batch_size, -1)
 
@@ -508,7 +508,7 @@ class StaggeredNoise(Noise):
         # sample and sort first-hitting times
 
         # stable reparametrization, numerically stable for k -> 0
-        T = self.compute_first_hitting_times(num_total_blocks, block_size, device, dtype=t.dtype)
+        T = self.compute_first_hitting_times(num_total_blocks, block_size, device)
 
         # hard constraints
         T = torch.where(is_beginning, float('inf'), T)  # force earliest
