@@ -460,7 +460,8 @@ class StaggeredNoise(Noise):
     def compute_first_hitting_times(self, batch_size, length, device, dtype=torch.float64):
         E = torch.empty(batch_size, length, dtype=dtype, device=device).exponential_()
         loc = self.loc.to(device)
-        T = loc[None, :] + self.b * (-torch.expm1(-E / self.k))
+        factor = -torch.expm1(-E / self.k)
+        T = loc[None, :] + self.b * factor
         # equivalent, but less numerically stable for k -> 0
         # U = 1 - torch.exp(-E)
         # T_alt = loc[None, :] + self.b * (1 - (1.0 - U)**(1/self.k))
@@ -559,12 +560,23 @@ class EaseOutPowerNoise(StaggeredNoise):
         self.block_size = block_size
         desired_num_blocks = self.length / desired_block_size
         desired_area = 1 / (2 * desired_num_blocks)
-        frac = (max_block_size - 1) / (self.block_size - 1)
-        if int_min is not None:
-            int_min = desired_area / 2 # NOTE: HARDCODED
-            # import ipdb ; ipdb.set_trace()
-            # int_min = 1 / self.block_size
-            b = min(desired_area / ((2 * desired_area) - int_min), 1.0)
+        # if desired_area not in [0.5, 1]:
+        #     frac = (max_block_size - 1) / (self.block_size - 1)
+        #     k_lb = desired_area / (1 - desired_area)
+        #     k_ub = desired_area / (0.5 - desired_area)
+        #     k = min(math.sqrt(k_lb * k_ub), 1.0)
+        #     print(f"k_lb: {k_lb}, k_ub: {k_ub}, k: {k}")
+        # k_lower_bound = desired_area / (1 - desired_area)
+        # k_upper_bound = 1 / ((0.5 / desired_area) - 1)
+
+        n_overlap = desired_block_size * 4
+        factor = desired_area * (self.block_size + n_overlap) / n_overlap
+        k = factor / (1 - factor)
+
+        # if int_min is not None:
+        #     int_min = desired_area / 2 # NOTE: HARDCODED
+        #     # int_min = 1 / self.block_size
+        #     b = min(desired_area / ((2 * desired_area) - int_min), 1.0)
         if k is not None:
             self.k = k
             self.b = desired_area * (self.k + 1) / self.k
@@ -598,6 +610,7 @@ class EaseOutPowerNoise(StaggeredNoise):
             move_chance = self.total_noise(torch.tensor([self.b]))
             print("max active above lower bound", (move_chance >= lower_bound).sum().item())
             print("prob. of masking max_block_size", move_chance[0, -(max_block_size-1)].item())
+            print("prob. of masking n_overlap", move_chance[0, -(n_overlap-1)].item())
             print("uniform prob", 1 / self.block_size)
 
     def total_noise(self, t):

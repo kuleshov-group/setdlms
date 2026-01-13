@@ -178,6 +178,7 @@ class DiffusionGenerationOutput(ModelOutput):
     past_key_values: Optional[Cache] = None
     parallelism_factor: Optional[float] = None
     inf_budget: Optional[float] = None
+    inf_budgets: Optional[list[float]] = None
 
 class MDLMConfig(DenoiserConfig):
     """Configuration class for MDLM models."""
@@ -536,8 +537,8 @@ class MDLM(Denoiser):
 
             # Predict
             xs = self._sample_categorical(x_theta, generation_config.do_sample)
-            valid_to_unmask = (alpha_s - alpha_t) > 0.0
-            xs[~valid_to_unmask] = self.mask_token_id
+            # valid_to_unmask = (alpha_s - alpha_t) > 0.0
+            # xs[~valid_to_unmask] = self.mask_token_id
             xs_probs = x_theta.gather(-1, xs[..., None]).squeeze(dim=-1)
             output = xs.clone()
 
@@ -589,6 +590,7 @@ class MDLM(Denoiser):
             output = torch.where(
                 xs_probs >= generation_config.confidence_threshold, xs, output
             )
+            import ipdb ; ipdb.set_trace()
         else:
             raise NotImplementedError(
                 f"Sampling strategy {sampling_strategy} not"
@@ -854,6 +856,7 @@ class MDLM(Denoiser):
                 sequences=accumulated_samples,
                 parallelism_factor=parallelism_factor,
                 inf_budget=inf_budget,
+                inf_budgets=inf_budget_per_step,
             )
         return accumulated_samples  # type: ignore
 
@@ -1700,7 +1703,6 @@ class AnyOrderBD3LM(BD3LM):
             denoiser_inputs.attention_mask = denoiser_inputs.attention_mask[:, 1:]
             denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[:, 1:]
             denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[:, 1:]
-        # import ipdb ; ipdb.set_trace()
         loss = -log_p_theta
         if not self.training:
             denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask * (
@@ -2123,7 +2125,7 @@ class AnyOrderBD3LM(BD3LM):
                 alpha_s, _ = self.noise_schedule(next_t)
                 masked_positions = (xt == self.mask_token_id)
                 window_start = inputs_offset + (block_id * block_size) + masked_positions[0].nonzero(as_tuple=False)[0].item()
-                masked_positions = masked_positions & (xt_position_ids < window_start + window_size)
+                masked_positions = masked_positions & (xt_position_ids <= (window_start + window_size))
 
                 # Only decode masked tokens
                 denoiser_inputs, cache = self._prepare_inputs_inference(
@@ -2212,6 +2214,7 @@ class AnyOrderBD3LM(BD3LM):
                 sequences=accumulated_samples,
                 parallelism_factor=parallelism_factor,
                 inf_budget=inf_budget,
+                inf_budgets=inf_budget_per_step,
             )
         return accumulated_samples  # type: ignore
 
