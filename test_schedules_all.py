@@ -4,6 +4,21 @@ import torch
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+def all_nonzero_patterns_sorted(L: int):
+    # all patterns in {0,1}^L except the all-clean one
+    pats = []
+    for m in range(1, 2**L):
+        pat = tuple((m >> i) & 1 for i in range(L))
+        pats.append(pat)
+
+    def sort_key(pat):
+        masked = [i for i, v in enumerate(pat) if v == 1]
+        s = len(masked)
+        rightmost = max(masked) if masked else -1
+        return (s, rightmost)
+
+    return sorted(pats, key=sort_key)
+
 
 def sample_permutation_order(noise, L, num_samples=100):
     t = torch.rand(1, L)
@@ -104,9 +119,15 @@ def simulate_pattern_probs_across_t(
 
     p0 = probs[is_all_clean].sum()
 
-    # keep only patterns with at least one masked token
-    patterns_cond = patterns[~is_all_clean]
-    probs_cond = probs[~is_all_clean] / (1.0 - p0)
+    ordered = all_nonzero_patterns_sorted(L)
+
+    probs_dict = {pat: c / total for pat, c in counts.items()}
+
+    patterns_cond = np.array([list(p) for p in ordered], dtype=int)
+    probs_cond = np.array([probs_dict.get(p, 0.0) for p in ordered], dtype=float)
+    patterns_cond = patterns_cond[probs_cond > 0]
+    if len(patterns_cond) == L:
+        probs_cond.fill(1.0 / L)
     return patterns_cond, probs_cond, num_predicted
 
 import numpy as np
@@ -126,6 +147,7 @@ def plot_pattern_probabilities(
     square_size: float = 0.1,
     square_gap: float = 0.015,
     glyph_gap: float = 0.03,
+    ymax: float = None,
 ):
     """
     Single bar chart:
@@ -164,18 +186,37 @@ def plot_pattern_probabilities(
         row=row,
         col=col,
     )
+    n_patterns = len(patterns)
+    fig.update_xaxes(
+        range=[-0.5, n_patterns - 0.5],
+        tickmode="linear",
+        tick0=0,
+        dtick=1,
+        showticklabels=False,
+        showgrid=False,
+        zeroline=False,
+        row=row,
+        col=col,
+    )
 
-    ymax = max(float(probs.max()) if len(probs) else 1e-8, 1e-8)
+    # ymax = max(float(probs.max()) if len(probs) else 1e-8, 1e-8)
     
    # --- Glyphs: draw as layout shapes in paper coords (won't affect y-axis range)
     subplot_idx = (row - 1) * n_cols + col
-    xaxis = fig.layout[f"xaxis{subplot_idx}" if subplot_idx > 1 else "xaxis"]
+    xaxis_key = "xaxis" if subplot_idx == 1 else f"xaxis{subplot_idx}"
+    xaxis = fig.layout[xaxis_key]
     x_dom0, x_dom1 = xaxis.domain
 
-    band = getattr(fig.layout, "_glyph_band", 0.18)  # set once in the caller
-    pad = 0.0
-    y0_band = 0.0
-    y1_band = band
+    band = getattr(fig.layout, "_glyph_band", 0.18)
+    yaxis_key = "yaxis" if subplot_idx == 1 else f"yaxis{subplot_idx}"
+
+    d0_plot, d1_plot = fig.layout[yaxis_key].domain
+    band = getattr(fig.layout, "_glyph_band", 0.18)
+    # glyph band lives directly BELOW the plot domain
+    y1_band = d0_plot
+    y0_band = d0_plot - band * (d1_plot - d0_plot) / (1.0 - band)
+
+
     row_h = (y1_band - y0_band) / max(L, 1)
 
     square_y = row_h
@@ -185,7 +226,11 @@ def plot_pattern_probabilities(
     n_patterns = len(patterns)
     for j, pat in enumerate(patterns):
         # map bar center to paper-x
-        x_center = x_dom0 + (j + 0.5) / n_patterns * (x_dom1 - x_dom0)
+        # x_center = x_dom0 + (j + 0.5) / n_patterns * (x_dom1 - x_dom0)
+        xr = xaxis.range
+        x_min, x_max = float(xr[0]), float(xr[1])
+        x_span = (x_max - x_min) if (x_max != x_min) else 1.0
+        x_center = x_dom0 + ((j + 0.5) / n_patterns) * (x_dom1 - x_dom0)
         for t in range(L):
             y_center = y1_band - (t + 0.5) * row_h
             y0 = y_center - 0.5 * square_y
@@ -205,7 +250,14 @@ def plot_pattern_probabilities(
             )
 
     # Update subplot layout
+    n_patterns = len(patterns)
     fig.update_xaxes(
+        type="linear",                 # IMPORTANT: prevent category axis behavior
+        range=[-0.5, n_patterns - 0.5],
+        autorange=False,               # IMPORTANT: no per-subplot padding
+        tickmode="linear",
+        tick0=0,
+        dtick=1,
         showticklabels=False,
         showgrid=False,
         zeroline=False,
@@ -214,13 +266,14 @@ def plot_pattern_probabilities(
     )
     fig.update_yaxes(range=[0, ymax * 1.15], row=row, col=col)
 
+
 def plot_pattern_probabilities_multi_schedule(
     noise_schedules,
     L: int,
     t_steps: int = 1000,
     masking_trials_per_t: int = 2000,
     max_patterns: int | None = None,
-    figsize=(18, 3.5),
+    figsize=(11, 5),
     savepath: str | None = None,
     device: str | torch.device = "cpu",
 ):
@@ -231,13 +284,17 @@ def plot_pattern_probabilities_multi_schedule(
     n = len(noise_schedules)
     horizontal_spacing = 0.1
 
+    nrows = 2
+    ncols = 2
+
     # Create empty subplot titles - we'll add colored annotations separately
     fig = make_subplots(
-        rows=1,
-        cols=n,
+        rows=nrows,
+        cols=ncols,
         shared_yaxes=True,
         horizontal_spacing=horizontal_spacing,
-        subplot_titles=[] * n,  # Empty titles, we'll add colored ones as annotations
+        vertical_spacing=0.18,
+        subplot_titles=[""] * (nrows * ncols),
     )
     
     fig.update_layout(
@@ -247,13 +304,21 @@ def plot_pattern_probabilities_multi_schedule(
 
     # reserve a bottom band for the glyph grid (shared across subplots)
     fig.layout._glyph_band = min(0.22, 0.045 * L + 0.04)
-    for c in range(1, n + 1):
-        fig.update_yaxes(domain=[fig.layout._glyph_band, 1.0], row=1, col=c)
+
+    band = fig.layout._glyph_band
+    for r in range(1, nrows + 1):
+        for c in range(1, ncols + 1):
+            idx = (r - 1) * ncols + c
+            ykey = "yaxis" if idx == 1 else f"yaxis{idx}"
+            d0, d1 = fig.layout[ykey].domain
+            new_d0 = d0 + band * (d1 - d0)
+            fig.update_yaxes(domain=[new_d0, d1], row=r, col=c)
 
     # --- Clean header layout (no Plotly legend)
     fig.update_layout(
         showlegend=False,
-        margin=dict(b=120, t=210),  # room for: mega title + legend row + subplot titles
+        margin=dict(b=120, t=210),
+        plot_bgcolor="white",  # room for: mega title + legend row + subplot titles
     )
 
     # --- Mega title (annotation so we can place it above the plot area)
@@ -273,7 +338,7 @@ def plot_pattern_probabilities_multi_schedule(
     mr = m.r or 0
     mt = m.t or 0
     mb = m.b or 0
-    header_y = 1.3
+    header_y = 1.2
 
     # Slightly bigger legend fonts
     LEGEND_LABEL_FS = 15   # was ~14
@@ -301,7 +366,7 @@ def plot_pattern_probabilities_multi_schedule(
     m_tw  = _text_w_paper(masked_label, LEGEND_LABEL_FS)
     c_tw  = _text_w_paper(clean_label,  LEGEND_LABEL_FS)
 
-    item_gap = 0.05  # gap between the two legend items (tweak if desired)
+    item_gap = 0.06  # gap between the two legend items (tweak if desired)
 
     masked_item_w = sq_w + d_legend + m_tw
     clean_item_w  = sq_w + d_legend + c_tw
@@ -363,7 +428,7 @@ def plot_pattern_probabilities_multi_schedule(
     )
 
     # --- Autoregressive: KEEP orange square position unchanged
-    x_ar = 0.0275  # unchanged
+    x_ar = -0.01  # unchanged
     fig.add_annotation(
         xref="paper", yref="paper",
         x=x_ar, y=header_y,
@@ -375,14 +440,16 @@ def plot_pattern_probabilities_multi_schedule(
     fig.add_annotation(
         xref="paper", yref="paper",
         x=x_ar + d_legend, y=header_y,
-        text="Autoregressive masking",
+        text="AR prediction",
         showarrow=False,
         xanchor="left", yanchor="middle",
         font=dict(size=LEGEND_AR_FS),
     )
 
     titles = []  # Collect titles with pattern counts
-    for col_idx, ns in enumerate(noise_schedules, start=1):
+    row_idx, col_idx = 1, 1
+    all_patterns, all_probs = [], []
+    for _, ns in enumerate(noise_schedules, start=1):
         patterns, probs, num_predicted = simulate_pattern_probs_across_t(
             noise=ns,
             L=L,
@@ -390,61 +457,72 @@ def plot_pattern_probabilities_multi_schedule(
             masking_trials_per_t=masking_trials_per_t,
             device=device,
         )
+        all_patterns.append(patterns)
+        all_probs.append(probs)
         expected_inference_prediction_budget = ns.compute_inf_budget()
         print("empirical inference prediction budget: ", np.mean(num_predicted), "+/-", np.std(num_predicted))
         print("expected inference prediction budget: ", expected_inference_prediction_budget)
 
+    for patterns, probs, ns in zip(all_patterns, all_probs, noise_schedules):
         num_masking_patterns = len(patterns)
         num_total_patterns = 2**L - 1
-        percent_masking_patterns = num_masking_patterns / num_total_patterns * 100
-        if col_idx == n:
-            color = "green"
+        # title = f'w={ns.b:.1f}, k={ns.k:.1f}'  
+        ts = torch.linspace(0, 1, 100000).unsqueeze(-1).repeat(1, L)
+        y = ns.total_noise(ts)
+        max_overlap = ((y != 0) & (y != 1)).sum(-1).max().item()
+        expected_active = max(np.round(ns.k / (ns.k + 1) * ns.b * L, 1), 1.0)
+    
+        # expected_active = max(float(np.trapz(y[:, 0], ts[:, 0])) * L, 1.0)
+        if ns.b <= 1 / L:
+            title = f'<b>AR</b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
+        elif ns.b == 1.0:
+            title = f'<b>MDLM</b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
         else:
-            color = "red"
-        title = f'w={ns.b:.1f}, k={ns.k:.1f}<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
+            text_color = "green"
+            title = f'<b><span style="color:{text_color};"><i>Soft Block DLM</i></span></b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
 
         # title = f'Unmasking width: {ns.b:.1f}<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
         titles.append(title)  # Store title for later annotation
-
+        print(row_idx, col_idx)
         plot_pattern_probabilities(
             fig=fig,
             patterns=patterns,
             probs=probs,
             L=L,
-            row=1,
+            row=row_idx,
             col=col_idx,
-            n_cols=n,
+            n_cols=ncols,
             horizontal_spacing=horizontal_spacing,
             title=title,
             max_patterns=max_patterns,
+            ymax=max([float(probs.max()) if len(probs) else 1e-8 for probs in all_probs]),
         )
+
+        col_idx += 1
+        if col_idx > ncols:
+            col_idx = 1
+            row_idx += 1
 
     # Add colored title annotations above each subplot
     # Calculate subplot domain positions and extract colors
-    for col_idx, title in enumerate(titles, start=1):
-        if n == 1:
-            x_pos = 0.5
-        else:
-            # Calculate domain for this subplot
-            spacing = 0.1 / (n - 1) if n > 1 else 0
-            subplot_width = (1.0 - spacing * (n - 1)) / n
-            x_start = (col_idx - 1) * (subplot_width + spacing)
-            x_end = x_start + subplot_width
-            x_pos = (x_start + x_end) / 2
-        
-        # Add annotation with HTML-formatted text (Plotly supports HTML in annotations)
+    for i, title in enumerate(titles, start=1):
+        xaxis_key = "xaxis" if i == 1 else f"xaxis{i}"
+        yaxis_key = "yaxis" if i == 1 else f"yaxis{i}"
+        x_dom0, x_dom1 = fig.layout[xaxis_key].domain
+        x_center = 0.5 * (x_dom0 + x_dom1)
+        y_top = fig.layout[yaxis_key].domain[1] - 0.
+
         fig.add_annotation(
             text=title,
             xref="paper",
             yref="paper",
-            x=x_pos,
-            y=1.06,  # Position above the subplot
+            x=x_center,
+            y=y_top,   # just above each subplot
             showarrow=False,
-            font=dict(size=14, weight="bold"),
+            font=dict(size=14),
             xanchor="center",
             yanchor="bottom",
         )
-    
     # Update layout with axis labels and bottom margin for glyphs
     # Reserve space at bottom for glyphs
     fig.update_layout(
@@ -491,6 +569,8 @@ def plot_pattern_probabilities_multi_schedule(
     
     # Add y-axis label to the first subplot
     fig.update_yaxes(title_text=r"$\text{Sampling prob. } q(\mathbf{z}_t | \mathbf{x})$", row=1, col=1)
+
+    fig.update_yaxes(title_text=r"$\text{Sampling prob. } q(\mathbf{z}_t | \mathbf{x})$", row=2, col=1)
     
     # Add y-ticks for both subplots
     for col_idx in range(1, n + 1):
@@ -518,7 +598,7 @@ def plot_pattern_probabilities_multi_schedule(
         font=dict(size=14),
     )
     fig.update_layout(
-        margin=dict(l=35, r=15, t=80, b=40, pad=0),
+        margin=dict(l=35, r=15, t=85, b=40, pad=0),
     )
 
     # fig.update_layout(
@@ -578,28 +658,35 @@ if __name__ == "__main__":
     #     plot_schedule=False,
     #     int_min=0.15)
     # sample_permutation_order(noise, L)
-    d_fixed = 2
-    int_mins = [-1.0, 0.1]
+    # int_mins = [-1.0, 0.1]
+    # desired_block_sizes = [1, 2, 3, 6]
+    desired_block_sizes = [1, 2.3, 3, 4]
+    # widths = [1/desired_block_sizes[-1], None, None, 1.0]
+    # widths = [1/desired_block_sizes[-1], 1/2, 2/3, 1.0]
+    widths=[0.25, 0.6, 0.8, 1.0]
+    # ks = [None, 0.5, 0.5, None]
+    ks = [None] * len(desired_block_sizes)
 
     noise_schedules = []
     titles = []
 
-    for int_min in int_mins:
+    for desired_block_size, width, k in zip(desired_block_sizes, widths, ks):
         ns = EaseOutPowerNoise(
             block_size=L,
-            desired_block_size=d_fixed,
+            desired_block_size=desired_block_size,
             max_block_size=L,
             length=L,
             plot_schedule=False,
-            int_min=int_min if int_min >= 0.0 else None,
-            k=1.0 if int_min < 0.0 else None,
+            b=width,
+            int_min=0.1 if (width is None and k is None) else None,
+            k=k,
         )
         noise_schedules.append(ns)
     plot_pattern_probabilities_multi_schedule(
         noise_schedules=noise_schedules,
         L=L,
-        t_steps=128,
-        masking_trials_per_t=500,
+        t_steps=4096,
+        masking_trials_per_t=4096,
         max_patterns=None,  # or 16 to keep it uncluttered
-        savepath="mask_pattern_probs_by_intmin.pdf",
+        savepath="mask_pattern_probs_by_intmin_all.pdf",
     )

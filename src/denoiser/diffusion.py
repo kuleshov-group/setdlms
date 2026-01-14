@@ -1851,6 +1851,7 @@ class AnyOrderBD3LM(BD3LM):
         elif self.config.attn_backend == "flex_attention":
             raise NotImplementedError("Permutation of block mask not implmented yet")
 
+        # TODO
         if evaluate_nll_flag:
             assert self.config.attn_backend == "sdpa", "eval_nll flag only supported for sdpa backend"
             for i in range(batch_size):
