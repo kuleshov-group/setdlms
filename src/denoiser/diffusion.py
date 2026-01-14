@@ -479,13 +479,14 @@ class MDLM(Denoiser):
         running_generation: Optional[torch.LongTensor] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         sample_indices: Optional[Tuple[int, int]] = None,
+        return_updated_cache: bool = False,
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
         if model_output_cache is None:  # execute function evaluation
             backbone_output = self._backbone_forward(
                 denoiser_inputs,
-                fix_cache_length=True,  # Do not let kv cache grow on each forward call
+                fix_cache_length=True if not return_updated_cache else False,  # Do not let kv cache grow on each forward call
                 **cache,
                 **kwargs,
             )
@@ -590,7 +591,7 @@ class MDLM(Denoiser):
             output = torch.where(
                 xs_probs >= generation_config.confidence_threshold, xs, output
             )
-            import ipdb ; ipdb.set_trace()
+            output = torch.where(denoiser_inputs.xt == self.mask_token_id, output, denoiser_inputs.xt)
         else:
             raise NotImplementedError(
                 f"Sampling strategy {sampling_strategy} not"
@@ -837,6 +838,7 @@ class MDLM(Denoiser):
                         :,
                         : inputs_offset + ((block_id + 1) * block_size),
                     ]
+                    accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
                     break
             if generation_config.use_cache and getattr(self.config, "block_size", self.config.length) < self.config.length:
                 cache = self.update_cache(
@@ -1911,6 +1913,33 @@ class AnyOrderBD3LM(BD3LM):
             },
         )
 
+    def update_cache(
+        self,
+        inputs: torch.LongTensor,
+        cache: Optional[Dict[str, Any]] = None,
+        first_hitting_times: Optional[torch.LongTensor] = None,
+        **backbone_kwargs: Any,
+    ) -> Dict[str, Any]:
+        """
+        Cache the key-value pairs for the context.
+        Args:
+            inputs (torch.LongTensor): The context tensor.
+            cache (Dict[str, Any | None): Cache objects, e.g., past_key_values.
+        Returns:
+            Dict: Updated cache objects, e.g., past_key_values.
+        """
+        context_input, cache = self._prepare_inputs_inference(
+            input_ids=inputs, cache=cache, return_updated_cache=True, first_hitting_times=first_hitting_times, **backbone_kwargs
+        )
+        backbone_output = self._backbone_forward(
+            context_input,
+            **cache,
+        )
+        backbone_output = {k: v for k, v in backbone_output.items()}
+        backbone_output.pop("logits", None)  # Do not store logits in cache
+        cache = cache | backbone_output
+        return cache
+
     def _prepare_inputs_inference(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -1920,6 +1949,7 @@ class AnyOrderBD3LM(BD3LM):
         cache: Optional[Dict[str, Any]] = None,
         return_updated_cache: bool = False,
         position_ids: torch.LongTensor | None = None,
+        first_hitting_times: torch.LongTensor | None = None,
         **backbone_kwargs: Any,
     ) -> DenoiserInput:
         assert (
@@ -1933,33 +1963,35 @@ class AnyOrderBD3LM(BD3LM):
         past_key_values = cache.pop("past_key_values", DynamicCache())
         cache_len = self._get_past_key_values_seq_length(past_key_values)
         full_seq_length = cache_len + seq_len
-        if self.mask_token_id not in input_ids: # Caching
-            attention_mask = torch.tril(
-                torch.ones(
-                    (full_seq_length, full_seq_length),
-                    dtype=torch.bool,
-                ),
-            )[-seq_len:].to(device)
+        perm_indices = None
+        if return_updated_cache:
+            attention_mask = self.static_attention_mask[cache_len:cache_len+seq_len, :cache_len+seq_len].clone()
+
             # randomly permute rows and cols
-            # perm_indices_rows = torch.randperm(seq_len, device=device)
-            # if full_seq_length > seq_len:
-            #     perm_indices_cols = torch.cat((torch.arange(full_seq_length - seq_len).to(device), perm_indices_rows + (full_seq_length - seq_len)))
-            # else:
-            #     perm_indices_cols = perm_indices_rows
-            # attention_mask = attention_mask[perm_indices_rows]
-            # attention_mask = torch.gather(
-            #     attention_mask, dim=-1, index=perm_indices_cols.unsqueeze(0).expand(seq_len, full_seq_length))
+            if first_hitting_times is not None:
+                # mask tokens at the end
+                fhs = torch.where(input_ids == self.mask_token_id, -1e6, first_hitting_times)
+                perm_indices = fhs.argsort(dim=-1, stable=True, descending=True).squeeze(0)
+            else:
+                perm_indices = torch.arange(seq_len, device=device)
+            position_ids = position_ids[:, perm_indices]
+            input_ids = input_ids[:, perm_indices]
+            if self.mask_token_id in input_ids:
+                first_mask_token_idx = (input_ids == self.mask_token_id).nonzero(as_tuple=False)[0][-1].item()
+                # mask tokens cannot attend to other masked tokens
+                attention_mask[first_mask_token_idx:, -(seq_len-first_mask_token_idx):] = 0
+            # keep self-attention
+            attention_mask[-torch.arange(1, seq_len+1), -torch.arange(1, seq_len+1)] = 1
             attention_mask = self._preprocess_attention_mask(
                 attention_mask[None, None, ...], dtype=torch.float
             )
         else:
-            attention_mask = torch.tril(
-                torch.ones(
-                    (full_seq_length, full_seq_length),
-                    dtype=torch.bool,
-                ),
-            )[-seq_len:].to(device)
-            attention_mask[:, -seq_len:] = 0
+            full_possible_len = self.static_attention_mask.shape[-1] // 2
+            valid_attn_indices = torch.cat(
+                (torch.arange(cache_len),
+                torch.arange(cache_len, cache_len+seq_len) + full_possible_len,)
+            )
+            attention_mask = self.static_attention_mask[cache_len:cache_len+seq_len, valid_attn_indices].clone()
             attention_mask[-torch.arange(1, seq_len+1), -torch.arange(1, seq_len+1)] = 1
             attention_mask = self._preprocess_attention_mask(attention_mask[None, None, ...], dtype=torch.float)
         return DenoiserInput(
@@ -2047,6 +2079,11 @@ class AnyOrderBD3LM(BD3LM):
                 (batch_size, max_blocks * block_size), dtype=torch.int64, device=device
             )
             accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
+        first_hitting_times = self.noise_schedule.compute_first_hitting_times(
+            batch_size=batch_size,
+            length=max_blocks * block_size,
+            device=device,
+        )
         if generation_config.use_cache and inputs.numel() > 0:
             if is_infill_task:
                 inputs_indices = (inputs != self.mask_token_id)[0]
@@ -2108,6 +2145,10 @@ class AnyOrderBD3LM(BD3LM):
                 inputs_offset + (block_id * block_size) : inputs_offset
                 + ((block_id + 1) * block_size)
             ]
+            masked_positions = (xt == self.mask_token_id)
+            window_start = inputs_offset + (block_id * block_size) + masked_positions[0].nonzero(as_tuple=False)[0].item()
+            masked_positions = masked_positions & (xt_position_ids < (window_start + window_size))
+
             for i, t in enumerate(step_pbar):
                 block_NFEs += 1
                 total_NFEs += 1
@@ -2123,21 +2164,21 @@ class AnyOrderBD3LM(BD3LM):
 
                 alpha_t, _ = self.noise_schedule(t)
                 alpha_s, _ = self.noise_schedule(next_t)
-                masked_positions = (xt == self.mask_token_id)
-                window_start = inputs_offset + (block_id * block_size) + masked_positions[0].nonzero(as_tuple=False)[0].item()
-                masked_positions = masked_positions & (xt_position_ids <= (window_start + window_size))
 
                 # Only decode masked tokens
+                cache_len = 0 if cache.get("past_key_values", None) is None else cache["past_key_values"].get_seq_length()
                 denoiser_inputs, cache = self._prepare_inputs_inference(
                     input_ids=xt[masked_positions].unsqueeze(0),
                     cache=cache,
                     position_ids=xt_position_ids[masked_positions].unsqueeze(0),
+                    first_hitting_times=first_hitting_times[masked_positions].unsqueeze(0),
+                    return_updated_cache=True if (xt != self.mask_token_id).any() else False,
                 )
-
-                # Used for logit processing
-                running_generation = xt[xt != self.mask_token_id]
                 alpha_t_block = alpha_t[masked_positions].unsqueeze(0)
                 alpha_s_block = alpha_s[masked_positions].unsqueeze(0)
+                # Used for logit processing
+                running_generation = xt[xt != self.mask_token_id]
+                return_updated_cache = True if (xt[masked_positions] != self.mask_token_id).any() else False
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t_block,
@@ -2149,8 +2190,26 @@ class AnyOrderBD3LM(BD3LM):
                     xt=xt,
                     running_generation=running_generation,
                     logits_processor=logits_processor,
+                    return_updated_cache=return_updated_cache,
                     **kwargs,
                 )
+                # crop kv cache and sampling output
+                if return_updated_cache:
+                    clean_len = (xt[masked_positions] != self.mask_token_id).sum().item()
+                    assert cache_len + clean_len <= cache["past_key_values"].get_seq_length(), "Crop length is greater than cache length"
+                    assert cache_len + clean_len > 0, "Crop length is less than 1"
+                    cache["past_key_values"].crop(cache_len + clean_len)
+                    position_ids = denoiser_inputs.backbone_kwargs["position_ids"]
+                    cached_position_ids = position_ids[:, :clean_len]
+                    accumulated_samples.scatter_(1, cached_position_ids, xs[:, :clean_len])
+                    masked_positions.scatter_(1, cached_position_ids - inputs_offset, False)
+                    # crop xs, update xt
+                    xs = xs[:, clean_len:]
+                    xt[:, position_ids[:, clean_len:].squeeze(0) - inputs_offset] = xs
+                else:
+                    accumulated_samples[:, xt_position_ids[masked_positions]] = xs
+                window_start = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)
+                masked_positions |= (xt == self.mask_token_id) & (xt_position_ids < (window_start + window_size))
                 num_tokens_generated_per_step.append(
                     (xs != self.mask_token_id).sum().item()
                 )
@@ -2164,18 +2223,6 @@ class AnyOrderBD3LM(BD3LM):
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
                 )
-                accumulated_samples[:, xt_position_ids[masked_positions]] = xs
-                # Update cache (w/ unmasked tokens; tokens could remain masked if using posterior sampling)
-                if generation_config.use_cache and (xs != self.mask_token_id).sum().item() > 0:
-                    # Enode unmasked tokens only
-                    cache = self.update_cache(
-                        inputs=xs[xs != self.mask_token_id].unsqueeze(0),
-                        position_ids=xt_position_ids[masked_positions][xs[0] != self.mask_token_id].unsqueeze(0),
-                        cache=cache,
-                    )
-                # Update position IDs for next tokens to decode
-                xt[masked_positions][xs[0] == self.mask_token_id] = xs[xs == self.mask_token_id].unsqueeze(0)
-                xt_position_ids[masked_positions][xs[0] == self.mask_token_id] = xt_position_ids[masked_positions][xs[0] == self.mask_token_id].unsqueeze(0)
 
                 if (xt == self.mask_token_id).sum().item() == 0:
                     if getattr(generation_config, "compute_inf_budget", False):
@@ -2187,15 +2234,16 @@ class AnyOrderBD3LM(BD3LM):
                     is_done = stopping_criteria(
                         input_ids=accumulated_samples[  # type: ignore
                             :,
-                            inputs_offset : inputs_offset + ((block_id + 1) * block_size)
+                            : window_start + window_size
                         ],
                         scores=None,  # type: ignore
                     )
                     if torch.any(is_done):
                         accumulated_samples = accumulated_samples[
                             :,
-                            : inputs_offset + ((block_id + 1) * block_size),
+                            : window_start + window_size,
                         ]
+                        accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
                         break
             if tokenizer is not None:
                 print(tokenizer.batch_decode(accumulated_samples))

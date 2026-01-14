@@ -568,10 +568,14 @@ class EaseOutPowerNoise(StaggeredNoise):
         #     print(f"k_lb: {k_lb}, k_ub: {k_ub}, k: {k}")
         # k_lower_bound = desired_area / (1 - desired_area)
         # k_upper_bound = 1 / ((0.5 / desired_area) - 1)
-
-        n_overlap = desired_block_size * 4
-        factor = desired_area * (self.block_size + n_overlap) / n_overlap
-        k = factor / (1 - factor)
+        if desired_block_size not in [1, self.block_size]:
+            n_overlap = min(desired_block_size * 4, self.block_size)
+            factor = desired_area * (self.block_size + n_overlap) / n_overlap
+            # factor = desired_area * (self.block_size + n_overlap - 1) / n_overlap
+            k = factor / (1 - factor)
+        else:
+            k = 1.0
+            n_overlap = self.block_size
 
         # if int_min is not None:
         #     int_min = desired_area / 2 # NOTE: HARDCODED
@@ -590,9 +594,9 @@ class EaseOutPowerNoise(StaggeredNoise):
             denominator = lb - desired_area
             self.b = lb
             self.k = desired_area / denominator
-        if int_min is not None:
-            overlap = (2 * self.b) - 1 - ((self.b / (self.k + 1)) * (2 - (1/self.b))**(self.k+1))
-            assert overlap >= int_min, f"overlap {overlap} is less than int_min {int_min}"
+        # if int_min is not None:
+        #     overlap = (2 * self.b) - 1 - ((self.b / (self.k + 1)) * (2 - (1/self.b))**(self.k+1))
+        #     assert overlap >= int_min, f"overlap {overlap} is less than int_min {int_min}"
         print(f"k: {self.k}, b: {self.b}")
         assert self.b <= 1.0, f"b {self.b} must be less than or equal to 1.0"
         cur_area = self.k / (self.k + 1) * self.b
@@ -610,7 +614,8 @@ class EaseOutPowerNoise(StaggeredNoise):
             move_chance = self.total_noise(torch.tensor([self.b]))
             print("max active above lower bound", (move_chance >= lower_bound).sum().item())
             print("prob. of masking max_block_size", move_chance[0, -(max_block_size-1)].item())
-            print("prob. of masking n_overlap", move_chance[0, -(n_overlap-1)].item())
+            if move_chance.shape[-1] > n_overlap:
+                print("prob. of masking n_overlap", move_chance[0, -(n_overlap-1)].item())
             print("uniform prob", 1 / self.block_size)
 
     def total_noise(self, t):
