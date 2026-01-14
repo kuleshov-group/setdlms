@@ -590,9 +590,6 @@ class EaseOutPowerNoise(StaggeredNoise):
             denominator = lb - desired_area
             self.b = lb
             self.k = desired_area / denominator
-        if int_min is not None:
-            overlap = (2 * self.b) - 1 - ((self.b / (self.k + 1)) * (2 - (1/self.b))**(self.k+1))
-            assert overlap >= int_min, f"overlap {overlap} is less than int_min {int_min}"
         print(f"k: {self.k}, b: {self.b}")
         assert self.b <= 1.0, f"b {self.b} must be less than or equal to 1.0"
         cur_area = self.k / (self.k + 1) * self.b

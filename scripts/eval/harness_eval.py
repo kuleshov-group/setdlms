@@ -239,6 +239,7 @@ class LMEvalHarnessModel(LM):
         res_for_json = []
         correct, total = 0, 0
         tputs = []
+        response_lengths = []
         parallelism_factors = []
         inf_budgets = []
         for i, elem in tqdm(
@@ -289,8 +290,10 @@ class LMEvalHarnessModel(LM):
             torch.cuda.synchronize()
             elapsed_time_s = start_event.elapsed_time(end_event) / 1000
             tput = (sample.numel() - elem["prefix"].numel()) / elapsed_time_s
+            response_length = sample.numel() - elem["prefix"].numel()
             if i >= self.throughput_warmup:
                 tputs.append(tput)
+                response_lengths.append(response_length)
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             for until in elem["target"]["until"] + [
                 "<|eot_id|>",
@@ -335,8 +338,12 @@ class LMEvalHarnessModel(LM):
                     print(
                         f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}"
                     )
+                    print(
+                        f"Response length: {np.mean(response_lengths):0.2f} +/- {np.std(response_lengths):0.2f}"
+                    )
                 else:
                     print(f"Thput (tok/s): {tput:0.2f}")
+                    print(f"Response length: {response_length:0.2f}")
         samples_path = f"{self.generated_samples_output_path}/rank{self.rank}"
         with open(f"{samples_path}.json", "w") as f:
             json.dump(
@@ -349,6 +356,7 @@ class LMEvalHarnessModel(LM):
         throughputs = gather_results(tputs, self.world_size)
         if "inf_budget" in generation_outputs:
             inf_budgets = gather_results(inf_budgets, self.world_size)
+        response_lengths = gather_results(response_lengths, self.world_size)
         if self.rank == 0:
             print("=" * 20)
             print("Metrics aggregated across ranks:")
@@ -357,6 +365,9 @@ class LMEvalHarnessModel(LM):
             )
             print(
                 f"Thput (tok/s): {np.mean(throughputs):0.2f} +/- {np.std(throughputs):0.2f}"
+            )
+            print(
+                f"Response length: {np.mean(response_lengths):0.2f} +/- {np.std(response_lengths):0.2f}"
             )
             if "inf_budget" in generation_outputs:
                 print(

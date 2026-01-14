@@ -18,6 +18,21 @@ from src.utils import fsspec_exists
 
 log = logging.getLogger(__name__)
 
+from torch.utils.data import DataLoader
+from itertools import repeat
+
+class RepeatDataloader:
+    """Repeat an existing dataloader for k full passes."""
+    def __init__(self, dataloader, k: int):
+        self.dataloader = dataloader
+        self.k = k
+
+    def __iter__(self):
+        for _ in range(self.k):
+            yield from iter(self.dataloader)
+
+    def __len__(self):
+        return len(self.dataloader) * self.k
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
@@ -94,6 +109,9 @@ def main(cfg: DictConfig) -> None:
         collate_fn=collator,
         sampler=eval_sampler,
     )
+    num_importance_samples = getattr(cfg, "num_importance_samples", 1)
+    if num_importance_samples > 1:
+        eval_dataloader = RepeatDataloader(eval_dataloader, num_importance_samples)
 
     if hasattr(cfg, "composer") and hasattr(cfg.composer, "callbacks"):
         callbacks = hydra.utils.instantiate(cfg.composer.callbacks)
