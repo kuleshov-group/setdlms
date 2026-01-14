@@ -1652,41 +1652,6 @@ class AnyOrderBD3LM(BD3LM):
         # **4. Combine Masks **
         return diagonal | offset_causal | causal
 
-    def _create_static_mask(self) -> None:
-        if self.config.attn_backend == "flex_attention":
-            mask = partial(
-                self._block_mask,
-                seq_length=self.config.length,
-            )
-            self.static_attention_mask = create_block_mask(
-                mask,
-                B=None,
-                H=None,
-                Q_LEN=self.config.length * 2,
-                KV_LEN=self.config.length * 2,
-            )
-        elif self.config.attn_backend == "sdpa":
-            encoder_static_mask = torch.tril(
-                torch.ones(
-                    (self.config.length, self.config.length),
-                    dtype=torch.bool,
-                ),
-                diagonal=-1,
-            )
-            decoder_static_mask = torch.cat(
-                (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
-            )
-            encoder_static_mask = torch.cat(
-                (encoder_static_mask, torch.zeros_like(encoder_static_mask)), dim=-1
-            )
-            self.register_buffer("static_attention_mask", 
-                torch.cat(
-                    (encoder_static_mask, decoder_static_mask), dim=0
-                )
-            )
-        else:
-            raise ValueError("Unknown attention backend")
-
     def _compute_loss(
         self,
         model_output: torch.FloatTensor,
@@ -1793,14 +1758,12 @@ class AnyOrderBD3LM(BD3LM):
             xt = torch.where(
                 (attention_mask == 1) & (context_mask == 0), self.mask_token_id, xt
             )
-            xt = torch.cat((input_ids, xt), dim=-1)
         else:
             xt = self._sample_q_xt(
                 x0=input_ids,
                 alpha_t=alpha_t,
                 mask=noise_mask,
             )
-            xt = torch.cat((input_ids, xt), dim=-1)
 
         batch_size, seq_len = input_ids.shape
         num_repetitions = self.static_attention_mask.shape[1] // input_ids.shape[1]
@@ -1810,7 +1773,7 @@ class AnyOrderBD3LM(BD3LM):
                     t,
                     permute_flag,
                     self.config.block_size if self.training else self.config.eval_block_size,
-                    masked_tokens=(xt[:, seq_len:] == self.mask_token_id) if evaluate_nll_flag else None,
+                    masked_tokens=(xt == self.mask_token_id) if evaluate_nll_flag else None,
                 )
         else:
             perm_indices = torch.arange(seq_len, device=input_ids.device)
@@ -1848,28 +1811,19 @@ class AnyOrderBD3LM(BD3LM):
                 decoder_attention_mask = self.static_attention_mask
         else:
             raise ValueError("Unknown attention backend")
-        perm_indices_cols = perm_indices.repeat(1, num_repetitions)
-        perm_indices_cols[:, seq_len:seq_len*2] += seq_len
-        
         if self.config.attn_backend == "sdpa":
-            # permute rows
-            decoder_attention_mask_perm = decoder_attention_mask[
-                torch.arange(batch_size).unsqueeze(1), perm_indices_cols.argsort(dim=-1)]
-            # permute columns
-            decoder_attention_mask_perm = torch.gather(
-                decoder_attention_mask_perm,
-                dim=-1,
-                index=perm_indices_cols.argsort(dim=-1)[:, None, :].expand(
-                    batch_size, decoder_attention_mask_perm.shape[-1], decoder_attention_mask.shape[-1]
-                )
-            )
-            # self-attention
-            decoder_attention_mask_perm[:, torch.arange(seq_len), torch.arange(seq_len)] = 1
-            decoder_attention_mask_perm[:, torch.arange(seq_len, seq_len*2), torch.arange(seq_len, seq_len*2)] = 1
-            decoder_attention_mask = decoder_attention_mask_perm
+            xt = torch.gather(xt, dim=-1, index=perm_indices)
+            input_ids = torch.gather(input_ids, dim=-1, index=perm_indices)
+            position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, 1)
+            position_ids = torch.gather(position_ids, dim=-1, index=perm_indices)
+
+            xt = torch.cat((input_ids, xt), dim=-1)
+            position_ids = position_ids.repeat(1, num_repetitions)
+
         elif self.config.attn_backend == "flex_attention":
             raise NotImplementedError("Permutation of block mask not implmented yet")
 
+        # TODO
         if evaluate_nll_flag:
             masked_indices = xt == self.mask_token_id
             offset_block_causal_mask = (torch.arange(seq_len)//self.config.block_size)[:,  None] > (torch.arange(seq_len)//self.config.block_size)[None, :]
@@ -1885,19 +1839,12 @@ class AnyOrderBD3LM(BD3LM):
 
             # Keep self-attention
             decoder_attention_mask[:, torch.arange(seq_len, seq_len*2), torch.arange(seq_len, seq_len*2)] = 1
-            
+                
         decoder_attention_mask = self._preprocess_attention_mask(
             decoder_attention_mask[:, None], dtype=torch.float
         )
 
-        position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, num_repetitions).to(input_ids.device)
-
         tokens_mask = attention_mask * (1 - context_mask)
-        # TODO: DEBUG!
-        # tokens_mask_padded = F.pad(tokens_mask, (0, tokens_mask.shape[1]), value=0)
-        # for i in range(batch_size):
-        #     min_val = decoder_attention_mask[i][0][1024:].min()
-        #     decoder_attention_mask[i][0][1024:][:, tokens_mask_padded[i] == 1] = min_val
         
         return DenoiserInput(
             xt=xt,  # type: ignore
