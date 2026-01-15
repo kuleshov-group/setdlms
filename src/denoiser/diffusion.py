@@ -480,6 +480,7 @@ class MDLM(Denoiser):
         logits_processor: Optional[LogitsProcessorList] = None,
         sample_indices: Optional[Tuple[int, int]] = None,
         return_updated_cache: bool = False,
+        cache_len: Optional[int] = None,
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
@@ -496,6 +497,9 @@ class MDLM(Denoiser):
                 backbone_output = {k: v for k, v in backbone_output.items()}
                 logits = backbone_output.pop("logits")
                 cache = cache | backbone_output
+            if cache_len is not None:
+                logits = logits[:, cache_len:]
+                denoiser_inputs.xt = denoiser_inputs.xt[:, cache_len:]
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             if logits_processor is not None:
                 for token_idx in range(log_x_theta.shape[1]):
@@ -1794,7 +1798,7 @@ class AnyOrderBD3LM(BD3LM):
             )
 
         batch_size, seq_len = input_ids.shape
-        num_repetitions = self.static_attention_mask.shape[1] // input_ids.shape[1]
+        num_repetitions = 2
         if permute_flag.any():
             with torch.no_grad():
                 perm_indices = self.noise_schedule.sample_permutation_order(
@@ -1839,17 +1843,14 @@ class AnyOrderBD3LM(BD3LM):
                 decoder_attention_mask = self.static_attention_mask
         else:
             raise ValueError("Unknown attention backend")
-        if self.config.attn_backend == "sdpa":
-            xt = torch.gather(xt, dim=-1, index=perm_indices)
-            input_ids = torch.gather(input_ids, dim=-1, index=perm_indices)
-            position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, 1)
-            position_ids = torch.gather(position_ids, dim=-1, index=perm_indices)
 
-            xt = torch.cat((input_ids, xt), dim=-1)
-            position_ids = position_ids.repeat(1, num_repetitions)
+        xt = torch.gather(xt, dim=-1, index=perm_indices)
+        input_ids = torch.gather(input_ids, dim=-1, index=perm_indices)
+        position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, 1)
+        position_ids = torch.gather(position_ids, dim=-1, index=perm_indices)
 
-        elif self.config.attn_backend == "flex_attention":
-            raise NotImplementedError("Permutation of block mask not implmented yet")
+        xt = torch.cat((input_ids, xt), dim=-1)
+        position_ids = position_ids.repeat(1, num_repetitions)
 
         # TODO
         if evaluate_nll_flag:
@@ -1862,10 +1863,10 @@ class AnyOrderBD3LM(BD3LM):
                 masked_indices = torch.arange(first_mask_token_idx, seq_len*2)
                 decoder_attention_mask[i][masked_indices[:, None], masked_indices[None, :]] = torch.eye(len(masked_indices), device=decoder_attention_mask.device, dtype=decoder_attention_mask.dtype)
             
-            
-        decoder_attention_mask = self._preprocess_attention_mask(
-            decoder_attention_mask[:, None], dtype=torch.float
-        )
+        if self.config.attn_backend == "sdpa":
+            decoder_attention_mask = self._preprocess_attention_mask(
+                decoder_attention_mask[:, None], dtype=torch.float
+            )
         tokens_mask = attention_mask * (1 - context_mask)
         
         return DenoiserInput(
@@ -2130,7 +2131,6 @@ class AnyOrderBD3LM(BD3LM):
                     next_t = t - dt
                 if next_t.ndim == 0:
                     next_t = next_t[None, None].repeat(1, block_size)
-
                 alpha_t, _ = self.noise_schedule(t)
                 alpha_s, _ = self.noise_schedule(next_t)
 
@@ -2148,6 +2148,10 @@ class AnyOrderBD3LM(BD3LM):
                 # Used for logit processing
                 running_generation = xt[xt != self.mask_token_id]
                 return_updated_cache = True if (xt[masked_positions] != self.mask_token_id).any() else False
+                if return_updated_cache:
+                    clean_len = (xt[masked_positions] != self.mask_token_id).sum().item()
+                else:
+                    clean_len = None
                 xs, model_output_cache, cache = self._generate_unconditional(
                     generation_config=generation_config,
                     alpha_t=alpha_t_block,
@@ -2160,20 +2164,21 @@ class AnyOrderBD3LM(BD3LM):
                     running_generation=running_generation,
                     logits_processor=logits_processor,
                     return_updated_cache=return_updated_cache,
+                    cache_len=clean_len,
                     **kwargs,
                 )
                 # crop kv cache and sampling output
                 if return_updated_cache:
-                    clean_len = (xt[masked_positions] != self.mask_token_id).sum().item()
                     assert cache_len + clean_len <= cache["past_key_values"].get_seq_length(), "Crop length is greater than cache length"
                     assert cache_len + clean_len > 0, "Crop length is less than 1"
+                    # only keep cache for the clean tokens
                     cache["past_key_values"].crop(cache_len + clean_len)
                     position_ids = denoiser_inputs.backbone_kwargs["position_ids"]
+                    # update accumulated_samples, xt, masked_positions
                     cached_position_ids = position_ids[:, :clean_len]
-                    accumulated_samples.scatter_(1, cached_position_ids, xs[:, :clean_len])
+                    unmasked_position_ids = position_ids[:, clean_len:]
+                    accumulated_samples.scatter_(1, unmasked_position_ids, xs)
                     masked_positions.scatter_(1, cached_position_ids - inputs_offset, False)
-                    # crop xs, update xt
-                    xs = xs[:, clean_len:]
                     xt[:, position_ids[:, clean_len:].squeeze(0) - inputs_offset] = xs
                 else:
                     accumulated_samples[:, xt_position_ids[masked_positions]] = xs
@@ -2192,14 +2197,14 @@ class AnyOrderBD3LM(BD3LM):
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
                 )
-
                 if (xt == self.mask_token_id).sum().item() == 0:
                     if getattr(generation_config, "compute_inf_budget", False):
                         # for avearage inf budget calculation across all t
                         remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
                         inf_budget_per_step.extend([0] * remaining_steps)
                     break
-                if (not getattr(generation_config, "compute_inf_budget", False)) and stopping_criteria is not None:
+                check_stopping_criteria = (i % window_size == 0) and (i > 0)
+                if check_stopping_criteria and (not getattr(generation_config, "compute_inf_budget", False)) and stopping_criteria is not None:
                     is_done = stopping_criteria(
                         input_ids=accumulated_samples[  # type: ignore
                             :,

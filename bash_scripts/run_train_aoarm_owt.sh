@@ -14,8 +14,8 @@ N_LAYERS=12
 N_HEADS=12
 VOCAB_SIZE=50258
 DROPOUT=0.1
-NORM_TYPE=qknorm
-ATTN_BACKEND=sdpa
+NORM_TYPE=layernorm
+ATTN_BACKEND=flex_attention
 ADALN=false
 SCALE=1024
 # SCALE=1.0
@@ -27,11 +27,14 @@ WARMUP_DURATION="2500ba"
 BATCH_SIZE=512
 MAX_DURATION="250000ba"
 
-PRETRAINED_MODEL_NAME_OR_PATH=~/marn/runs/mari-owt-ar-noeos-v4-1/47-750000.ckpt
+DESIRED_BLOCK_SIZE=1024
+MAX_BLOCK_SIZE=1024
 
-TAG="aoarm_norm${NORM_TYPE}_adaln${ADALN}_ft_v8"
+PRETRAINED_MODEL_NAME_OR_PATH=~/mar/runs/mari-owt-ar-noeos-v4-1/47-750000.ckpt
+
+TAG="aoarm_norm${NORM_TYPE}_adaln${ADALN}_block${DESIRED_BLOCK_SIZE}_ft_v1"
 LAYERS="layers${N_LAYERS}"
-RUN_NAME=lm1b_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
+RUN_NAME=owt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
@@ -58,7 +61,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=aoarm_efficient \
   model.config.attn_backend=${ATTN_BACKEND} \
-  training.compile_backbone=false \
+  training.compile_backbone=true \
   model.config.length=${LENGTH} \
   model/backbone@model.config.backbone_config=dit \
   model.config.backbone_config.num_layers=${N_LAYERS} \
@@ -80,10 +83,8 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  noise@model.config.noise_config=staggered \
-  model.config.noise_config.scale=${SCALE} \
-  +composer/algorithms=noise_level_annealing \
-  composer.algorithms.noise_level_annealing.anneal_duration=${ANNEAL_STEPS} \
-  composer.algorithms.noise_level_annealing.final_scale=1.0 \
-  +composer/callbacks=log_noise_level_annealing \
-  composer.callbacks.save_best_checkpointing.start=${ANNEAL_STEPS}
+  noise@model.config.noise_config=power \
+  model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
+  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
+  model.config.noise_config.length=${LENGTH} \
+  model.config.noise_config.plot_schedule=false

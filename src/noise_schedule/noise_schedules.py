@@ -498,11 +498,11 @@ class StaggeredNoise(Noise):
             perm_indices = perm_indices.reshape(batch_size, num_blocks * block_size)
             # max_deviation = (perm_indices - torch.arange(0, block_size, device=device)[None, :]).abs()
             return perm_indices
-        assert num_blocks == 1, "staggered noise schedule only supports one block currently"
         num_total_blocks = t.shape[-1] // block_size * t.shape[0]
         to_permute = to_permute.reshape(-1, block_size)
         is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :1] == False)
         if masked_tokens is not None:
+            masked_tokens = masked_tokens.reshape(batch_size, num_blocks, block_size)
             is_beginning = is_beginning | ~masked_tokens
         is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, -1:] == False))
 
@@ -532,6 +532,7 @@ class EaseOutPowerNoise(StaggeredNoise):
             plot_schedule=False,
             int_min=None,
             precision=torch.float64):
+        assert max_block_size <= block_size, f"max_block_size {max_block_size} must be less than or equal to block_size {block_size}"
         self.int_min = int_min
         if int_min is not None:
             assert int_min >= 0.0 and int_min <= 0.5, f"int_min {int_min} must be between 0.0 and 0.5"
@@ -569,10 +570,11 @@ class EaseOutPowerNoise(StaggeredNoise):
         # k_lower_bound = desired_area / (1 - desired_area)
         # k_upper_bound = 1 / ((0.5 / desired_area) - 1)
         if desired_block_size not in [1, self.block_size]:
-            n_overlap = min(desired_block_size * 4, self.block_size)
-            factor = desired_area * (self.block_size + n_overlap) / n_overlap
+            n_overlap = min(desired_block_size * 2, self.block_size)
+            b = n_overlap / (self.block_size + n_overlap - 1)
+            # factor = desired_area * (self.block_size + n_overlap) / n_overlap
             # factor = desired_area * (self.block_size + n_overlap - 1) / n_overlap
-            k = factor / (1 - factor)
+            # k = factor / (1 - factor)
         else:
             k = 1.0
             n_overlap = self.block_size
