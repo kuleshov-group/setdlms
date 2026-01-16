@@ -1709,7 +1709,7 @@ class AnyOrderBD3LM(BD3LM):
             )
         if not self.training and getattr(self.config, "eval_nll", False) and self.config.block_size > 1:
             coeff = denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
-            coeff = torch.where(torch.isnan(coeff), torch.zeros_like(coeff), coeff)
+            coeff = torch.nan_to_num(coeff, nan=0.0, posinf=0.0, neginf=0.0)
             seq_len = denoiser_inputs.x0.shape[1]
             masked_indices = denoiser_inputs.xt[:, -seq_len:] == self.mask_token_id
             nlls = (
@@ -1808,7 +1808,10 @@ class AnyOrderBD3LM(BD3LM):
                     masked_tokens=(xt == self.mask_token_id) if evaluate_nll_flag else None,
                 )
         else:
-            perm_indices = torch.arange(seq_len, device=input_ids.device)
+            perm_indices = torch.arange(seq_len, device=input_ids.device)[None, :]
+        
+        alpha_t = torch.gather(alpha_t, dim=-1, index=perm_indices)
+        alpha_t_prime = torch.gather(alpha_t_prime, dim=-1, index=perm_indices)
         if self.config.attn_backend == "sdpa":
             decoder_attention_mask = (
                 self.static_attention_mask[None, ...]

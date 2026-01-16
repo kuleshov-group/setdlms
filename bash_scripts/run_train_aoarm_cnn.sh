@@ -9,7 +9,10 @@ BLOCK_SIZE=1024
 EVAL_BLOCK_SIZE=1024
 HIDDEN_SIZE=256
 INTERMEDIATE_SIZE=768
-N_LAYERS=12
+N_LAYERS=28
+
+DESIRED_BLOCK_SIZE=4
+MAX_BLOCK_SIZE=1024
 
 # Hyperparameters
 LR=3e-4
@@ -18,7 +21,7 @@ BATCH_SIZE=128
 MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
-TAG="aoarm_v12"
+TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_v2"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -62,4 +65,9 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="250ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
+  noise@model.config.noise_config=power \
+  model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
+  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
+  model.config.noise_config.length=1024 \
+  model.config.noise_config.plot_schedule=false

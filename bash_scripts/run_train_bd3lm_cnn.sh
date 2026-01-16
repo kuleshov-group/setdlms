@@ -5,11 +5,11 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=1024
-EVAL_BLOCK_SIZE=1024
+BLOCK_SIZE=16
+EVAL_BLOCK_SIZE=${BLOCK_SIZE}
 HIDDEN_SIZE=256
 INTERMEDIATE_SIZE=768
-N_LAYERS=12
+N_LAYERS=28
 
 # Hyperparameters
 LR=3e-4
@@ -23,7 +23,7 @@ TRAIN_COMPLEMENT=true
 RM_ATTN_TO_MASKED_TOKENS=false
 ATTEND_TO_DUMMY_TOKENS=false
 
-TAG="bd3lm_comp_${TRAIN_COMPLEMENT}_mask${RM_ATTN_TO_MASKED_TOKENS}_dummy${ATTEND_TO_DUMMY_TOKENS}_v1"
+TAG="bd3lm_v2"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -67,7 +67,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="1000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  +model.config.train_complement=${TRAIN_COMPLEMENT} \
-  +model.config.rm_attn_to_masked_tokens=${RM_ATTN_TO_MASKED_TOKENS} \
-  +model.config.attend_to_dummy_tokens=${ATTEND_TO_DUMMY_TOKENS}
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true

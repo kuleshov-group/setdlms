@@ -3,25 +3,18 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_v1"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_v2"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers-1_mdlm_v3"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_scale768"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block768_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_scale8" # 128,1.33333333333
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max8_distill_v5"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_staggered_scale256_distill_v1"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_again_v2"
 
 # MODEL_PATH="outputs/<PATH_TO_SAVED_MODEL_DIR>"
 REVISION=null
 
-EVAL_DATASET="gsm8k_eval"
-BLOCK_SIZE=8  # TODO: Change as needed
+EVAL_DATASET="gsm8k_eval_distill"
+BLOCK_SIZE=1024  # TODO: Change as needed
 BATCH_SIZE=1
 PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-1.7B-Base"  # TODO: Change as needed
 CKPT_FILE="best-rank0.pt"
 USE_EMA=true
 SEED=1
-SCALE=2
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \
@@ -35,7 +28,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   seed=${SEED} \
   batch_size=${BATCH_SIZE} \
   block_size=${BLOCK_SIZE} \
-  task.eval_dataloader.batch_size=4 \
+  task.eval_dataloader.batch_size=1 \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   tokenizer.pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
@@ -54,6 +47,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   gen_kwargs=null \
   +model_config_overrides.block_size=${BLOCK_SIZE} \
   +model_config_overrides.eval_block_size=${BLOCK_SIZE} \
-  +model_config_overrides.eval_nll=false \
-  +model_config_overrides.noise_config.block_size=${BLOCK_SIZE} \
-    +model_config_overrides.noise_config.scale=${SCALE}
+  +model_config_overrides.eval_nll=false
