@@ -174,6 +174,36 @@ class Rotary(torch.nn.Module):
 
     return self.cos_cached, self.sin_cached
 
+class RotaryAllowPermutations(torch.nn.Module):
+    def __init__(self, dim, base=10_000):
+        super().__init__()
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+
+    def forward(self, position_ids):
+        """
+        position_ids: (batch, seq_len) — arbitrary / permuted allowed
+        """
+
+        # (batch, seq_len, dim/2)
+        freqs = torch.einsum(
+            "bs,d->bsd",
+            position_ids.type_as(self.inv_freq),
+            self.inv_freq
+        )
+
+        # (batch, seq_len, dim)
+        emb = torch.cat([freqs, freqs], dim=-1)
+
+        # (batch, seq_len, 3, 1, dim)
+        cos = emb.cos()[:, :, None, None, :].repeat(1, 1, 3, 1, 1)
+        sin = emb.sin()[:, :, None, None, :].repeat(1, 1, 3, 1, 1)
+
+        # Make V an identity transform
+        cos[:, :, 2, :, :].fill_(1.0)
+        sin[:, :, 2, :, :].fill_(0.0)
+
+        return cos, sin
 
 def rotate_half(x):
   x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -638,7 +668,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     self.vocab_embed = EmbeddingLayer(dim, vocab_size)
     if self.adaLN == True:
       self.sigma_map = TimestepEmbedder(cond_dim)
-    self.rotary_emb = Rotary(dim // n_heads)
+    self.rotary_emb = RotaryAllowPermutations(dim // n_heads)
     self.attn_backend = attn_backend
     self.max_seqlen = 1024
 
@@ -725,8 +755,6 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
     if position_ids is None:
       position_ids = torch.arange(input_ids.shape[-1], device=input_ids.device).to(input_ids.dtype)
-    else:
-      position_ids = position_ids[0]
     rotary_cos_sin = self.rotary_emb(position_ids)
 
     if self.causal:
