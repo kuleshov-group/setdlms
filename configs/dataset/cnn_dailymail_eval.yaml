@@ -2,3 +2,4 @@ defaults:
   - cnn_dailymail_train
 split: "test"
 truncate: true
+cache_path: '${oc.env:DATA_DIR}/cnn_dailymail_eval_${model.config.length}.dat'

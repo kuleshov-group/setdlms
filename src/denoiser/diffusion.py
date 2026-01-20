@@ -477,8 +477,10 @@ class MDLM(Denoiser):
         model_output_cache: Optional[Dict[str, torch.FloatTensor]] = None,
         cache: Optional[Dict[str, Any]] = None,
         running_generation: Optional[torch.LongTensor] = None,
+        inputs_offset: Optional[int] = 0,
         logits_processor: Optional[LogitsProcessorList] = None,
         sample_indices: Optional[Tuple[int, int]] = None,
+        input_indices: Optional[Tuple[int, int]] = None,
         return_updated_cache: bool = False,
         cache_len: Optional[int] = None,
         **kwargs: Any,
@@ -500,20 +502,28 @@ class MDLM(Denoiser):
             if cache_len is not None:
                 logits = logits[:, cache_len:]
                 denoiser_inputs.xt = denoiser_inputs.xt[:, cache_len:]
+            if sample_indices is not None:
+                logits = logits[:, sample_indices - input_indices[0], :]
+                denoiser_inputs.xt = denoiser_inputs.xt[..., sample_indices - input_indices[0]]
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             if logits_processor is not None:
-                for token_idx in range(log_x_theta.shape[1]):
+                if sample_indices is not None:
+                    token_indices = sample_indices.to(log_x_theta.device)
+                else:
+                    token_indices = torch.arange(log_x_theta.shape[1], device=log_x_theta.device)
+                for i in range(log_x_theta.shape[1]):
                     # TODO: Looping over token positions like this does not allow for
                     #   some processors, e.g. length penalty which could be applied all
                     #   at once to the entire block, to be applied in parallel.
-                    log_x_theta[:, token_idx] = logits_processor(
-                        input_ids=running_generation,
-                        scores=log_x_theta[:, token_idx],  # type: ignore
+                    log_x_theta[:, i] = logits_processor(
+                        input_ids=running_generation[..., inputs_offset:token_indices[-1]+1],
+                        scores=log_x_theta[:, i],  # type: ignore
                     )
                 log_x_theta = torch.log_softmax(log_x_theta, dim=-1)  # re-normalize
             x_theta = log_x_theta.exp()
         else:
             x_theta = model_output_cache["x_theta"]
+
         model_output_cache = {"x_theta": x_theta}
         prob_check_denom = denoiser_inputs.xt.numel()
         sampling_strategy = getattr(generation_config, "sampling_strategy", "posterior")
@@ -521,7 +531,7 @@ class MDLM(Denoiser):
             q_xs = self._compute_posterior(
                 x_theta, denoiser_inputs.xt, alpha_t, alpha_s
             )
-            # removed in mdlm (from removing denominator)
+            # removed in mdlm (fromremoving denominator)
             # assert abs((q_xs.sum() / prob_check_denom).item() - 1.0) < 1e-6, (
             #     "Posterior probabilities not summing to 1."
             # )
@@ -548,11 +558,13 @@ class MDLM(Denoiser):
             output = xs.clone()
 
             # Noise
-            xt_block = denoiser_inputs.xt[..., sample_indices] if sample_indices is not None else denoiser_inputs.xt
+            xt_block = denoiser_inputs.xt
+
+            sample_window_size = xt_block.shape[-1]
             # Estimate number of noise indices based on univariate/multivariate noise schedule
-            est_noise_indices = (next_t * generation_config.block_size).to(torch.int)
+            est_noise_indices = (next_t * sample_window_size).to(torch.int)
             # Subtract tokens outside of decoding window
-            est_noise_indices -= (generation_config.block_size - xt_block.shape[-1]) - running_generation.shape[-1]
+            est_noise_indices -= (sample_window_size - xt_block.shape[-1]) - running_generation.shape[-1]
             num_masked_indices = (xt_block == self.mask_token_id).sum()
             num_noise_indices = torch.minimum(est_noise_indices, num_masked_indices - 1)  # type: ignore
             num_to_decode = num_masked_indices - num_noise_indices
@@ -563,10 +575,7 @@ class MDLM(Denoiser):
                     conf,
                     torch.inf,
                 )
-                if sample_indices is not None:
-                    noise_indices = conf[..., sample_indices].argsort(dim=-1)[..., :num_noise_indices] + sample_indices[0]
-                else:
-                    noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
+                noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
             elif generation_config.confidence_margin_based_noising:
                 top2 = torch.topk(x_theta, k=2, dim=-1).values  # shape: (B, L, 2)
                 conf = (top2[..., 0] - top2[..., 1]).abs()
@@ -585,13 +594,8 @@ class MDLM(Denoiser):
                     torch.inf,
                 )
                 num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum() + num_to_decode
-                if sample_indices is not None:
-                    noise_indices = conf[..., sample_indices].argsort(dim=-1)[..., :-num_clean_indices] + sample_indices[0]
-                else:
-                    noise_indices = conf.argsort(dim=-1)[..., :-num_clean_indices]
+                noise_indices = conf.argsort(dim=-1)[..., :-num_clean_indices]
             output[..., noise_indices] = self.mask_token_id
-            if sample_indices is not None and sample_indices[-1] + num_to_decode < self.config.length:
-                output[..., sample_indices[-1]+num_to_decode:] = self.mask_token_id
             output = torch.where(
                 xs_probs >= generation_config.confidence_threshold, xs, output
             )
@@ -656,12 +660,12 @@ class MDLM(Denoiser):
             else:
                 max_blocks = math.ceil(num_mask_tokens / block_size)
         elif getattr(self.config, "block_size", self.config.length) == self.config.length:
-            num_mask_tokens = self.config.length - inputs.shape[-1]
+            num_mask_tokens = max_new_tokens
             max_blocks = math.ceil(num_mask_tokens / block_size)
         else:
             max_blocks = max(1, max_new_tokens // block_size)
             num_mask_tokens = max_blocks * block_size
-
+            
         # Sample max generation length tensor from prior
         if is_infill_task:
             accumulated_samples = inputs
@@ -670,6 +674,11 @@ class MDLM(Denoiser):
                 (batch_size, num_mask_tokens), dtype=torch.int64, device=device
             )
             accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
+            if getattr(self.config, "block_size", self.config.length) == self.config.length and accumulated_samples.shape[-1] < self.config.length:
+                accumulated_samples = F.pad(
+                    accumulated_samples,
+                    (0, self.config.length - accumulated_samples.shape[-1]),
+                    value=self.tokenizer.pad_token_id)
         if generation_config.use_cache and inputs.numel() > 0:
             if generation_config.align_inputs_to_blocks and inputs.shape[-1] < block_size:
                 cache = None
@@ -694,6 +703,7 @@ class MDLM(Denoiser):
                 if inputs_offset > 0
                 else 0
             )
+        
 
         total_NFEs = 0
         timesteps = self._sample_generation_timesteps(  # Re-use in every block
@@ -715,19 +725,33 @@ class MDLM(Denoiser):
         )
         num_tokens_generated_per_step = []
         inf_budget_per_step = []
+        sample_indices = None
+        input_indices = None
         for block_id in block_pbar:
             block_NFEs = 0
             if getattr(self.config, "block_size", self.config.length) == self.config.length:
-                xt = accumulated_samples
+                # always pass in self.config.length tokens to the model
+                end_input_idx = max((block_id + 1) * block_size + inputs_offset, self.config.length)
+                start_input_idx = max(0, end_input_idx - self.config.length)
+                    
+                xt = accumulated_samples[:, start_input_idx:end_input_idx]
+                end_sample_idx = (block_id + 1) * block_size + inputs_offset
+                sample_indices = torch.arange(end_sample_idx - block_size, end_sample_idx)
+                input_indices = (start_input_idx, end_input_idx)
+
             elif generation_config.use_cache:
                 xt = accumulated_samples[
                     :,
                     inputs_offset + (block_id * block_size) : inputs_offset
                     + ((block_id + 1) * block_size),
                 ]
+                sample_indices = None
+                input_indices = None
             else:
                 xt = accumulated_samples[
                     :, : inputs_offset + ((block_id + 1) * block_size)]
+                sample_indices = torch.arange(inputs_offset + (block_id * block_size), min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]))
+                input_indices = (0, inputs_offset + ((block_id + 1) * block_size))
             if pad_length is not None:
                 if self.mask_token_id not in xt[:, :-pad_length]:
                     continue
@@ -761,7 +785,6 @@ class MDLM(Denoiser):
                     :,
                     inputs_offset : inputs_offset + (block_id * block_size),
                 ]
-            sample_indices = torch.arange(inputs_offset + (block_id * block_size), min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]))
             if pad_length is not None:
                 sample_indices = sample_indices[:-pad_length]
             for t in step_pbar:
@@ -792,9 +815,11 @@ class MDLM(Denoiser):
                     model_output_cache=model_output_cache,
                     cache=cache,
                     running_generation=running_generation,  # type: ignore
+                    inputs_offset=inputs_offset,
                     logits_processor=logits_processor,
                     tokenizer=tokenizer,
-                    sample_indices=sample_indices if not generation_config.use_cache else None,
+                    sample_indices=sample_indices,
+                    input_indices=input_indices,
                     **kwargs,
                 )
                 block_pbar.set_postfix(
@@ -810,9 +835,9 @@ class MDLM(Denoiser):
                     inf_budget_per_step.append(inf_budget)
                 if not torch.allclose(xs, denoiser_inputs.xt):
                     model_output_cache = None
-                if not generation_config.use_cache:
-                    xt[..., sample_indices] = xs[..., sample_indices]   
-                    if (xt[..., sample_indices] == self.mask_token_id).sum().item() == 0:
+                if sample_indices is not None:
+                    xt[..., sample_indices - input_indices[0]] = xs
+                    if (xt[..., sample_indices - input_indices[0]] == self.mask_token_id).sum().item() == 0:
                         break                 
                 else:
                     xt = xs
@@ -821,12 +846,10 @@ class MDLM(Denoiser):
                         remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
                         inf_budget_per_step.extend([0] * remaining_steps)
                     break
-            if not generation_config.use_cache:
-                accumulated_samples[..., sample_indices] = xt[..., sample_indices]
+            if sample_indices is not None:
+                accumulated_samples[..., sample_indices] = xt[..., sample_indices - input_indices[0]]
             else:
-                accumulated_samples[
-                    :, sample_indices
-                ] = xt[..., -block_size:]
+                accumulated_samples[:, torch.arange(inputs_offset + (block_id * block_size), inputs_offset + ((block_id + 1) * block_size))] = xt[..., -block_size:]
             if tokenizer is not None:  # Useful for debugging
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
@@ -1707,7 +1730,8 @@ class AnyOrderBD3LM(BD3LM):
             denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask * (
                 denoiser_inputs.x0 != self.pad_token_id
             )
-        if not self.training and getattr(self.config, "eval_nll", False) and self.config.block_size > 1:
+        inefficient_eval = getattr(self.config, "inefficient_training", False) or getattr(self.config, "eval_nll", False)
+        if not self.training and inefficient_eval and self.config.block_size > 1:
             coeff = denoiser_inputs.alpha_t_prime / (1 - denoiser_inputs.alpha_t)
             coeff = torch.nan_to_num(coeff, nan=0.0, posinf=0.0, neginf=0.0)
             seq_len = denoiser_inputs.x0.shape[1]
@@ -1786,6 +1810,7 @@ class AnyOrderBD3LM(BD3LM):
         perm_indices = None
         xt = input_ids.clone()
         evaluate_nll_flag = getattr(self.config, "eval_nll", False) and not self.training and self.config.block_size > 1
+        evaluate_nll_flag = evaluate_nll_flag or getattr(self.config, "inefficient_training", False)
         if not evaluate_nll_flag:
             xt = torch.where(
                 (attention_mask == 1) & (context_mask == 0), self.mask_token_id, xt
@@ -1852,7 +1877,10 @@ class AnyOrderBD3LM(BD3LM):
         position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].repeat(batch_size, 1)
         position_ids = torch.gather(position_ids, dim=-1, index=perm_indices)
 
-        xt = torch.cat((input_ids, xt), dim=-1)
+        if evaluate_nll_flag:
+            xt = xt.repeat(1, 2)
+        else:
+            xt = torch.cat((input_ids, xt), dim=-1)
         position_ids = position_ids.repeat(1, num_repetitions)
 
         # TODO
@@ -2165,6 +2193,7 @@ class AnyOrderBD3LM(BD3LM):
                     cache=cache,
                     xt=xt,
                     running_generation=running_generation,
+                    inputs_offset=inputs_offset,
                     logits_processor=logits_processor,
                     return_updated_cache=return_updated_cache,
                     cache_len=clean_len,

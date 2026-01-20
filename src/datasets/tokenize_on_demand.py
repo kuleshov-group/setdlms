@@ -4,7 +4,9 @@ from typing import Any, Dict, Literal
 
 import torch
 from torch.utils.data.dataset import Dataset
+from src.datasets.preprocessed_dataset import load_preprocessed_dataset
 from transformers import PreTrainedTokenizer
+from src.utils import fsspec_exists
 
 from datasets import load_dataset
 
@@ -470,13 +472,49 @@ class CNNDailyMailDataset(Dataset):
         separate_input_output: bool = False,
         truncate: bool = True,
         use_chat_template: bool = False,
+        cache_path: str = "",
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
         self.tokenizer = tokenizer
-        self.dataset = load_dataset(
-            dataset_path, config_name, split=split, trust_remote_code=True
-        )
+        self.cache_path = cache_path
+        if self.cache_path and fsspec_exists(self.cache_path):
+            self.dataset = load_preprocessed_dataset(self.cache_path)
+        else:
+            self.dataset = load_dataset(
+                dataset_path, config_name, split=split, trust_remote_code=True
+            )
+            
+            def _to_text(x):
+                if isinstance(x, list):
+                    return "\n".join(map(str, x))
+                return x
+
+            def length_filter(batch):
+                articles = [_to_text(x) for x in batch[source_key]]
+                targets  = [_to_text(x) for x in batch[target_key]]
+
+                if source_prompt_text is not None:
+                    articles = [source_prompt_text + a for a in articles]
+                if target_prompt_text is not None:
+                    targets = [target_prompt_text + t for t in targets]
+
+                art_ids = self.tokenizer(articles, add_special_tokens=False)["input_ids"]
+                tgt_ids = self.tokenizer(targets,  add_special_tokens=False)["input_ids"]
+
+                # IMPORTANT: return a list[bool], not a single bool
+                return [(len(a) + len(t) + 3) <= max_length for a, t in zip(art_ids, tgt_ids)]
+
+            ds_filtered = self.dataset.filter(
+                length_filter,
+                batched=True,
+                batch_size=1024,
+                num_proc=8,
+            )
+            print(f"Filtered {len(ds_filtered)} examples out of {len(self.dataset)}")
+            ds_filtered.save_to_disk(self.cache_path)
+            self.dataset = ds_filtered
+
         self.max_length = max_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens

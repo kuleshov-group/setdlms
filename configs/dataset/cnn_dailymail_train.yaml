@@ -7,3 +7,4 @@ add_special_tokens: true
 source_prompt_text: null
 target_prompt_text: "Summary: "
 truncate: true
+cache_path: '${oc.env:DATA_DIR}/cnn_dailymail_train_${model.config.length}.dat'

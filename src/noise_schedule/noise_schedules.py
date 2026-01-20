@@ -502,7 +502,7 @@ class StaggeredNoise(Noise):
         to_permute = to_permute.reshape(-1, block_size)
         is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :1] == False)
         if masked_tokens is not None:
-            masked_tokens = masked_tokens.reshape(batch_size, num_blocks, block_size)
+            masked_tokens = masked_tokens.reshape(-1, block_size)
             is_beginning = is_beginning | ~masked_tokens
         is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, -1:] == False))
 
