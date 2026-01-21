@@ -1697,6 +1697,8 @@ class AnyOrderBD3LM(BD3LM):
         # **4. Combine Masks **
         return diagonal | offset_causal | causal
 
+    # noinspection PyUnusedLocal
+    @staticmethod
     def _block_mask_eso(
         b,
         h,
@@ -1795,6 +1797,8 @@ class AnyOrderBD3LM(BD3LM):
             )
         else:
             nlls = loss * denoiser_inputs.tokens_mask
+            if getattr(self.config, "inefficient_training", False):
+                nlls *= (denoiser_inputs.alpha_t_prime != 0.0)
 
         # Compute per-batch counts and losses to avoid division by zero
         count = denoiser_inputs.tokens_mask.sum(dim=-1)  # Per-batch counts
@@ -1873,6 +1877,10 @@ class AnyOrderBD3LM(BD3LM):
                 alpha_t=alpha_t,
                 mask=noise_mask,
             )
+            if getattr(self.config, "inefficient_training", False):
+                xt = torch.where(
+                   alpha_t_prime != 0.0, self.mask_token_id, xt
+                )
 
         batch_size, seq_len = input_ids.shape
         num_repetitions = 2
@@ -1948,8 +1956,6 @@ class AnyOrderBD3LM(BD3LM):
                 clean_indices = torch.arange(seq_len, first_mask_token_idx + seq_len)
                 decoder_attention_mask[i][masked_indices[:, None], clean_indices[None, :]] = False
                 decoder_attention_mask[i][masked_indices[:, None], masked_indices[None, :] - seq_len] = False
-
-            
         if self.config.attn_backend == "sdpa":
             decoder_attention_mask = self._preprocess_attention_mask(
                 decoder_attention_mask[:, None], dtype=torch.float

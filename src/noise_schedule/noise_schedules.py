@@ -649,6 +649,8 @@ class EaseOutPowerNoise(StaggeredNoise):
 
         move_chance = torch.where(x >= 1.0, 1.0, move_chance)
         move_chance = torch.where(x <= 0.0, 0.0, move_chance)
+        if self.desired_block_size == 1:
+            move_chance = torch.where(move_chance > 0.0, 1.0, move_chance)
         return move_chance.reshape(batch_size, -1).to(original_precision)
 
     def rate_noise(self, t):
