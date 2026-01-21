@@ -498,8 +498,10 @@ class StaggeredNoise(Noise):
                 masked_tokens = masked_tokens.reshape(-1, block_size)
                 masked_tokens |= is_end
                 for b in range(masked_tokens.shape[0]):
+                    masked_indices = masked_tokens[b].nonzero(as_tuple=True)[0]
+                    masked_assign = torch.isin(perms[b], masked_indices)
                     perms[b] = torch.cat(
-                        [perms[b][~masked_tokens[b]], perms[b][masked_tokens[b]]]
+                        [perms[b][~masked_assign], perms[b][masked_assign]]
                     , dim=-1)
             perm_indices = perm_indices.reshape(batch_size, num_blocks * block_size)
             # max_deviation = (perm_indices - torch.arange(0, block_size, device=device)[None, :]).abs()
@@ -523,8 +525,10 @@ class StaggeredNoise(Noise):
             masked_tokens = masked_tokens.reshape(-1, block_size)
             masked_tokens |= is_end
             for b in range(masked_tokens.shape[0]):
+                masked_indices = masked_tokens[b].nonzero(as_tuple=True)[0]
+                masked_assign = torch.isin(perms[b], masked_indices)
                 perms[b] = torch.cat(
-                    [perms[b][~masked_tokens[b]], perms[b][masked_tokens[b]]]
+                    [perms[b][~masked_assign], perms[b][masked_assign]]
                 , dim=-1)
         perms = perms.reshape(batch_size, -1, block_size)
         # max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
