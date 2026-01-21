@@ -19,6 +19,7 @@ from composer.callbacks import CheckpointSaver
 from composer.core import Callback, State, Time, Timestamp
 from composer.loggers import Logger
 from composer.utils import PartialFilePath, dist, get_save_filename
+from tqdm import tqdm
 
 from src.utils import (
     fsspec_exists,
@@ -737,22 +738,13 @@ class MaskingPatternLossAnalysis(Callback):
         
         # Get model
         model = self._get_model(state)
-        
-        # Check if model has block_size config
-        if not hasattr(model.config, "block_size") and not hasattr(
-            model.config, "eval_block_size"
-        ):
-            log.warning(
-                "Model does not have block_size config. Skipping masking pattern analysis."
-            )
-            return
+        # import ipdb ; ipdb.set_trace()
         
         block_size = getattr(
             model.config, "eval_block_size", getattr(model.config, "block_size", None)
         )
         if block_size is None:
-            log.warning("Could not determine block_size. Skipping masking pattern analysis.")
-            return
+            block_size = model.config.length
         
         # Get batch data
         batch = state.batch
@@ -811,6 +803,8 @@ class MaskingPatternLossAnalysis(Callback):
         
         # Extract patterns per block
         batch_size = masked_tokens_xt.shape[0]
+        if getattr(model.config, "keep_clean_bos", False):
+            block_size -= 1
         n_blocks = seq_len // block_size
         
         for b in range(batch_size):
@@ -822,9 +816,13 @@ class MaskingPatternLossAnalysis(Callback):
                 
                 # Get block masks
                 block_tokens_mask = attention_mask[b, start_idx:end_idx]
-                context_tokens_mask = context_mask[b, start_idx:end_idx]
-                if (block_tokens_mask == 0).any() or (context_tokens_mask == 1).any(): # Padding tokens, skip
-                    continue
+                if context_mask is not None:
+                    context_tokens_mask = context_mask[b, start_idx:end_idx]
+                    if (block_tokens_mask == 0).any() or (context_tokens_mask == 1).any(): # Padding tokens, skip
+                        continue
+                else:
+                    if (block_tokens_mask == 0).any(): # Padding tokens, skip
+                        continue
 
                 # Convert to tuple for hashing (move to CPU and convert to avoid keeping GPU tensors)
                 block_pattern_cpu = block_pattern.cpu()
@@ -844,10 +842,6 @@ class MaskingPatternLossAnalysis(Callback):
 
     def eval_end(self, state: State, logger: Logger) -> None:
         """Report average loss per masking pattern."""
-        if not self.started:
-            self.started = self._should_start(state)
-        if not self.started:
-            return
         # Gather data from all ranks for distributed evaluation
         if dist.is_initialized():
             world_size = dist.get_world_size()
@@ -1385,21 +1379,11 @@ class PermutationOrderLossAnalysis(Callback):
         if not isinstance(model, AnyOrderBD3LM):
             return  # Silently skip if not AnyOrderBD3LM
         
-        # Check if model has block_size config
-        if not hasattr(model.config, "block_size") and not hasattr(
-            model.config, "eval_block_size"
-        ):
-            log.warning(
-                "Model does not have block_size config. Skipping permutation order analysis."
-            )
-            return
-        
         block_size = getattr(
             model.config, "eval_block_size", getattr(model.config, "block_size", None)
         )
         if block_size is None:
-            log.warning("Could not determine block_size. Skipping permutation order analysis.")
-            return
+            block_size = model.config.length
         
         # Get batch data
         batch = state.batch
@@ -2008,7 +1992,7 @@ class PermutationToMaskingPatternAnalysis(Callback):
         return filename
 
     def _permutation_to_masking_patterns(
-        self, perm_tuple: tuple[int, ...], block_size: int
+        self, perm_tuple: tuple[int, ...], block_size: int, keep_clean_bos: bool = False
     ) -> list[tuple[int, ...]]:
         """Convert a permutation order to a sequence of masking patterns.
         
@@ -2022,6 +2006,8 @@ class PermutationToMaskingPatternAnalysis(Callback):
         # Create inverse permutation: for each position, which step it's predicted at
         inverse_perm = [0] * block_size
         for step, pos in enumerate(perm_tuple):
+            if keep_clean_bos:
+                pos -= 1
             inverse_perm[pos] = step
         
         # For each step in the permutation, create the masking pattern
@@ -2052,21 +2038,13 @@ class PermutationToMaskingPatternAnalysis(Callback):
         if not isinstance(model, AnyOrderBD3LM):
             return  # Silently skip if not AnyOrderBD3LM
         
-        # Check if model has block_size config
-        if not hasattr(model.config, "block_size") and not hasattr(
-            model.config, "eval_block_size"
-        ):
-            log.warning(
-                "Model does not have block_size config. Skipping permutation-to-masking analysis."
-            )
-            return
-        
         block_size = getattr(
             model.config, "eval_block_size", getattr(model.config, "block_size", None)
         )
         if block_size is None:
-            log.warning("Could not determine block_size. Skipping permutation-to-masking analysis.")
-            return
+            block_size = model.config.length
+        if getattr(model.config, "keep_clean_bos", False):
+            block_size -= 1
         
         # Get batch data
         batch = state.batch
@@ -2119,12 +2097,16 @@ class PermutationToMaskingPatternAnalysis(Callback):
                 
                 # Check if block is valid (not all padding)
                 block_tokens_mask = attention_mask[b, start_idx:end_idx]
-                context_tokens_mask = context_mask[b, start_idx:end_idx]
-                if (block_tokens_mask == 0).any() or (context_tokens_mask == 1).any(): # Padding tokens, skip
-                    continue
+                if context_mask is not None:
+                    context_tokens_mask = context_mask[b, start_idx:end_idx]
+                    if (block_tokens_mask == 0).any() or (context_tokens_mask == 1).any(): # Padding tokens, skip
+                        continue
+                else:
+                    if (block_tokens_mask == 0).any(): # Padding tokens, skip
+                        continue
                 
                 # Convert permutation to masking patterns
-                masking_patterns = self._permutation_to_masking_patterns(perm_tuple, block_size)
+                masking_patterns = self._permutation_to_masking_patterns(perm_tuple, block_size, getattr(model.config, "keep_clean_bos", False))
                 
                 # Extract per-token losses for this block
                 block_nlls = nlls[b, start_idx:end_idx]
@@ -2133,6 +2115,8 @@ class PermutationToMaskingPatternAnalysis(Callback):
                 # The masking pattern for position i is determined by when it's predicted in the permutation
                 inverse_perm = [0] * block_size
                 for step, pos in enumerate(perm_tuple):
+                    if getattr(model.config, "keep_clean_bos", False):
+                        pos -= 1
                     inverse_perm[pos] = step
                 
                 for token_pos in range(block_size):
@@ -2161,7 +2145,7 @@ class PermutationToMaskingPatternAnalysis(Callback):
                 
                 # Combine statistics from all ranks
                 combined_pattern_stats = {}
-                for rank_stats in gathered_pattern_stats:
+                for rank_stats in tqdm(gathered_pattern_stats, desc="Combining pattern stats"):
                     for pattern, loss_values in rank_stats.items():
                         if pattern not in combined_pattern_stats:
                             combined_pattern_stats[pattern] = []
@@ -2177,7 +2161,7 @@ class PermutationToMaskingPatternAnalysis(Callback):
         
         # Combine _all_ losses from all ranks / patterns
         combined_nll_stats = []
-        for pattern, loss_values in self.pattern_stats.items():
+        for pattern, loss_values in tqdm(self.pattern_stats.items(), desc="Combining NLL stats"):
             combined_nll_stats.extend(loss_values)
         combined_nll_stats = np.array(combined_nll_stats)
         log.info(f"Final NLL: {combined_nll_stats.mean():.4f}±{combined_nll_stats.std():.4f}")
@@ -2186,7 +2170,7 @@ class PermutationToMaskingPatternAnalysis(Callback):
         pattern_avg_losses = {}
         pattern_std_losses = {}
         pattern_counts = {}
-        for pattern, loss_values in self.pattern_stats.items():
+        for pattern, loss_values in tqdm(self.pattern_stats.items(), desc="Computing average loss and std"):
             loss_array = np.array(loss_values)
             pattern_avg_losses[pattern] = float(np.mean(loss_array))
             if len(loss_values) > 1:

@@ -661,7 +661,7 @@ class MDLM(Denoiser):
                 max_blocks = math.ceil(num_mask_tokens / block_size)
         elif getattr(self.config, "block_size", self.config.length) == self.config.length:
             num_mask_tokens = max_new_tokens
-            max_blocks = math.ceil(num_mask_tokens / block_size)
+            max_blocks = math.ceil((num_mask_tokens + inputs.shape[-1]) / block_size)
         else:
             max_blocks = max(1, max_new_tokens // block_size)
             num_mask_tokens = max_blocks * block_size
@@ -727,18 +727,32 @@ class MDLM(Denoiser):
         inf_budget_per_step = []
         sample_indices = None
         input_indices = None
+        if getattr(self.config, "block_size", self.config.length) == self.config.length:
+            if inputs_offset < self.config.length:
+                start_input_idx = 0
+                end_input_idx = self.config.length
+                start_sample_idx = inputs_offset
+                end_sample_idx = min(start_sample_idx + block_size, self.config.length)
+            else:
+                start_input_idx = inputs_offset - self.config.length + 32
+                end_input_idx = start_input_idx + self.config.length
+                start_sample_idx = inputs_offset
+                end_sample_idx = min(start_sample_idx + block_size, end_input_idx)
+
         for block_id in block_pbar:
             block_NFEs = 0
             if getattr(self.config, "block_size", self.config.length) == self.config.length:
-                # always pass in self.config.length tokens to the model
-                end_input_idx = max((block_id + 1) * block_size + inputs_offset, self.config.length)
-                start_input_idx = max(0, end_input_idx - self.config.length)
+                if block_id > 0:
+                    start_sample_idx += block_size
+                    end_sample_idx += block_size
+                if start_sample_idx >= self.config.length:
+                    end_input_idx = end_sample_idx
+                    start_input_idx = end_input_idx - self.config.length
+                
                     
                 xt = accumulated_samples[:, start_input_idx:end_input_idx]
-                end_sample_idx = (block_id + 1) * block_size + inputs_offset
-                sample_indices = torch.arange(end_sample_idx - block_size, end_sample_idx)
+                sample_indices = torch.arange(start_sample_idx, end_sample_idx)
                 input_indices = (start_input_idx, end_input_idx)
-
             elif generation_config.use_cache:
                 xt = accumulated_samples[
                     :,
@@ -1683,6 +1697,35 @@ class AnyOrderBD3LM(BD3LM):
         # **4. Combine Masks **
         return diagonal | offset_causal | causal
 
+    def _block_mask_eso(
+        b,
+        h,
+        q_idx,
+        kv_idx,
+        seq_length: Optional[int] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        del b, h
+
+        # Indicate whether token belongs to xt or x0:
+        xt_flag_q = (q_idx >= seq_length).bool()
+        xt_flag_kv = (kv_idx >= seq_length).bool()
+
+        q_idx = q_idx % seq_length
+        kv_idx = kv_idx % seq_length
+
+        # **1. Offset Causal Mask **
+        offset_causal = (q_idx > kv_idx) & ~xt_flag_kv & xt_flag_q
+
+        # **2. Causal Mask **
+        diagonal = (q_idx >= kv_idx) & (xt_flag_q == xt_flag_kv)
+
+        # **3. Causal Mask **
+        causal = (q_idx >= kv_idx) & ~xt_flag_kv & ~xt_flag_q
+
+        # **4. Combine Masks **
+        return diagonal | offset_causal | causal
+
     def _create_static_mask(self) -> None:
         if self.config.attn_backend == "flex_attention":
             seq_length = self.config.length
@@ -1696,13 +1739,22 @@ class AnyOrderBD3LM(BD3LM):
                 KV_LEN=self.config.length * 2,
             )
         elif self.config.attn_backend == "sdpa":
-            mask = self._block_mask(
-                b=None,
-                h=None,
-                q_idx=torch.arange(self.config.length * 2)[:, None],
-                kv_idx=torch.arange(self.config.length * 2)[None, :],
-                seq_length=self.config.length,
-            )
+            if getattr(self.config, "inefficient_training", False):
+                mask = self._block_mask_eso(
+                    b=None,
+                    h=None,
+                    q_idx=torch.arange(self.config.length * 2)[:, None],
+                    kv_idx=torch.arange(self.config.length * 2)[None, :],
+                    seq_length=self.config.length,
+                )
+            else:
+                mask = self._block_mask(
+                    b=None,
+                    h=None,
+                    q_idx=torch.arange(self.config.length * 2)[:, None],
+                    kv_idx=torch.arange(self.config.length * 2)[None, :],
+                    seq_length=self.config.length,
+                )
             self.register_buffer("static_attention_mask", mask)
         else:
             raise ValueError("Unknown attention backend")
@@ -1889,10 +1941,14 @@ class AnyOrderBD3LM(BD3LM):
             for i in range(batch_size):
                 if self.mask_token_id not in xt[i]:
                     continue
-                # masked tokens can only self-attend
                 first_mask_token_idx = (xt[i] == self.mask_token_id).float().argmax().item()
-                masked_indices = torch.arange(first_mask_token_idx, seq_len*2)
-                decoder_attention_mask[i][masked_indices[:, None], masked_indices[None, :]] = torch.eye(len(masked_indices), device=decoder_attention_mask.device, dtype=decoder_attention_mask.dtype)
+                masked_indices = torch.arange(first_mask_token_idx + seq_len, seq_len*2)
+
+                # masked tokens may only attend to clean tokens and previous masked tokens
+                clean_indices = torch.arange(seq_len, first_mask_token_idx + seq_len)
+                decoder_attention_mask[i][masked_indices[:, None], clean_indices[None, :]] = False
+                decoder_attention_mask[i][masked_indices[:, None], masked_indices[None, :] - seq_len] = False
+
             
         if self.config.attn_backend == "sdpa":
             decoder_attention_mask = self._preprocess_attention_mask(

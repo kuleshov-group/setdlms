@@ -488,22 +488,25 @@ class StaggeredNoise(Noise):
             to_permute = to_permute.reshape(batch_size, num_blocks, block_size)
             ranking = torch.rand(batch_size, num_blocks, block_size, device=device)
             is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :, :1] == False)
-            if masked_tokens is not None:
-                is_beginning = is_beginning | ~masked_tokens
             is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, :, -1:] == False))
 
             ranking = torch.where(is_beginning, float('inf'), ranking)
             ranking = torch.where(is_end, float('-inf'), ranking)
             perm_indices = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(device)
+            if masked_tokens is not None:
+                # put all masked tokens at the end
+                masked_tokens = masked_tokens.reshape(-1, block_size)
+                masked_tokens |= is_end
+                for b in range(masked_tokens.shape[0]):
+                    perms[b] = torch.cat(
+                        [perms[b][~masked_tokens[b]], perms[b][masked_tokens[b]]]
+                    , dim=-1)
             perm_indices = perm_indices.reshape(batch_size, num_blocks * block_size)
             # max_deviation = (perm_indices - torch.arange(0, block_size, device=device)[None, :]).abs()
             return perm_indices
         num_total_blocks = t.shape[-1] // block_size * t.shape[0]
         to_permute = to_permute.reshape(-1, block_size)
         is_beginning = (to_permute.cumsum(-1) == 0) & (to_permute[:, :1] == False)
-        if masked_tokens is not None:
-            masked_tokens = masked_tokens.reshape(-1, block_size)
-            is_beginning = is_beginning | ~masked_tokens
         is_end = ((to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (to_permute[:, -1:] == False))
 
         # sample and sort first-hitting times
@@ -515,6 +518,14 @@ class StaggeredNoise(Noise):
         T = torch.where(is_beginning, float('inf'), T)  # force earliest
         T = torch.where(is_end,      -float('inf'),  T) # force latest
         perms = torch.argsort(T, dim=-1, stable=True, descending=True) # earliest-to-latest
+        if masked_tokens is not None:
+            # put all masked tokens at the end
+            masked_tokens = masked_tokens.reshape(-1, block_size)
+            masked_tokens |= is_end
+            for b in range(masked_tokens.shape[0]):
+                perms[b] = torch.cat(
+                    [perms[b][~masked_tokens[b]], perms[b][masked_tokens[b]]]
+                , dim=-1)
         perms = perms.reshape(batch_size, -1, block_size)
         # max_deviation = (perms - torch.arange(0, block_size, device=device)[None, None, :]).abs()
         perms += torch.arange(num_blocks, device=device)[None, :, None] * block_size

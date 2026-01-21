@@ -754,7 +754,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       t_cond = F.silu(self.sigma_map(sigma))
 
     if position_ids is None:
-      position_ids = torch.arange(input_ids.shape[-1], device=input_ids.device).to(input_ids.dtype)
+      position_ids = torch.arange(input_ids.shape[-1], device=input_ids.device).to(input_ids.dtype)[None, :]
     rotary_cos_sin = self.rotary_emb(position_ids)
 
     if self.causal:
