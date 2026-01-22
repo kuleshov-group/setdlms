@@ -163,12 +163,7 @@ def main(cfg: DictConfig) -> None:
         print(f"Num. trainable params: {format_number(count_parameters(model))}")
     model.eval()
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
-    stop_tokens = None
-    if getattr(gen_kwargs, "stopping_criteria", None) is not None:
-        for sc in gen_kwargs["stopping_criteria"]:
-            if isinstance(sc, StopStringCriteria):
-                stop_tokens = list(sc.stop_strings)
-                break
+    stop_tokens = ["<|endoftext|>"]
 
     # Iterate through the dataset and sample
     generated_samples = []
@@ -246,9 +241,8 @@ def main(cfg: DictConfig) -> None:
         outputs = tokenizer.decode(outputs)
         # Post-process:
         outputs = outputs.replace(" .", ".")
-        if stop_tokens is not None:
-            for st in stop_tokens:
-                outputs = outputs.split(st)[0]
+        for st in stop_tokens:
+            outputs = outputs.split(st)[0]
         decoded_samples = outputs.strip()
         if local_rank == 0:
             print("Input:", tokenizer.decode(input_ids[0]))

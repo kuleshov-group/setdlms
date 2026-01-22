@@ -1,6 +1,5 @@
 cnndm_stop_string_criteria:
-  _target_: transformers.generation.StopStringCriteria
+  _target_: src.custom_transformers.generation.RegexStoppingCriteria
   tokenizer: ${tokenizer}
-  stop_strings:
-    - '<|im_end|>'
-    - '<|endoftext|>'
+  pattern: r'<|endoftext|>'
+  num_matches: 3

@@ -459,7 +459,7 @@ class StaggeredNoise(Noise):
 
     def compute_first_hitting_times(self, batch_size, length, device, dtype=torch.float64):
         E = torch.empty(batch_size, length, dtype=dtype, device=device).exponential_()
-        loc = self.loc.to(device)
+        loc = self.loc.to(device)[:, -length:]
         factor = -torch.expm1(-E / self.k)
         T = loc[None, :] + self.b * factor
         # equivalent, but less numerically stable for k -> 0
@@ -621,24 +621,28 @@ class EaseOutPowerNoise(StaggeredNoise):
         self.loc = torch.linspace(0., 1.0 - self.b, self.block_size, dtype=precision).flip(0)
         self.loc = self.loc[None, :]
 
-        if self.b < 1.0:
-            lower_bound = 1 / self.block_size
-            i = self.b * (1 - lower_bound)**(1 / self.k) / (1 - self.b) * (self.block_size - 1) + 1
-            print(f"i <= {i}")
-            move_chance = self.total_noise(torch.tensor([self.b]))
-            print("max active above lower bound", (move_chance >= lower_bound).sum().item())
-            print("prob. of masking max_block_size", move_chance[0, -(max_block_size-1)].item())
-            if move_chance.shape[-1] > n_overlap:
-                print("prob. of masking n_overlap", move_chance[0, -(n_overlap-1)].item())
-            print("uniform prob", 1 / self.block_size)
+        try:
+            if self.b < 1.0:
+                lower_bound = 1 / self.block_size
+                i = self.b * (1 - lower_bound)**(1 / self.k) / (1 - self.b) * (self.block_size - 1) + 1
+                print(f"i <= {i}")
+                move_chance = self.total_noise(torch.tensor([self.b]))
+                print("max active above lower bound", (move_chance >= lower_bound).sum().item())
+                print("prob. of masking max_block_size", move_chance[0, -(max_block_size-1)].item())
+                if move_chance.shape[-1] > n_overlap:
+                    print("prob. of masking n_overlap", move_chance[0, -(n_overlap-1)].item())
+                print("uniform prob", 1 / self.block_size)
+        except:
+            pass
 
     def total_noise(self, t):
+        block_size = min(self.block_size, t.shape[-1])
         original_precision = t.dtype
         batch_size = t.shape[0]
-        loc = self.loc.to(t.device)
+        loc = self.loc.to(t.device)[:, -block_size:]
         t = t.to(self.precision)
         if t.ndim > 1 and t.shape[-1] > 1:
-            t = t.reshape(-1, self.block_size)
+            t = t.reshape(-1, block_size)
         if t.ndim == 1:
             t = t.unsqueeze(-1)
         x = (t - loc) / self.b
@@ -660,10 +664,11 @@ class EaseOutPowerNoise(StaggeredNoise):
     def rate_noise(self, t):
         original_precision = t.dtype
         batch_size = t.shape[0]
-        loc = self.loc.to(t.device)
+        block_size = min(self.block_size, t.shape[-1])
+        loc = self.loc.to(t.device)[:, -block_size:]
         t = t.to(self.precision)
         if t.ndim > 1 and t.shape[-1] > 1:
-            t = t.reshape(-1, self.block_size)
+            t = t.reshape(-1, block_size)
         if t.ndim == 1:
             t = t.unsqueeze(-1)
         x = (t - loc) / self.b

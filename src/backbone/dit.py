@@ -36,6 +36,10 @@ try:
 except:
   FLEX_ATTN_AVAILABLE = False
   BlockMask = None
+
+try:
+  from transformers.cache_utils import DynamicCache
+except ImportError:
   DynamicCache = None
 
 # Flags required to enable jit fusion kernels
@@ -388,12 +392,42 @@ class DDiTBlockCausal(nn.Module):
     x = rearrange(x, 'b s h d -> b s (h d)')
     return x
 
+  def cross_attn_with_cache(self, q, k, v, mask=None, causal=False):
+    """Attention with separate Q, K, V tensors (for KV caching).
+    
+    Args:
+        q: [batch, q_seq_len, n_heads, head_dim]
+        k: [batch, kv_seq_len, n_heads, head_dim]
+        v: [batch, kv_seq_len, n_heads, head_dim]
+    """
+    head_dim = q.shape[-1]
+    # Transpose to [batch, n_heads, seq_len, head_dim] for SDPA
+    q = q.transpose(1, 2)  # [batch, n_heads, q_seq_len, head_dim]
+    k = k.transpose(1, 2)  # [batch, n_heads, kv_seq_len, head_dim]
+    v = v.transpose(1, 2)  # [batch, n_heads, kv_seq_len, head_dim]
+    
+    x = F.scaled_dot_product_attention(
+      query=q,
+      key=k,
+      value=v,
+      attn_mask=mask,
+      is_causal=causal,
+      scale=1 / math.sqrt(head_dim))
+    x = x.transpose(1, 2)  # [batch, q_seq_len, n_heads, head_dim]
+    x = rearrange(x, 'b s h d -> b s (h d)')
+    return x
+
   def forward(self,
               x,
               rotary_cos_sin,
               c=None,
               causal=True,
               mask=None,
+              return_updated_cache=False,
+              past_key_values=None,
+              cache_position=None,
+              layer_idx=0,
+              use_cache=False,
               **kwargs):
     del kwargs
     batch_size, seq_len = x.shape[0], x.shape[1]
@@ -415,17 +449,62 @@ class DDiTBlockCausal(nn.Module):
     else:
       x = self.norm1(x)
     
+    # Get QKV for current input
     qkv = self.get_qkv(x, rotary_cos_sin)
-    if self.attn_backend == 'flash_attn':
-      qkv = einops.rearrange(qkv, 'b s ... -> (b s) ...')
-      cu_seqlens = torch.arange(
-        0, (batch_size + 1) * seq_len,
-        step=seq_len, dtype=torch.int32, device=qkv.device)
-      x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
-        qkv, cu_seqlens, seq_len, 0.0, causal=True)
-      x = einops.rearrange(x, '(b s) h d -> b s (h d)', b=batch_size)
+    
+    # Handle KV caching
+    if use_cache and past_key_values is not None and DynamicCache is not None:
+      # Extract Q, K, V from QKV tensor: [batch, seq_len, 3, n_heads, head_dim]
+      q = qkv[:, :, 0]  # [batch, seq_len, n_heads, head_dim]
+      k = qkv[:, :, 1]  # [batch, seq_len, n_heads, head_dim]
+      v = qkv[:, :, 2]  # [batch, seq_len, n_heads, head_dim]
+      
+      # Transpose to [batch, n_heads, seq_len, head_dim] for cache compatibility
+      k = k.transpose(1, 2)  # [batch, n_heads, seq_len, head_dim]
+      v = v.transpose(1, 2)  # [batch, n_heads, seq_len, head_dim]
+      
+      # Update cache - DynamicCache expects [batch, n_heads, seq_len, head_dim]
+      # Note: K/V already have rotary embeddings applied, so we just need cache_position
+      cache_kwargs = {}
+      if cache_position is not None:
+        cache_kwargs["cache_position"] = cache_position
+      # For DynamicCache, sin/cos are optional and used for position tracking
+      # Since we've already applied rotary embeddings, we can pass them for reference
+      if rotary_cos_sin is not None:
+        cos, sin = rotary_cos_sin
+        # Extract cos/sin for K (index 1 in QKV)
+        # cos/sin shape: [batch, seq_len, 3, 1, dim] or [batch, seq_len, dim]
+        if cos.dim() == 5:
+          # Extract for K (index 1) and squeeze: [batch, seq_len, dim]
+          cos_k = cos[:, :, 1, 0, :]
+          sin_k = sin[:, :, 1, 0, :]
+        else:
+          cos_k = cos
+          sin_k = sin
+        cache_kwargs["sin"] = sin_k
+        cache_kwargs["cos"] = cos_k
+      
+      k, v = past_key_values.update(k, v, layer_idx, cache_kwargs)
+      
+      # past_key_values.update returns full K/V (cached + new)
+      # Transpose back to [batch, seq_len, n_heads, head_dim]
+      k = k.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
+      v = v.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
+      
+      # Use Q (current seq), K (full seq), V (full seq) for attention
+      x = self.cross_attn_with_cache(q, k, v, causal=causal, mask=mask)
     else:
-      x = self.cross_attn(qkv, causal=causal, mask=mask)
+      # No caching, use original QKV tensor
+      if self.attn_backend == 'flash_attn':
+        qkv = einops.rearrange(qkv, 'b s ... -> (b s) ...')
+        cu_seqlens = torch.arange(
+          0, (batch_size + 1) * seq_len,
+          step=seq_len, dtype=torch.int32, device=qkv.device)
+        x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
+          qkv, cu_seqlens, seq_len, 0.0, causal=True)
+        x = einops.rearrange(x, '(b s) h d -> b s (h d)', b=batch_size)
+      else:
+        x = self.cross_attn(qkv, causal=causal, mask=mask)
       
     if c is not None:
       x = bias_dropout_scale_fn(self.attn_out(x),
@@ -444,6 +523,9 @@ class DDiTBlockCausal(nn.Module):
         self.attn_out(x), None, scale, x_skip, self.dropout)
       x = bias_dropout_scale_fn(
         self.mlp(self.norm2(x)), None, scale, x, self.dropout)
+    
+    if return_updated_cache:
+      return x, past_key_values
     return x
 
 
@@ -555,12 +637,42 @@ class DDiTBlock(nn.Module):
     x = rearrange(x, 'b h s d -> b s (h d)')
     return x
 
+  def cross_attn_with_cache(self, q, k, v, mask=None, causal=False):
+    """Attention with separate Q, K, V tensors (for KV caching).
+    
+    Args:
+        q: [batch, q_seq_len, n_heads, head_dim]
+        k: [batch, kv_seq_len, n_heads, head_dim]
+        v: [batch, kv_seq_len, n_heads, head_dim]
+    """
+    head_dim = q.shape[-1]
+    # Transpose to [batch, n_heads, seq_len, head_dim] for SDPA
+    q = q.transpose(1, 2)  # [batch, n_heads, q_seq_len, head_dim]
+    k = k.transpose(1, 2)  # [batch, n_heads, kv_seq_len, head_dim]
+    v = v.transpose(1, 2)  # [batch, n_heads, kv_seq_len, head_dim]
+    
+    x = F.scaled_dot_product_attention(
+      query=q,
+      key=k,
+      value=v,
+      attn_mask=mask,
+      is_causal=causal,
+      scale=1 / math.sqrt(head_dim))
+    x = x.transpose(1, 2)  # [batch, q_seq_len, n_heads, head_dim]
+    x = rearrange(x, 'b s h d -> b s (h d)')
+    return x
+
   def forward(self,
               x,
               rotary_cos_sin,
               c,
               causal=False,
-              mask=None):
+              mask=None,
+              return_updated_cache=False,
+              past_key_values=None,
+              cache_position=None,
+              layer_idx=0,
+              use_cache=False):
     batch_size, seq_len = x.shape[0], x.shape[1]
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = None, None, None, None, None, None
@@ -580,22 +692,75 @@ class DDiTBlock(nn.Module):
       x = self.norm1(x)
 
     qkv = self.get_qkv(x, rotary_cos_sin)
-    # attention
-    if self.attn_backend == 'flash_attn' and mask is None:
-      qkv = einops.rearrange(qkv, 'b s ... -> (b s) ...')
-      cu_seqlens = torch.arange(
-        0, (batch_size + 1) * seq_len, step=seq_len,
-        dtype=torch.int32, device=qkv.device)
-      x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
-        qkv, cu_seqlens, seq_len, 0., causal=causal)
-      x = rearrange(x, '(b s) h d -> b s (h d)', b=batch_size)     
-    elif self.attn_backend == 'flex_attention' and FLEX_ATTN_AVAILABLE:
-      x = self.cross_attn_flex(qkv, mask=mask)
-    elif self.attn_backend == 'sdpa':
-      x = self.cross_attn(qkv, mask=mask, causal=causal)
+    
+    # Handle KV caching
+    if use_cache and past_key_values is not None and DynamicCache is not None:
+      # Extract Q, K, V from QKV tensor: [batch, seq_len, 3, n_heads, head_dim]
+      q = qkv[:, :, 0]  # [batch, seq_len, n_heads, head_dim]
+      k = qkv[:, :, 1]  # [batch, seq_len, n_heads, head_dim]
+      v = qkv[:, :, 2]  # [batch, seq_len, n_heads, head_dim]
+      
+      # Transpose to [batch, n_heads, seq_len, head_dim] for cache compatibility
+      k = k.transpose(1, 2)  # [batch, n_heads, seq_len, head_dim]
+      v = v.transpose(1, 2)  # [batch, n_heads, seq_len, head_dim]
+      
+      # Update cache - DynamicCache expects [batch, n_heads, seq_len, head_dim]
+      # Note: K/V already have rotary embeddings applied, so we just need cache_position
+      cache_kwargs = {}
+      if cache_position is not None:
+        cache_kwargs["cache_position"] = cache_position
+      # For DynamicCache, sin/cos are optional and used for position tracking
+      # Since we've already applied rotary embeddings, we can pass them for reference
+      if rotary_cos_sin is not None:
+        cos, sin = rotary_cos_sin
+        # Extract cos/sin for K (index 1 in QKV)
+        # cos/sin shape: [batch, seq_len, 3, 1, dim] or [batch, seq_len, dim]
+        if cos.dim() == 5:
+          # Extract for K (index 1) and squeeze: [batch, seq_len, dim]
+          cos_k = cos[:, :, 1, 0, :]
+          sin_k = sin[:, :, 1, 0, :]
+        else:
+          cos_k = cos
+          sin_k = sin
+        cache_kwargs["sin"] = sin_k
+        cache_kwargs["cos"] = cos_k
+      
+      k, v = past_key_values.update(k, v, layer_idx, cache_kwargs)
+      
+      # past_key_values.update returns full K/V (cached + new)
+      # Transpose back to [batch, seq_len, n_heads, head_dim]
+      k = k.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
+      v = v.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
+      
+      # Use Q (current seq), K (full seq), V (full seq) for attention
+      # For non-causal attention with mask, we need to handle mask properly
+      if self.attn_backend == 'flex_attention' and FLEX_ATTN_AVAILABLE:
+        # Flex attention needs QKV in specific format
+        # Reconstruct QKV tensor but with different seq lengths - not directly supported
+        # Fall back to cross_attn_with_cache
+        x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=causal)
+      else:
+        x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=causal)
     else:
-      raise ValueError('Unknown attention backend')
+      # No caching, use original QKV tensor
+      if self.attn_backend == 'flash_attn' and mask is None:
+        qkv = einops.rearrange(qkv, 'b s ... -> (b s) ...')
+        cu_seqlens = torch.arange(
+          0, (batch_size + 1) * seq_len, step=seq_len,
+          dtype=torch.int32, device=qkv.device)
+        x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
+          qkv, cu_seqlens, seq_len, 0., causal=causal)
+        x = rearrange(x, '(b s) h d -> b s (h d)', b=batch_size)     
+      elif self.attn_backend == 'flex_attention' and FLEX_ATTN_AVAILABLE:
+        x = self.cross_attn_flex(qkv, mask=mask)
+      elif self.attn_backend == 'sdpa':
+        x = self.cross_attn(qkv, mask=mask, causal=causal)
+      else:
+        raise ValueError('Unknown attention backend')
+    
     x = self.attn_mlp(x, c, gate_msa, gate_mlp, shift_mlp, scale_mlp, x_skip)
+    if return_updated_cache:
+      return x, past_key_values
     return x
    
 class EmbeddingLayer(nn.Module):
@@ -743,6 +908,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     **kwargs,
   ) -> CausalLMOutputWithPast | BaseModelOutputWithPast:
     x = self.vocab_embed(input_ids)
+    if fix_cache_length:
+      cache_len = past_key_values.get_seq_length() if hasattr(past_key_values, 'get_seq_length') else 0
     if sigma is None:
       if self.adaLN:
         sigma = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
@@ -752,22 +919,52 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
     if sigma is not None:
       t_cond = F.silu(self.sigma_map(sigma))
-
+    
+    # Determine if we should use cache
+    use_cache = past_key_values is not None and DynamicCache is not None
+    
+    # Handle position_ids and cache_position
     if position_ids is None:
-      position_ids = torch.arange(input_ids.shape[-1], device=input_ids.device).to(input_ids.dtype)[None, :]
+      if cache_position is not None:
+        position_ids = cache_position.unsqueeze(0)
+      else:
+        if use_cache and past_key_values is not None:
+          # Get cache length
+          cache_len = past_key_values.get_seq_length() if hasattr(past_key_values, 'get_seq_length') else 0
+          position_ids = torch.arange(
+            cache_len, cache_len + input_ids.shape[-1],
+            device=input_ids.device, dtype=input_ids.dtype)[None, :]
+        else:
+          position_ids = torch.arange(input_ids.shape[-1], device=input_ids.device).to(input_ids.dtype)[None, :]
+    
+    # Set cache_position if not provided but using cache
+    if cache_position is None and use_cache:
+      cache_position = position_ids[0] if position_ids is not None else None
+    
     rotary_cos_sin = self.rotary_emb(position_ids)
 
     if self.causal:
       attention_mask = None
     
     for i in range(len(self.blocks)):
-      x = self.blocks[i](
+      layer_output = self.blocks[i](
         x,
         rotary_cos_sin,
         c=t_cond,
         causal=self.causal,
-        mask=attention_mask,)
+        mask=attention_mask,
+        return_updated_cache=return_updated_cache,
+        past_key_values=past_key_values,
+        cache_position=cache_position,
+        layer_idx=i,
+        use_cache=use_cache)
+      if return_updated_cache:
+        x, past_key_values = layer_output
+      else:
+        x = layer_output
     x = self.output_layer(x, t_cond)
+    if fix_cache_length:
+      past_key_values.crop(cache_len)
     return CausalLMOutputWithPast(
       logits=x,
-      past_key_values=None)
+      past_key_values=past_key_values)
