@@ -768,6 +768,8 @@ class MDLM(Denoiser):
                 end_input_idx = start_input_idx + self.config.length
             start_sample_idx = inputs_offset
             end_sample_idx = min(start_sample_idx + block_size, end_input_idx)
+            if pad_length is not None:
+                end_sample_idx = min(end_sample_idx, self.config.length - pad_length)
         for block_id in block_pbar:
             block_NFEs = 0
             if mdlm_inference:
@@ -780,6 +782,8 @@ class MDLM(Denoiser):
                 xt = accumulated_samples[:, start_input_idx:end_input_idx]
                 end_sample_idx = min(end_sample_idx, self.config.length)
                 end_input_idx = min(end_input_idx, self.config.length)
+                if pad_length is not None:
+                    end_sample_idx = min(end_sample_idx, self.config.length - pad_length)
                 sample_indices = torch.arange(start_sample_idx, end_sample_idx)
                 input_indices = (start_input_idx, end_input_idx)
             elif generation_config.use_cache:
@@ -890,7 +894,7 @@ class MDLM(Denoiser):
                         break
                 else:
                     xt = xs
-                if (xt == self.mask_token_id).sum().item() == 0:
+                if ((xt == self.mask_token_id).sum().item() == 0) or (pad_length is not None and (xt[:, :-pad_length] == self.mask_token_id).sum().item() == 0):
                     if getattr(generation_config, "compute_inf_budget", False):
                         remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
                         inf_budget_per_step.extend([0] * remaining_steps)
