@@ -618,29 +618,24 @@ class MDLM(Denoiser):
                 output = torch.gather(output, 1, inv_perm)
                 eval_ground_truth = torch.gather(eval_ground_truth, 1, inv_perm)
                 position_ids = torch.gather(position_ids, 1, inv_perm)
-            log_x_theta = log_x_theta.gather(-1, eval_ground_truth[..., None]).squeeze(-1)
-            # select indices
-            log_x_theta_clone = torch.where(xt == self.mask_token_id, log_x_theta, -torch.inf)
+            log_x_theta_i = log_x_theta.gather(-1, eval_ground_truth[..., None]).squeeze(-1)
 
+            max_confidences = log_x_theta.exp().max(dim=-1).values
+            max_confidences = torch.where(xt == self.mask_token_id, max_confidences, -torch.inf)
             # set tokens outside of window size to -inf
             if "permutation_order" in denoiser_inputs.backbone_kwargs and denoiser_inputs.backbone_kwargs["permutation_order"] is not None:
                 window_start = (xt == self.mask_token_id).float().argmax(dim=-1)[:, None]
-                log_x_theta_clone = torch.where((position_ids - position_ids.min(dim=-1).values[:, None]) < (window_start + window_size), log_x_theta_clone, -torch.inf)
-            # for i in range(xt.shape[0]):
-            #     masked_indices = (xt[i] == self.mask_token_id).nonzero(as_tuple=True)[-1]
-            #     selected_index = torch.randint(0, masked_indices.shape[-1], (1,))
-            #     selected_index = masked_indices[selected_index]
-            #     log_x_theta_clone[i, selected_index] = torch.inf
-            selected_indices = log_x_theta_clone.argsort(dim=-1, descending=True, stable=True)
+                max_confidences = torch.where((position_ids - position_ids.min(dim=-1).values[:, None]) < (window_start + window_size), max_confidences, -torch.inf)
+
+            selected_indices = max_confidences.argsort(dim=-1, descending=True, stable=True)
 
             tokens_kept = torch.gather(eval_ground_truth, dim=-1, index=selected_indices[..., :1])
             output = torch.where(xt == self.mask_token_id, self.mask_token_id, output) # bypass original sampling process
             output.scatter_(dim=-1, index=selected_indices[..., 0].unsqueeze(-1), src=tokens_kept)
-            log_x_theta.scatter_(dim=-1, index=selected_indices[..., 1:], src=torch.zeros_like(log_x_theta[..., 1:]))
+            log_x_theta_i.scatter_(dim=-1, index=selected_indices[..., 1:], src=torch.zeros_like(log_x_theta_i[..., 1:]))
             if "permutation_order" in denoiser_inputs.backbone_kwargs and denoiser_inputs.backbone_kwargs["permutation_order"] is not None:
-                # permute back
                 output = torch.gather(output, 1, inv_inv_perm)
-            return output, model_output_cache, cache, log_x_theta
+            return output, model_output_cache, cache, log_x_theta_i
         return output, model_output_cache, cache  # type: ignore
 
     @torch.no_grad()
