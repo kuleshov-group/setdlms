@@ -169,13 +169,9 @@ def main(cfg: DictConfig) -> None:
     generated_samples = []
     tputs = []
     parallelism_factors = []
+    pbar = tqdm(dataloader, desc="Generating", total=len(dataloader), disable=(local_rank != 0))
     references = dataset.target_references
-    for elem_id, elem in tqdm(
-        enumerate(dataloader),
-        desc="Generating",
-        total=len(dataloader),
-        disable=(local_rank != 0),
-    ):
+    for elem_id, elem in enumerate(pbar):
         if getattr(cfg, "throughput_run", False) and elem_id >= (
             THROUGHPUT_SAMPLES + THROUGHPUT_WARMUP
         ):
@@ -214,7 +210,7 @@ def main(cfg: DictConfig) -> None:
         with torch.no_grad():
             generation_outputs = model.generate(
                 inputs=input_ids,
-                disable_pbar=(local_rank != 0),
+                disable_pbar=True,
                 # tokenizer=tokenizer,  # For debugging: prints intermediate generation
                 **gen_kwargs,
             )
@@ -233,6 +229,7 @@ def main(cfg: DictConfig) -> None:
                 elapsed_time_s = start_event.elapsed_time(end_event) / 1000
                 if elem_id >= THROUGHPUT_WARMUP:
                     tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
+        pbar.set_postfix(tput=np.mean(tputs), parallel=np.mean(parallelism_factors))
         if tokenizer.mask_token_id is not None and tokenizer.mask_token_id in elem["input_ids"]:
             outputs = outputs[elem["input_ids"] == tokenizer.mask_token_id]
         else:
@@ -245,7 +242,7 @@ def main(cfg: DictConfig) -> None:
             outputs = outputs.split(st)[0]
         decoded_samples = outputs.strip()
         if local_rank == 0:
-            print("Input:", tokenizer.decode(input_ids[0]))
+            print("Input:", tokenizer.decode(elem["input_ids"][0]))
             print("Output:", decoded_samples)
             print("Ground truth:", references[elem_id])
             print(

@@ -682,9 +682,8 @@ class MDLM(Denoiser):
         mdlm_inference = (getattr(self.config, "block_size", self.config.length) == self.config.length)
         if is_infill_task:
             num_mask_tokens = (inputs == self.mask_token_id).sum()
-            # TODO: CHECK WHICH HAS BETTER PERFORMANCE FOR MDLM
             if generation_config.align_inputs_to_blocks:
-                pad_length = block_size - inputs.shape[-1] % block_size
+                pad_length = self.config.length - inputs.shape[-1] % self.config.length
                 inputs = F.pad(inputs, (0, pad_length), value=self.mask_token_id)
                 mask_tokens = (inputs == self.mask_token_id)
                 mask_tokens[:, -pad_length:] = False
@@ -763,14 +762,12 @@ class MDLM(Denoiser):
         if mdlm_inference:
             if inputs_offset < self.config.length:
                 start_input_idx = 0
-                end_input_idx = self.config.length
-                start_sample_idx = inputs_offset
-                end_sample_idx = min(start_sample_idx + block_size, inputs_offset + max_new_tokens)
+                end_input_idx = min(self.config.length, accumulated_samples.shape[-1])
             else:
                 start_input_idx = inputs_offset - self.config.length + 32
                 end_input_idx = start_input_idx + self.config.length
-                start_sample_idx = inputs_offset
-                end_sample_idx = min(start_sample_idx + block_size, end_input_idx)
+            start_sample_idx = inputs_offset
+            end_sample_idx = min(start_sample_idx + block_size, end_input_idx)
         for block_id in block_pbar:
             block_NFEs = 0
             if mdlm_inference:
@@ -831,8 +828,6 @@ class MDLM(Denoiser):
                     :,
                     : inputs_offset + (block_id * block_size),
                 ]
-            if pad_length is not None:
-                sample_indices = sample_indices[:-pad_length]
             for i,t in enumerate(step_pbar):
                 if model_output_cache is None:
                     block_NFEs += 1
@@ -860,7 +855,6 @@ class MDLM(Denoiser):
                     alpha_t=alpha_t,
                     alpha_s=alpha_s,
                     denoiser_inputs=denoiser_inputs,
-                    model_output_cache=model_output_cache,
                     cache=cache,
                     running_generation=running_generation,  # type: ignore
                     inputs_offset=inputs_offset,
@@ -2130,9 +2124,6 @@ class AnyOrderBD3LM(BD3LM):
         assert generation_config.use_cache, (
             "Generation with AO-ARM requires use_cache=True."
         )
-        assert ~generation_config.align_inputs_to_blocks, (
-            "Alignment of inputs to blocks not supported."
-        )
         # Setup sampling variables
         if generation_config is None:
             assert getattr(self, "generation_config", None) is not None, (
@@ -2163,14 +2154,7 @@ class AnyOrderBD3LM(BD3LM):
         pad_length = None
         if is_infill_task:
             mask_tokens = (inputs == self.mask_token_id)
-            if generation_config.align_inputs_to_blocks:
-                pad_length = block_size - inputs.shape[-1] % block_size
-                inputs = F.pad(inputs, (0, pad_length), value=self.mask_token_id)
-                mask_tokens[:, -pad_length:] = False
-                mask_tokens = mask_tokens.view(-1, block_size)
-                max_blocks = (mask_tokens.max(dim=-1).values == 1).sum()
-            else:
-                max_blocks = math.ceil(mask_tokens.sum() / block_size)
+            max_blocks = math.ceil(mask_tokens.sum() / block_size)
             all_position_ids = torch.arange(inputs.shape[-1], device=device)[None, :].repeat(batch_size, 1)
         else:
             max_blocks = max(max_new_tokens // block_size, 1)
@@ -2231,8 +2215,6 @@ class AnyOrderBD3LM(BD3LM):
             inputs_offset = (accumulated_samples == self.mask_token_id)[0].nonzero().min()
         else:
             inputs_offset = accumulated_samples.shape[-1]
-        if generation_config.align_inputs_to_blocks and inputs_offset > 0:
-            inputs_offset = block_size * (inputs_offset // block_size)
         for block_id in block_pbar:
             block_NFEs = 0
             xt = accumulated_samples[
