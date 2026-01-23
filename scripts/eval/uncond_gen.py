@@ -87,7 +87,7 @@ def main(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         max_length=cfg.max_length,
     )
-    eval_sampler = DistributedSampler(eval_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=False)
+    eval_sampler = DistributedSampler(eval_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True)
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=cfg.batch_size, sampler=eval_sampler, num_workers=0, pin_memory=True, collate_fn=collator)
     # Load model
@@ -96,6 +96,7 @@ def main(cfg: DictConfig) -> None:
             path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
             load_ema_weights=cfg.load_ema_weights,
             ckpt_file=cfg.ckpt_file,
+            verbose=True,
             **getattr(cfg, "model_config_overrides", {}),
         )
     except FileNotFoundError:
@@ -113,6 +114,15 @@ def main(cfg: DictConfig) -> None:
                 revision=getattr(cfg, "pretrained_model_revision", None),
                 **getattr(cfg, "model_config_overrides", {}),
             )
+    # ckpt_desired="/share/kuleshov/ma2238/textdiffusion/checkpoints/lm1b_wrap_pretrain/checkpoints/last.ckpt"
+    # ckpt_desired="/share/kuleshov/ma2238/textdiffusion/checkpoints/ablation_bs16_loglinear_final/last-v1.ckpt"
+    # state_dict = torch.load(ckpt_desired, weights_only=False, map_location=device)
+    # # rm backbone. prefix
+    # state_dict["state_dict"] = {k.replace("backbone.", ""): v for k, v in state_dict["state_dict"].items()}
+    # state_dict["state_dict"].pop("sampling_eps_min")
+    # state_dict["state_dict"].pop("sampling_eps_max")
+    # model.backbone.load_state_dict(state_dict["state_dict"])
+
     model = model.to(device)
     if local_rank == 0:
         print(f"Num. params: {format_number(count_parameters(model, trainable=False))}")
@@ -129,9 +139,9 @@ def main(cfg: DictConfig) -> None:
     # Iterate through the dataset and sample
     generated_samples = []
     all_intm_samples = []
-    pbar = tqdm(eval_dataloader, desc="Generating", disable=(local_rank != 0))
+    pbar = tqdm(eval_dataloader, desc="Generating")
     for i, batch in enumerate(pbar):
-        input_ids = torch.tensor([tokenizer.bos_token_id])[None, :].to(model.device).repeat(cfg.batch_size, 1)
+        input_ids = torch.tensor([tokenizer.bos_token_id])[None, :].to(model.device).repeat(batch["input_ids"].shape[0], 1)
         # Generate samples
         with torch.no_grad():
             generation_output = model.generate(
@@ -141,8 +151,7 @@ def main(cfg: DictConfig) -> None:
                 eval_ground_truth=batch["input_ids"].to(model.device),
                 **gen_kwargs,
             )
-            # print(tokenizer.decode(generation_output.sequences[0]))
-            nll = -generation_output.likelihoods[:, 1:]
+            nll = -generation_output.likelihoods[:, 1:] # exclude token before eos
             if i == 0:
                 all_nlls = nll
             else:

@@ -3,78 +3,52 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-# TODO: Uncomment a model and run
-
-######### AR
-#PROMPT_TEXT="Translation: "
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#BLOCK_SIZE=1
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_AR_SAVED_MODEL_DIR>"
-
-########### MDLM
-#PROMPT_TEXT=null
-#KV_CACHING=false
-#ALIGN_INPUTS_TO_BLOCKS=false
-#BLOCK_SIZE=32
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_MDLM_SAVED_MODEL_DIR>"
-
-########### BD3LM
-#PROMPT_TEXT=null
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#BLOCK_SIZE=4
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_BD3LM_SAVED_MODEL_DIR>"
-
-######### E2D2
-# PROMPT_TEXT=null
-# BLOCK_SIZE=127
-# MAX_WINDOW_SIZE=32
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
-
 # BLOCK_SIZE=4
 # MAX_WINDOW_SIZE=4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_mdlm_adaln_cleanbos_antithetic_hparam_v2"
 # KV_CACHING=false
 # ALIGN_INPUTS_TO_BLOCKS=false
 
+#### BDL3M
 BLOCK_SIZE=16
 MAX_WINDOW_SIZE=16
 MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
 KV_CACHING=true
 ALIGN_INPUTS_TO_BLOCKS=true
 
-echo "new ckpt, block size ${BLOCK_SIZE}, max window size ${MAX_WINDOW_SIZE}"
+
+#### SBD
+# PROMPT_TEXT=null
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
 
 OUTPUT_DIR="output/"
 REVISION=null
 mkdir -p ${OUTPUT_DIR}
 
-L=127
+L=1024 # for block diffusion / aoarm, we can override the length here for the correct attn masks. mdlm will use sliding window.
 T=${BLOCK_SIZE}
-DO_SAMPLE=false
+DO_SAMPLE=true
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
 CONFIDENCE_THRESHOLD=1e6
-MAX_LENGTH=128
+MAX_LENGTH=1024
 CKPT="best"
 USE_EMA=true
-BATCH_SIZE=256
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-T${T}-do_sample-${DO_SAMPLE}-first_hitting-${FIRST_HITTING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}"
 PORT=$((RANDOM % 10000 + 29500))
-torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/uncond_gen.py \
+torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/uncond_gen_ppl.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \
   hydra/job_logging=disabled \
   hydra/hydra_logging=disabled \
-  +eval@task=likelihood \
-  +dataset@task.eval_dataset=lm1b_eval \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   +ckpt_file="${CKPT}-rank0.pt" \
@@ -97,12 +71,10 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation/stopping_criteria@stopping_criteria_list='[gsm8k_regex_stopping_criteria]' \
   ~generation/logits_processor@logits_processor_list \
   gen_kwargs.logits_processor=null \
-  +generation_config.save_likelihoods=true \
   gen_kwargs.return_dict_in_generate=true \
-  +collator@task.collator=denoising \
-  task.collator.global_batch_size=${BATCH_SIZE} \
-  task.collator.max_length=null \
-  task.collator.restricted_t_range=null \
-  task.collator.sampling_eps=1e-3 \
-  task.collator.antithetic_sampling=false \
-  batch_size=${BATCH_SIZE}
+  batch_size=1 \
+  +model_config_overrides.length=${L} \
+  +model_config_overrides.noise_config.block_size=${BLOCK_SIZE} \
+  +model_config_overrides.noise_config.max_block_size=${BLOCK_SIZE} \
+  +model_config_overrides.noise_config.length=${BLOCK_SIZE} \
+  +throughput_run=true

@@ -6,22 +6,22 @@ source setup_env.sh
 # TODO: Uncomment a model and run
 
 ######## AR
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#BLOCK_SIZE=1
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_AR_SAVED_MODEL_DIR>"
-#LEN_PENALTY=1.0
-#REGULATION_START=0
-#REPETITION_PENALTY=1.0
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
+# BLOCK_SIZE=1
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_len1k_v1"
+# LEN_PENALTY=1.0
+# REGULATION_START=0
+# REPETITION_PENALTY=1.0
 
 ########### MDLM
-#KV_CACHING=false
-#ALIGN_INPUTS_TO_BLOCKS=false
-#BLOCK_SIZE=32
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_MDLM_SAVED_MODEL_DIR>"
-#LEN_PENALTY=1.1
-#REGULATION_START=80
-#REPETITION_PENALTY=1.5
+KV_CACHING=false
+ALIGN_INPUTS_TO_BLOCKS=false
+BLOCK_SIZE=128
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
+LEN_PENALTY=1.1
+REGULATION_START=80
+REPETITION_PENALTY=1.5
 
 ########### BD3LM
 #KV_CACHING=true
@@ -33,30 +33,27 @@ source setup_env.sh
 #REPETITION_PENALTY=1.5
 
 ########### E2D2
-BLOCK_SIZE=32
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block32_lr3e-4_bsz128_warm1000ba_layers12_hidden256_inter768_aoarm_v12"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block32_lr3e-4_bsz128_warm1000ba_layers12_hidden256_inter768_bd3lm_comp_true_maskfalse_dummyfalse_v1"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block32_lr3e-4_bsz128_warm1000ba_layers12_hidden256_inter768_bd3lm_v4"
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_E2D2_SAVED_MODEL_DIR>"
-
-echo "MODEL_PATH: ${MODEL_PATH}"
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=false
-LEN_PENALTY=1.1
-REGULATION_START=80
-REPETITION_PENALTY=1.5
+# BLOCK_SIZE=32
+# echo "MODEL_PATH: ${MODEL_PATH}"
+# KV_CACHING=false
+# ALIGN_INPUTS_TO_BLOCKS=false
+# LEN_PENALTY=1.1
+# REGULATION_START=80
+# REPETITION_PENALTY=1.5
 
 OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail"
 REVISION=null
 mkdir -p ${OUTPUT_DIR}
 
-L=256
+L=null
 T=${BLOCK_SIZE}
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" "posterior"
-FIRST_HITTING=true
-CONFIDENCE_BASED_NOISING=true
-MAX_LENGTH=4096
+FIRST_HITTING=false
+CONFIDENCE_BASED_NOISING=false
+CONFIDENCE_MARGIN_BASED_NOISING=false
+CONF_THRESHOLD=1e6
+MAX_LENGTH=1024
 CKPT="best"
 USE_EMA=true
 
@@ -68,9 +65,9 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   hydra/job_logging=disabled \
   hydra/hydra_logging=disabled \
   +eval/seq2seq@task=cnn_dailymail \
+  +task.dataset.cache_path=/share/kuleshov/ma2238/dllm-data/cnn_dailymail_eval_${MAX_LENGTH}.dat \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
-  +model_config_overrides.length=${MAX_LENGTH} \
   +ckpt_file="${CKPT}-rank0.pt" \
   +load_ema_weights=${USE_EMA} \
   tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-0.6B-Base" \
@@ -84,9 +81,11 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.sampling_strategy=${SAMPLING_STRATEGY} \
   generation_config.first_hitting=${FIRST_HITTING} \
   generation_config.confidence_based_noising=${CONFIDENCE_BASED_NOISING} \
+  generation_config.confidence_margin_based_noising=${CONFIDENCE_MARGIN_BASED_NOISING} \
+  generation_config.confidence_threshold=${CONF_THRESHOLD} \
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
-  generation/stopping_criteria@stopping_criteria_list='[max_length_criteria,cnndm_stop_string_criteria]' \
-  generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor,exponential_decay_length_penalty]' \
+  generation/stopping_criteria@stopping_criteria_list='[cnndm_stop_string_criteria]' \
+  generation/logits_processor@logits_processor_list='[exponential_decay_length_penalty,repetition_penalty_logits_processor]' \
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY} \
-  logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]" \
+  logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]"

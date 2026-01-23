@@ -29,24 +29,16 @@ source setup_env.sh
 ######### E2D2
 # PROMPT_TEXT=null
 # BLOCK_SIZE=127
-# MAX_WINDOW_SIZE=32
+# MAX_WINDOW_SIZE=16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
-# BLOCK_SIZE=4
-# MAX_WINDOW_SIZE=4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_mdlm_adaln_cleanbos_antithetic_hparam_v2"
-# KV_CACHING=false
-# ALIGN_INPUTS_TO_BLOCKS=false
-
-BLOCK_SIZE=16
-MAX_WINDOW_SIZE=16
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=true
-
-echo "new ckpt, block size ${BLOCK_SIZE}, max window size ${MAX_WINDOW_SIZE}"
+BLOCK_SIZE=128
+MAX_WINDOW_SIZE=128
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_mdlm_adaln_cleanbos_antithetic_hparam_v2"
+KV_CACHING=false
+ALIGN_INPUTS_TO_BLOCKS=false
 
 OUTPUT_DIR="output/"
 REVISION=null
@@ -58,6 +50,7 @@ DO_SAMPLE=false
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
+FIRST_HITTING=false
 CONFIDENCE_THRESHOLD=1e6
 MAX_LENGTH=128
 CKPT="best"
@@ -68,7 +61,7 @@ echo "MODEL_PATH: ${MODEL_PATH}"
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-T${T}-do_sample-${DO_SAMPLE}-first_hitting-${FIRST_HITTING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}"
 PORT=$((RANDOM % 10000 + 29500))
-torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/uncond_gen.py \
+torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/uncond_gen_deb.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \
   hydra/job_logging=disabled \

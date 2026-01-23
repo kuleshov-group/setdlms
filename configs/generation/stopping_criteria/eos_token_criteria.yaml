@@ -1,3 +1,5 @@
 eos_token_criteria:
-  _target_: transformers.generation.EosTokenCriteria
-  eos_token_id: ${eos_token_id}
+  _target_: src.custom_transformers.generation.RegexStoppingCriteria
+  tokenizer: ${tokenizer}
+  pattern: r'<|endoftext|>'
+  num_matches: 2

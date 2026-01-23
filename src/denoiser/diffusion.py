@@ -681,6 +681,7 @@ class MDLM(Denoiser):
         pad_length = None
         if is_infill_task:
             num_mask_tokens = (inputs == self.mask_token_id).sum()
+            # TODO: CHECK WHICH HAS BETTER PERFORMANCE FOR MDLM
             if generation_config.align_inputs_to_blocks:
                 pad_length = block_size - inputs.shape[-1] % block_size
                 inputs = F.pad(inputs, (0, pad_length), value=self.mask_token_id)
@@ -690,6 +691,7 @@ class MDLM(Denoiser):
                 max_blocks = (mask_tokens.max(dim=-1).values == 1).sum()
             else:
                 max_blocks = math.ceil(num_mask_tokens / block_size)
+            block_size = min(block_size, inputs.shape[-1])
         else:
             num_mask_tokens = max_new_tokens
             max_blocks = math.ceil(num_mask_tokens / block_size)
@@ -1262,6 +1264,7 @@ class BD3LM(MDLM):
                 input_ids = context
         cache_length = self._get_past_key_values_seq_length(past_key_values)
         full_seq_length = cache_length + input_ids.shape[-1]
+        # subset of block-causal mask
         decoder_attention_mask = self.static_attention_mask[
             None,
             None,
@@ -2208,7 +2211,7 @@ class AnyOrderBD3LM(BD3LM):
             inputs_indices = torch.empty(0, device=device)
 
         total_NFEs = 0
-        is_done = False
+        is_done = torch.Tensor([False])
         rank = (
             torch.distributed.get_rank()
             if torch.distributed.is_available() and torch.distributed.is_initialized()
@@ -2241,7 +2244,6 @@ class AnyOrderBD3LM(BD3LM):
                 generation_config, max_length=block_size, device=device
             )
             timesteps = timesteps[None, :].repeat(batch_size, 1)
-            dt = 1 / timesteps.shape[-1]
             xt_position_ids = all_position_ids[
                 :,
                 inputs_offset + (block_id * block_size) : inputs_offset
@@ -2261,7 +2263,7 @@ class AnyOrderBD3LM(BD3LM):
                     num_generated = sum(num_tokens_generated_per_step)
                     next_t = timesteps[:, num_generated + 1] if num_generated < timesteps.shape[-1] else timesteps[:, -1] * 0
                 else:
-                    next_t = t[:, i+1] if i < timesteps.shape[-1] - 1 else t[:, -1] * 0
+                    next_t = timesteps[:, i+1] if i < timesteps.shape[-1] - 1 else timesteps[:, -1] * 0
                 next_t = next_t.unsqueeze(1).repeat(1, block_size)
                 alpha_t, _ = self.noise_schedule(t)
                 alpha_s, _ = self.noise_schedule(next_t)
