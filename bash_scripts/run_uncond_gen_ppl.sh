@@ -20,7 +20,7 @@ ALIGN_INPUTS_TO_BLOCKS=true
 #### SBD
 # PROMPT_TEXT=null
 # BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=16
+# MAX_WINDOW_SIZE=32
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
@@ -73,8 +73,10 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   gen_kwargs.logits_processor=null \
   gen_kwargs.return_dict_in_generate=true \
   batch_size=1 \
-  +model_config_overrides.length=${L} \
-  +model_config_overrides.noise_config.block_size=${BLOCK_SIZE} \
-  +model_config_overrides.noise_config.max_block_size=${BLOCK_SIZE} \
-  +model_config_overrides.noise_config.length=${BLOCK_SIZE} \
-  +throughput_run=true
+  +throughput_run=true \
+  +model_config_overrides.length=${L} 
+  
+  # \
+  # +model_config_overrides.noise_config.block_size=${BLOCK_SIZE} \
+  # +model_config_overrides.noise_config.max_block_size=${BLOCK_SIZE} \
+  # +model_config_overrides.noise_config.length=${BLOCK_SIZE} 

@@ -679,6 +679,7 @@ class MDLM(Denoiser):
         block_size = generation_config.block_size
         is_infill_task = self.mask_token_id in inputs
         pad_length = None
+        mdlm_inference = (getattr(self.config, "block_size", self.config.length) == self.config.length)
         if is_infill_task:
             num_mask_tokens = (inputs == self.mask_token_id).sum()
             # TODO: CHECK WHICH HAS BETTER PERFORMANCE FOR MDLM
@@ -704,7 +705,7 @@ class MDLM(Denoiser):
                 (batch_size, num_mask_tokens), dtype=torch.int64, device=device
             )
             accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
-            if getattr(self.config, "block_size", self.config.length) == self.config.length and accumulated_samples.shape[-1] < self.config.length:
+            if mdlm_inference and accumulated_samples.shape[-1] < self.config.length:
                 accumulated_samples = F.pad(
                     accumulated_samples,
                     (0, self.config.length - accumulated_samples.shape[-1]),
@@ -737,7 +738,6 @@ class MDLM(Denoiser):
                 else 0
             )
         
-
         total_NFEs = 0
         timesteps = self._sample_generation_timesteps(  # Re-use in every block
             generation_config, max_length=block_size, device=device
@@ -760,7 +760,7 @@ class MDLM(Denoiser):
         inf_budget_per_step = []
         sample_indices = None
         input_indices = None
-        if getattr(self.config, "block_size", self.config.length) == self.config.length:
+        if mdlm_inference:
             if inputs_offset < self.config.length:
                 start_input_idx = 0
                 end_input_idx = self.config.length
@@ -773,7 +773,7 @@ class MDLM(Denoiser):
                 end_sample_idx = min(start_sample_idx + block_size, end_input_idx)
         for block_id in block_pbar:
             block_NFEs = 0
-            if getattr(self.config, "block_size", self.config.length) == self.config.length:
+            if mdlm_inference:
                 if block_id > 0:
                     start_sample_idx += block_size
                     end_sample_idx += block_size
@@ -824,7 +824,7 @@ class MDLM(Denoiser):
                 else None
             )
             # Used for logit processing
-            if getattr(self.config, "block_size", self.config.length) == self.config.length:
+            if mdlm_inference:
                 running_generation = accumulated_samples
             else:
                 running_generation = accumulated_samples[
