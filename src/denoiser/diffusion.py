@@ -533,13 +533,12 @@ class MDLM(Denoiser):
             x_theta = model_output_cache["x_theta"]
 
         model_output_cache = {"x_theta": x_theta}
-        prob_check_denom = denoiser_inputs.xt.numel()
         sampling_strategy = getattr(generation_config, "sampling_strategy", "posterior")
         if sampling_strategy == "posterior":
             q_xs = self._compute_posterior(
                 x_theta, denoiser_inputs.xt, alpha_t, alpha_s
             )
-            # removed in mdlm (fromremoving denominator)
+            # removed in mdlm (from removing denominator)
             # assert abs((q_xs.sum() / prob_check_denom).item() - 1.0) < 1e-6, (
             #     "Posterior probabilities not summing to 1."
             # )
@@ -571,8 +570,6 @@ class MDLM(Denoiser):
             est_noise_indices_curr = (t * block_size).to(torch.int)
             num_to_decode = est_noise_indices_curr - est_noise_indices_next
             num_noise_indices = denoiser_inputs.xt.shape[-1] - num_to_decode
-            if (num_to_decode > 1).any():
-                import ipdb ; ipdb.set_trace()
             if generation_config.confidence_based_noising:
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
                 conf = torch.where(  # already decoded tokens have 'inf' confidence
@@ -611,7 +608,6 @@ class MDLM(Denoiser):
                 " implemented."
             )
         if getattr(generation_config, "save_likelihoods", False):
-            log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             xt = denoiser_inputs.xt
             if "permutation_order" in denoiser_inputs.backbone_kwargs and denoiser_inputs.backbone_kwargs["permutation_order"] is not None:
                 position_ids = denoiser_inputs.backbone_kwargs["position_ids"][:, cache_len:]
@@ -630,11 +626,14 @@ class MDLM(Denoiser):
             if "permutation_order" in denoiser_inputs.backbone_kwargs and denoiser_inputs.backbone_kwargs["permutation_order"] is not None:
                 window_start = (xt == self.mask_token_id).float().argmax(dim=-1)[:, None]
                 log_x_theta_clone = torch.where((position_ids - position_ids.min(dim=-1).values[:, None]) < (window_start + window_size), log_x_theta_clone, -torch.inf)
-
+            # for i in range(xt.shape[0]):
+            #     masked_indices = (xt[i] == self.mask_token_id).nonzero(as_tuple=True)[-1]
+            #     selected_index = torch.randint(0, masked_indices.shape[-1], (1,))
+            #     selected_index = masked_indices[selected_index]
+            #     log_x_theta_clone[i, selected_index] = torch.inf
             selected_indices = log_x_theta_clone.argsort(dim=-1, descending=True, stable=True)
 
             tokens_kept = torch.gather(eval_ground_truth, dim=-1, index=selected_indices[..., :1])
-
             output = torch.where(xt == self.mask_token_id, self.mask_token_id, output) # bypass original sampling process
             output.scatter_(dim=-1, index=selected_indices[..., 0].unsqueeze(-1), src=tokens_kept)
             log_x_theta.scatter_(dim=-1, index=selected_indices[..., 1:], src=torch.zeros_like(log_x_theta[..., 1:]))
@@ -746,7 +745,7 @@ class MDLM(Denoiser):
         timesteps = self._sample_generation_timesteps(  # Re-use in every block
             generation_config, max_length=block_size, device=device
         )
-        dt = (1 - generation_config.min_t) / len(timesteps)
+        dt = 1 / len(timesteps)
         rank = (
             torch.distributed.get_rank()
             if torch.distributed.is_available() and torch.distributed.is_initialized()
@@ -837,7 +836,7 @@ class MDLM(Denoiser):
                 ]
             if pad_length is not None:
                 sample_indices = sample_indices[:-pad_length]
-            for t in step_pbar:
+            for i,t in enumerate(step_pbar):
                 if model_output_cache is None:
                     block_NFEs += 1
                     total_NFEs += 1
@@ -855,11 +854,12 @@ class MDLM(Denoiser):
                     context=context,
                     cache=cache if generation_config.use_cache else None,
                 )
+                next_t = timesteps[i+1] if i < timesteps.shape[-1] - 1 else timesteps[-1] * 0
                 generation_output = self._generate_unconditional(
                     generation_config=generation_config,
                     block_size=block_size,
                     t=t,
-                    next_t=t - dt,
+                    next_t=next_t,
                     alpha_t=alpha_t,
                     alpha_s=alpha_s,
                     denoiser_inputs=denoiser_inputs,
@@ -2246,7 +2246,7 @@ class AnyOrderBD3LM(BD3LM):
                 generation_config, max_length=block_size, device=device
             )
             timesteps = timesteps[None, :].repeat(batch_size, 1)
-            dt = (1 - generation_config.min_t) / timesteps.shape[-1]
+            dt = 1 / timesteps.shape[-1]
             xt_position_ids = all_position_ids[
                 :,
                 inputs_offset + (block_id * block_size) : inputs_offset
@@ -2264,9 +2264,10 @@ class AnyOrderBD3LM(BD3LM):
                 t = timesteps[:, i].unsqueeze(1).repeat(1, block_size)
                 if getattr(generation_config, "first_hitting", False):
                     num_generated = sum(num_tokens_generated_per_step)
-                    next_t = timesteps[num_generated + 1] if num_generated < timesteps.shape[-1] else timesteps[-1].fill_(0.0)
+                    next_t = timesteps[:, num_generated + 1] if num_generated < timesteps.shape[-1] else timesteps[:, -1] * 0
                 else:
-                    next_t = t - dt
+                    next_t = t[:, i+1] if i < timesteps.shape[-1] - 1 else t[:, -1] * 0
+                next_t = next_t.unsqueeze(1).repeat(1, block_size)
                 alpha_t, _ = self.noise_schedule(t)
                 alpha_s, _ = self.noise_schedule(next_t)
 
