@@ -465,18 +465,32 @@ class MDLM(Denoiser):
         return torch.linspace(  # type: ignore
             1.0,
             0.0,
-            min(generation_config.num_steps + 1, max_length),
+            min(generation_config.num_steps + 1, max_length + 1),
             device=device,
             dtype=dtype,
         )[:-1]
+
+    def _nucleus_sample(self, p_x0: torch.FloatTensor, p: float):
+        if p == 1.0:
+            return p_x0
+        p_x0_ = p_x0[:, -self.config.block_size:].clone()
+        sorted_probs, sorted_indices = p_x0_.sort(dim=-1, descending=True)
+        cum_probs = sorted_probs.cumsum(dim=-1)
+        nucleus_mask = cum_probs <= p
+        nucleus_mask[..., 0] = 1
+        sorted_probs = sorted_probs * nucleus_mask
+        p_x0_.scatter_(-1, sorted_indices, sorted_probs * nucleus_mask)
+        p_x0_ /= p_x0_.sum(-1, keepdim=True)
+        p_x0[:, -self.config.block_size:] = p_x0_
+        return p_x0
 
     def _generate_unconditional(
         self,
         generation_config: DiffusionGenerationConfig,
         t: torch.FloatTensor,
         next_t: torch.FloatTensor,
-        alpha_t: torch.FloatTensor,
-        alpha_s: torch.FloatTensor,
+        alpha_t: torch.FloatTensor = None,
+        alpha_s: torch.FloatTensor = None,
         denoiser_inputs: Optional[DenoiserInput] = None,
         model_output_cache: Optional[Dict[str, torch.FloatTensor]] = None,
         cache: Optional[Dict[str, Any]] = None,
@@ -536,9 +550,14 @@ class MDLM(Denoiser):
         else:
             x_theta = model_output_cache["x_theta"]
 
+        # nucleus sampling
+        if getattr(generation_config, "nucleus_p", 1.0) < 1.0:
+            x_theta = self._nucleus_sample(x_theta, getattr(generation_config, "nucleus_p", 1.0))
+
         model_output_cache = {"x_theta": x_theta}
         sampling_strategy = getattr(generation_config, "sampling_strategy", "posterior")
         if sampling_strategy == "posterior":
+            assert alpha_t is not None and alpha_s is not None, "alpha_t and alpha_s must be provided for posterior sampling."
             q_xs = self._compute_posterior(
                 x_theta, denoiser_inputs.xt, alpha_t, alpha_s
             )
@@ -2059,6 +2078,7 @@ class AnyOrderBD3LM(BD3LM):
         cache = cache | backbone_output
         return cache
 
+
     def _prepare_inputs_inference(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -2072,7 +2092,7 @@ class AnyOrderBD3LM(BD3LM):
         **backbone_kwargs: Any,
     ) -> DenoiserInput:
         assert (
-            input_ids is not None or context is not None or new_context_ids is not None
+            input_ids is not None or context is not None
         ), "Must provide either input_ids or context."
         batch_size = input_ids.shape[0]
         device = input_ids.device
@@ -2090,27 +2110,55 @@ class AnyOrderBD3LM(BD3LM):
         else:
             perm_indices = torch.arange(seq_len, device=device)[None, :].repeat(batch_size, 1)
         if return_updated_cache:
-            attention_mask = self.static_attention_mask[cache_len:cache_len+seq_len, :cache_len+seq_len].clone()
+            base = self.static_attention_mask[
+                cache_len : cache_len + seq_len,
+                : cache_len + seq_len
+            ]  # view only — no clone
+
             position_ids = torch.gather(position_ids, dim=-1, index=perm_indices)
             input_ids = torch.gather(input_ids, dim=-1, index=perm_indices)
-            if self.mask_token_id in input_ids:
-                first_mask_token_idx = (input_ids == self.mask_token_id).float().argmax(dim=-1)[0]
-                # mask tokens cannot attend to other masked tokens
-                attention_mask[first_mask_token_idx:, -(seq_len-first_mask_token_idx):] = 0
+
+            # --- build edit mask ---
+            edit = torch.zeros_like(base, dtype=torch.bool)
+
             # keep self-attention
-            attention_mask[-torch.arange(1, seq_len+1), -torch.arange(1, seq_len+1)] = 1
+            diag_r = torch.arange(seq_len, device=base.device)
+            diag_c = base.size(1) - seq_len + diag_r
+            edit[diag_r, diag_c] = True
+            patched = torch.zeros_like(base)
+            if (input_ids == self.mask_token_id).any():
+                first_mask_token_idx = (input_ids == self.mask_token_id).float().argmax(dim=-1)[0]
+                num_masked_tokens = seq_len - first_mask_token_idx
+                # values to write where edit=True
+                patched[-num_masked_tokens:, -num_masked_tokens:] = True
+            attention_mask = torch.where(patched, edit, base)
+
             attention_mask = self._preprocess_attention_mask(
                 attention_mask[None, None, ...], dtype=torch.float
             )
         else:
             full_possible_len = self.static_attention_mask.shape[-1] // 2
             valid_attn_indices = torch.cat(
-                (torch.arange(cache_len),
-                torch.arange(cache_len, cache_len+seq_len) + full_possible_len,)
+                (
+                    torch.arange(cache_len, device=device),
+                    torch.arange(cache_len, cache_len + seq_len, device=device)
+                    + full_possible_len,
+                )
+             )
+            base = self.static_attention_mask[
+                cache_len : cache_len + seq_len,
+                valid_attn_indices,
+            ]
+
+            row = torch.arange(seq_len, device=device)
+            col = cache_len + row
+            diag_mask = torch.zeros_like(base, dtype=torch.bool)
+            diag_mask[row, col] = True
+            attention_mask = torch.where(diag_mask, torch.ones_like(base), base)
+            attention_mask = self._preprocess_attention_mask(
+                attention_mask[None, None, ...],
+                dtype=torch.float,
             )
-            attention_mask = self.static_attention_mask[cache_len:cache_len+seq_len, valid_attn_indices].clone()
-            attention_mask[-torch.arange(1, seq_len+1), -torch.arange(1, seq_len+1)] = 1
-            attention_mask = self._preprocess_attention_mask(attention_mask[None, None, ...], dtype=torch.float)
         return DenoiserInput(
             xt=input_ids,
             attention_mask=attention_mask,
@@ -2262,8 +2310,8 @@ class AnyOrderBD3LM(BD3LM):
             else:
                 next_t = timesteps[:, i+1] if i < timesteps.shape[-1] - 1 else timesteps[:, -1] * 0
             next_t = next_t.unsqueeze(1).repeat(1, accumulated_samples.shape[-1])
-            alpha_t, _ = self.noise_schedule(t)
-            alpha_s, _ = self.noise_schedule(next_t)
+            # alpha_t, _ = self.noise_schedule(t)
+            # alpha_s, _ = self.noise_schedule(next_t)
 
             masked_positions_indices = masked_positions.nonzero(as_tuple=False)[:, -1].view(batch_size, -1)
             masked_xt = torch.gather(xt, dim=-1, index=masked_positions_indices)
@@ -2279,8 +2327,8 @@ class AnyOrderBD3LM(BD3LM):
                 first_hitting_times=masked_first_hitting_times,
                 return_updated_cache=True if (xt != self.mask_token_id).any() else False,
             )
-            alpha_t_block = torch.gather(alpha_t, dim=-1, index=masked_positions_indices)
-            alpha_s_block = torch.gather(alpha_s, dim=-1, index=masked_positions_indices)
+            # alpha_t_block = torch.gather(alpha_t, dim=-1, index=masked_positions_indices)
+            # alpha_s_block = torch.gather(alpha_s, dim=-1, index=masked_positions_indices)
             return_updated_cache = True if i > 0 else False
             if eval_ground_truth is not None:
                 eval_ground_truth_t = torch.gather(eval_ground_truth[:, inputs_offset:], dim=-1, index=masked_positions_indices)
@@ -2289,8 +2337,8 @@ class AnyOrderBD3LM(BD3LM):
                 eval_ground_truth_t = None
             generation_output = self._generate_unconditional(
                 generation_config=generation_config,
-                alpha_t=alpha_t_block,
-                alpha_s=alpha_s_block,
+                # alpha_t=alpha_t_block,
+                # alpha_s=alpha_s_block,
                 t=t[0][0],
                 next_t=next_t[0][0],
                 denoiser_inputs=denoiser_inputs,
@@ -2367,11 +2415,11 @@ class AnyOrderBD3LM(BD3LM):
             #         cache_flag |= new_cache_positions
 
             # for batched eval only
-            max_masks_to_add = masked_positions.sum(dim=-1).max()
-            extra_masks_to_add = max_masks_to_add - masked_positions.sum(dim=-1)
-            last_masked_pos = torch.gather(xt_position_ids, dim=-1, index=(masked_positions | (xt != self.mask_token_id)).cumsum(-1).argmax(-1)[:, None]) * (extra_masks_to_add > 0)[:, None]
-            masked_positions |= ((xt == self.mask_token_id) & (xt_position_ids <= (last_masked_pos + extra_masks_to_add[:, None])))
-            assert (masked_positions.sum(dim=-1).unique().numel() == 1), "Different # of input positions for each eval example"
+            # max_masks_to_add = masked_positions.sum(dim=-1).max()
+            # extra_masks_to_add = max_masks_to_add - masked_positions.sum(dim=-1)
+            # last_masked_pos = torch.gather(xt_position_ids, dim=-1, index=(masked_positions | (xt != self.mask_token_id)).cumsum(-1).argmax(-1)[:, None]) * (extra_masks_to_add > 0)[:, None]
+            # masked_positions |= ((xt == self.mask_token_id) & (xt_position_ids <= (last_masked_pos + extra_masks_to_add[:, None])))
+            # assert (masked_positions.sum(dim=-1).unique().numel() == 1), "Different # of input positions for each eval example"
             
             num_tokens_generated_per_step.append(
                 (xs != self.mask_token_id).sum().item()

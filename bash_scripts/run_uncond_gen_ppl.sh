@@ -19,16 +19,13 @@ source setup_env.sh
 
 
 
-
 #### SBD
 PROMPT_TEXT=null
-BLOCK_SIZE=1047
+BLOCK_SIZE=2047
 MAX_WINDOW_SIZE=4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
 KV_CACHING=true
 ALIGN_INPUTS_TO_BLOCKS=false
-
-
 # MODEL_PATH="/home/ubuntu/mar/runs/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_ft_v2"
 # MODEL_PATH="/home/ubuntu/mar/runs/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_ft_v3"
 MODEL_PATH="/home/ubuntu/mar/runs/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_ft_v5"
@@ -39,17 +36,19 @@ REVISION=null
 mkdir -p ${OUTPUT_DIR}
 
 L=2047 # for block diffusion / aoarm, we can override the length here for the correct attn masks. mdlm will use sliding window.
+# T=${BLOCK_SIZE}
 T=${BLOCK_SIZE}
 DO_SAMPLE=true
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
-CONFIDENCE_THRESHOLD=1e6
+CONFIDENCE_THRESHOLD=0.9
 MAX_LENGTH=2048
 CKPT="best"
 USE_EMA=true
 
 REPETITION_PENALTY=1.5
+NUCLEUS_P=0.9
 
 TOKENIZER_PATH="gpt2"
 
@@ -81,7 +80,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
-  generation/stopping_criteria@stopping_criteria_list='[gsm8k_regex_stopping_criteria]' \
+  generation/stopping_criteria@stopping_criteria_list='[entropy_eos_stopping_criteria]' \
   gen_kwargs.return_dict_in_generate=true \
   batch_size=1 \
   +throughput_run=true \
@@ -92,4 +91,6 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   +model_config_overrides.attn_backend=sdpa \
   +model_config_overrides.backbone_config.attn_backend=sdpa \
   generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor]' \
-  logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY}
+  logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY} \
+  +eval_model_name="gpt2-large" \
+  +generation_config.nucleus_p=${NUCLEUS_P}
