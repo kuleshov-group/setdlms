@@ -952,6 +952,8 @@ class MDLM(Denoiser):
                         :,
                         : sample_indices[-1] + 1,
                     ]
+                    if hasattr(stopping_criteria[0], "truncate_idx"):
+                        accumulated_samples = accumulated_samples[:, : stopping_criteria[0].truncate_idx[0]]
                     accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
                     break
             if generation_config.use_cache and getattr(self.config, "block_size", self.config.length) < self.config.length:
@@ -1273,6 +1275,31 @@ class BD3LM(MDLM):
             },
         )
 
+    def _crop_kv_cache_left(
+        self, past_key_values: Any, drop: int
+    ) -> Any:
+        """
+        Drop `drop` tokens from the *left/oldest* side of the KV cache.
+        Works with common DynamicCache-like implementations that store per-layer
+        key/value tensors in `key_cache` / `value_cache` lists.
+        Falls back to no-op if structure is unknown.
+        """
+        if drop <= 0 or past_key_values is None:
+            return past_key_values
+
+        assert hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"), "DynamicCache-like structure not found"
+        key_cache = getattr(past_key_values, "key_cache")
+        value_cache = getattr(past_key_values, "value_cache")
+        for i in range(len(past_key_values)):
+            k = key_cache[i]
+            v = value_cache[i]
+            if k is None or v is None:
+                continue
+
+            key_cache[i] = k[..., drop:, :]
+            value_cache[i] = v[..., drop:, :]
+        return past_key_values
+
     def _prepare_inputs_inference(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -1296,6 +1323,12 @@ class BD3LM(MDLM):
                 input_ids = context
         cache_length = self._get_past_key_values_seq_length(past_key_values)
         full_seq_length = cache_length + input_ids.shape[-1]
+        # --- crop KV cache if we would exceed model context ---
+        if full_seq_length > self.config.length:
+            overflow = full_seq_length - self.config.length
+            past_key_values = self._crop_kv_cache_left(past_key_values, overflow)
+            cache_length = cache_length - overflow
+            full_seq_length = cache_length + input_ids.shape[-1]
         # subset of block-causal mask
         decoder_attention_mask = self.static_attention_mask[
             None,
@@ -2078,7 +2111,6 @@ class AnyOrderBD3LM(BD3LM):
         cache = cache | backbone_output
         return cache
 
-
     def _prepare_inputs_inference(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -2101,6 +2133,13 @@ class AnyOrderBD3LM(BD3LM):
         past_key_values = cache.pop("past_key_values", DynamicCache())
         cache_len = self._get_past_key_values_seq_length(past_key_values)
         full_seq_length = cache_len + seq_len
+        # --- crop KV cache if we would exceed model context ---
+        if full_seq_length > self.config.length:
+            overflow = full_seq_length - self.config.length
+            past_key_values = self._crop_kv_cache_left(past_key_values, overflow)
+            cache_len -= overflow
+            full_seq_length = cache_len + input_ids.shape[-1]
+
         perm_indices = None
         # permute indices based on expecte unmasking order
         if first_hitting_times is not None:
@@ -2216,11 +2255,13 @@ class AnyOrderBD3LM(BD3LM):
         block_size = generation_config.block_size
         assert block_size == self.config.length, "ao-bd3lm not supported yet"
 
+        full_seq_length = inputs.shape[-1] + max_new_tokens
+
         window_size = self.noise_schedule.compute_window_size()
         window_size = min(generation_config.max_window_size, window_size)
         first_hitting_times = self.noise_schedule.compute_first_hitting_times(
             batch_size=batch_size,
-            length=block_size,
+            length=max_new_tokens,
             device=device,
         )[0]
 
@@ -2230,7 +2271,7 @@ class AnyOrderBD3LM(BD3LM):
             all_position_ids = torch.arange(inputs.shape[-1], device=device)[None, :].repeat(batch_size, 1)
         else:
             all_position_ids = torch.arange(
-                inputs.shape[-1] + block_size, device=device
+                inputs.shape[-1] + max_new_tokens, device=device
             )[None, :].repeat(batch_size, 1)
 
         # Sample max generation length tensor from prior
@@ -2238,7 +2279,7 @@ class AnyOrderBD3LM(BD3LM):
             accumulated_samples = inputs
         else:
             accumulated_samples = self.mask_token_id * torch.ones(
-                (batch_size, block_size), dtype=torch.int64, device=device
+                (batch_size, max_new_tokens), dtype=torch.int64, device=device
             )
             accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if is_infill_task:
@@ -2247,7 +2288,7 @@ class AnyOrderBD3LM(BD3LM):
             inputs_offset = inputs.shape[-1]
         likelihoods = None
         if getattr(generation_config, "save_likelihoods", False):
-            likelihoods = torch.zeros((batch_size, block_size), dtype=torch.float, device=device)
+            likelihoods = torch.zeros((batch_size, max_new_tokens), dtype=torch.float, device=device)
         first_hitting_times = self.noise_schedule.compute_first_hitting_times(
             batch_size=batch_size,
             length=accumulated_samples.shape[-1],
@@ -2451,6 +2492,8 @@ class AnyOrderBD3LM(BD3LM):
                         : window_start[0] + window_size,
                     ]
                     accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
+                    if hasattr(stopping_criteria[0], "truncate_idx"):
+                        accumulated_samples = accumulated_samples[:, : min(stopping_criteria[0].truncate_idx[0], accumulated_samples.shape[-1])]
                     break
         if tokenizer is not None:
             print(tokenizer.batch_decode(accumulated_samples))

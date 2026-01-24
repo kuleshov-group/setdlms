@@ -97,3 +97,105 @@ class RepeatingTokenStoppingCriteria(StoppingCriteria):
 
         # All last L tokens must equal the last token.
         return (window == last).all(dim=1)
+
+class EntropyEosStoppingCriteria(StoppingCriteria):
+    """
+    Hugging Face stopping criteria replicating:
+      - stop if entropy on last 256 tokens < threshold
+      - if var_length: stop if a second EOS is present
+    Note: cannot truncate inside generate(); store truncation info for post-processing.
+    """
+
+    def __init__(
+        self,
+        tokenizer,
+        entropy_threshold: float = 4.0,
+        block_size: int = 256,
+        var_length: bool = False,
+    ):
+        super().__init__()
+        self.eos_token_id = tokenizer.eos_token_id
+        self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
+        self.mask_token_id = self.tokenizer.mask_token_id
+        self.entropy_threshold = entropy_threshold
+        self.block_size = block_size
+        self.var_length = var_length
+
+        # For optional post-processing:
+        # one entry per batch item, filled with either None or an int truncate index.
+        self.truncate_idx = None
+        self.stop_reason = None
+
+    def _ensure_state(self, batch_size: int):
+        if self.truncate_idx is None or len(self.truncate_idx) != batch_size:
+            self.truncate_idx = [None] * batch_size
+            self.stop_reason = [None] * batch_size
+
+    def _compute_entropy(self, x):
+        # exclude mask tokens
+        x = x[x != self.mask_token_id]
+        _, counts = torch.unique(x, return_counts=True, sorted=False)
+        entropy = torch.special.entr(counts.float() / counts.sum()).sum()
+        return entropy
+  
+    @torch.no_grad()
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+        """
+        input_ids: (batch, seq_len)
+        scores:    (batch, vocab) for the last step (may be None depending on config)
+        """
+        device = input_ids.device
+        bsz, seq_len = input_ids.shape
+        if seq_len < self.block_size:
+            return False
+        self._ensure_state(bsz)
+
+        # Compute entropy on the last `block_size` tokens (or all if shorter)
+        last_block = input_ids[:, -self.block_size:]
+        entropy = self._compute_entropy(last_block)  # should return float or tensor scalar
+
+        # Make it a python float for comparisons
+        if torch.is_tensor(entropy):
+            # If returns (batch,) you can adapt, but your original looks scalar.
+            entropy_val = float(entropy.detach().mean().cpu())
+        else:
+            entropy_val = float(entropy)
+
+        stop_any = False
+
+        # Criterion: low entropy => stop
+        if entropy_val < self.entropy_threshold:
+            stop_any = True
+            if self.var_length:
+                # In your code: truncate_idx = x.shape[1] - 256
+                for i in range(bsz):
+                    self.truncate_idx[i] = max(seq_len - self.block_size, 0)
+                    self.stop_reason[i] = "low_entropy"
+
+        if self.var_length:
+            # Criterion: stop at second EOS *only if no mask tokens appear before it*
+            eos_mask = (input_ids == self.eos_token_id)  # (B, L)
+            eos_counts = eos_mask.sum(dim=1)
+
+            if torch.any(eos_counts > 1):
+                for i in range(bsz):
+                    if eos_counts[i].item() > 1:
+                        eos_positions = torch.nonzero(
+                            eos_mask[i], as_tuple=False
+                        ).squeeze(-1)
+
+                        second_eos_pos = int(eos_positions[1].item())
+
+                        # NEW CONDITION:
+                        # no mask tokens before the second EOS
+                        has_mask_before = (
+                            input_ids[i, :second_eos_pos] == self.mask_token_id
+                        ).any()
+
+                        if not has_mask_before:
+                            stop_any = True
+                            self.truncate_idx[i] = min(second_eos_pos + 1, seq_len)
+                            self.stop_reason[i] = "second_eos"
+
+        # Note: Hugging Face expects a single bool: stop generation for the whole batch.
+        return stop_any
