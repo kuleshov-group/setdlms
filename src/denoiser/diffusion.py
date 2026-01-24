@@ -516,17 +516,19 @@ class MDLM(Denoiser):
                 denoiser_inputs.xt = denoiser_inputs.xt[..., sample_indices - input_indices[0]]
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             if logits_processor is not None:
+                if sample_indices.ndim > 1:
+                    sample_indices = sample_indices[0]
                 for lp in logits_processor:
                     # TODO: DEBUG
                     for i in range(log_x_theta.shape[1]):
                         if isinstance(lp, ExponentialDecayLengthPenalty):
                             log_x_theta[:, i] = lp(
-                                input_ids=running_generation[..., inputs_offset:sample_indices[0] + i + 1],
+                                input_ids=running_generation[..., inputs_offset:min(sample_indices[0] + i + 1, running_generation.shape[-1])],
                                 scores=log_x_theta[:, i],  # type: ignore
                             )
                         else:
                             log_x_theta[:, i] = lp(
-                                input_ids=running_generation[..., inputs_offset:sample_indices[-1]+1],
+                                input_ids=running_generation[..., inputs_offset:min(sample_indices[-1]+1, running_generation.shape[-1])],
                                 scores=log_x_theta[:, i],  # type: ignore
                             )
                 log_x_theta = torch.log_softmax(log_x_theta, dim=-1)  # re-normalize
@@ -843,7 +845,7 @@ class MDLM(Denoiser):
             else:
                 running_generation = accumulated_samples[
                     :,
-                    : inputs_offset + (block_id * block_size),
+                    : min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
                 ]
             for i,t in enumerate(step_pbar):
                 if model_output_cache is None:
@@ -915,7 +917,7 @@ class MDLM(Denoiser):
             if input_indices is not None:
                 accumulated_samples[..., sample_indices] = xt[..., sample_indices - input_indices[0]]
             else:
-                accumulated_samples[:, torch.arange(inputs_offset + (block_id * block_size), inputs_offset + ((block_id + 1) * block_size))] = xt[..., -block_size:]
+                accumulated_samples[:, sample_indices] = xt[..., -block_size:]
             if tokenizer is not None:  # Useful for debugging
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
@@ -2194,7 +2196,7 @@ class AnyOrderBD3LM(BD3LM):
         if is_infill_task:
             inputs_offset = 0
         else:
-            inputs_offset = accumulated_samples.shape[-1]
+            inputs_offset = inputs.shape[-1]
         likelihoods = None
         if getattr(generation_config, "save_likelihoods", False):
             likelihoods = torch.zeros((batch_size, block_size), dtype=torch.float, device=device)

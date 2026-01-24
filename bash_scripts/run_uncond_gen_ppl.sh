@@ -10,35 +10,48 @@ source setup_env.sh
 # ALIGN_INPUTS_TO_BLOCKS=false
 
 #### BDL3M
-BLOCK_SIZE=16
-MAX_WINDOW_SIZE=16
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=true
+# BLOCK_SIZE=4
+# MAX_WINDOW_SIZE=4
+# MODEL_PATH="kuleshov-group/bd3lm-owt-block_size4"
+# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
+
+
 
 
 #### SBD
-# PROMPT_TEXT=null
-# BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=32
+PROMPT_TEXT=null
+BLOCK_SIZE=1047
+MAX_WINDOW_SIZE=4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=false
+
+
+# MODEL_PATH="/home/ubuntu/mar/runs/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_ft_v2"
+# MODEL_PATH="/home/ubuntu/mar/runs/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_ft_v3"
+MODEL_PATH="/home/ubuntu/mar/runs/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_ft_v5"
+
 
 OUTPUT_DIR="output/"
 REVISION=null
 mkdir -p ${OUTPUT_DIR}
 
-L=1024 # for block diffusion / aoarm, we can override the length here for the correct attn masks. mdlm will use sliding window.
+L=2047 # for block diffusion / aoarm, we can override the length here for the correct attn masks. mdlm will use sliding window.
 T=${BLOCK_SIZE}
 DO_SAMPLE=true
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
 CONFIDENCE_THRESHOLD=1e6
-MAX_LENGTH=1024
+MAX_LENGTH=2048
 CKPT="best"
 USE_EMA=true
+
+REPETITION_PENALTY=1.5
+
+TOKENIZER_PATH="gpt2"
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 
@@ -53,7 +66,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   pretrained_model_revision=${REVISION} \
   +ckpt_file="${CKPT}-rank0.pt" \
   +load_ema_weights=${USE_EMA} \
-  tokenizer.pretrained_model_name_or_path="bert-base-uncased" \
+  tokenizer.pretrained_model_name_or_path=${TOKENIZER_PATH} \
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_length=${MAX_LENGTH} \
@@ -69,14 +82,14 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
   generation/stopping_criteria@stopping_criteria_list='[gsm8k_regex_stopping_criteria]' \
-  ~generation/logits_processor@logits_processor_list \
-  gen_kwargs.logits_processor=null \
   gen_kwargs.return_dict_in_generate=true \
   batch_size=1 \
   +throughput_run=true \
-  +model_config_overrides.length=${L} 
-  
-  # \
-  # +model_config_overrides.noise_config.block_size=${BLOCK_SIZE} \
-  # +model_config_overrides.noise_config.max_block_size=${BLOCK_SIZE} \
-  # +model_config_overrides.noise_config.length=${BLOCK_SIZE} 
+  +model_config_overrides.length=${L} \
+  +model_config_overrides.noise_config.block_size=${MAX_LENGTH} \
+  +model_config_overrides.noise_config.max_block_size=${MAX_LENGTH} \
+  +model_config_overrides.noise_config.length=${MAX_LENGTH}  \
+  +model_config_overrides.attn_backend=sdpa \
+  +model_config_overrides.backbone_config.attn_backend=sdpa \
+  generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor]' \
+  logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY}
