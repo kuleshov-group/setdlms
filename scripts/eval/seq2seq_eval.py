@@ -184,6 +184,7 @@ def main(cfg: DictConfig) -> None:
     generated_samples = []
     tputs = []
     parallelism_factors = []
+    latencies = []
     pbar = tqdm(dataloader, desc="Generating", total=len(dataloader), disable=(local_rank != 0))
     references = dataset.target_references
     for elem_id, elem in enumerate(pbar):
@@ -244,6 +245,7 @@ def main(cfg: DictConfig) -> None:
                 elapsed_time_s = start_event.elapsed_time(end_event) / 1000
                 if elem_id >= THROUGHPUT_WARMUP:
                     tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
+                    latencies.append(elapsed_time_s)
         pbar.set_postfix(tput=np.mean(tputs), parallel=np.mean(parallelism_factors))
         if tokenizer.mask_token_id is not None and tokenizer.mask_token_id in elem["input_ids"]:
             outputs = outputs[elem["input_ids"] == tokenizer.mask_token_id]
@@ -256,7 +258,7 @@ def main(cfg: DictConfig) -> None:
         for st in stop_tokens:
             outputs = outputs.split(st)[0]
         decoded_samples = outputs.strip()
-        if local_rank == 0: # and world_size > 1:
+        if local_rank == 0 and world_size > 1:
             print("Input:", tokenizer.decode(elem["input_ids"][0]))
             print("Output:", decoded_samples)
             print("Ground truth:", references[elem_id])
@@ -265,6 +267,7 @@ def main(cfg: DictConfig) -> None:
             )
             if elem_id >= THROUGHPUT_WARMUP:
                 print(f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
+                print(f"Latency (s): {np.mean(latencies):0.2f} +/- {np.std(latencies):0.2f}")
         generated_samples.append(decoded_samples)
 
     # Compute metrics
@@ -275,6 +278,7 @@ def main(cfg: DictConfig) -> None:
     references = gather_results(references, world_size)
     parallelism_factors = gather_results(parallelism_factors, world_size)
     throughputs = gather_results(tputs, world_size)
+    latencies = gather_results(latencies, world_size)
     if local_rank == 0:
         rouge = evaluate.load("rouge")
         bleu = evaluate.load("sacrebleu")
@@ -303,6 +307,9 @@ def main(cfg: DictConfig) -> None:
         )
         print(
             f"Thput (tok/s): {np.mean(throughputs):0.2f} +/- {np.std(throughputs):0.2f}"
+        )
+        print(
+            f"Latency (s): {np.mean(latencies):0.2f} +/- {np.std(latencies):0.2f}"
         )
         res_for_json = [
             {"ground_truth": references[i], "result": generated_samples[i]}
