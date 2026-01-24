@@ -58,6 +58,7 @@ def setup_ddp() -> int:
 def main(cfg: DictConfig) -> None:
     set_seed(cfg.seed)
     local_rank = setup_ddp()
+    world_size = dist.get_world_size()
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     print(device)
 
@@ -105,7 +106,8 @@ def main(cfg: DictConfig) -> None:
                 model = None
     # HACK FOR MDLM
     if model is None or not hasattr(model, "generate"):
-        from src.denoiser.diffusion import MDLM, MDLMConfig
+        # from src.denoiser.diffusion import MDLM, MDLMConfig
+        from src.denoiser.diffusion import BD3LM, BD3LMConfig
         from src.noise_schedule.noise_schedules import LinearNoise
         
         # Create dit backbone config
@@ -131,30 +133,43 @@ def main(cfg: DictConfig) -> None:
         if not isinstance(backbone_config, DictConfig):
             backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
         
-        mdlm_config = MDLMConfig(
+        # mdlm_config = MDLMConfig(
+        #     length=length,
+        #     backbone_config=backbone_config,
+        # )
+        mdlm_config = BD3LMConfig(
             length=length,
             backbone_config=backbone_config,
+            block_size=cfg.block_size,
         )
         mdlm_config.mask_token_id = tokenizer.mask_token_id
         mdlm_config.vocab_size = len(tokenizer)
-        model_ = MDLM(
+        # model_ = MDLM(
+        #     mdlm_config,
+        #     tokenizer=tokenizer,
+        # )
+        model_ = BD3LM(
             mdlm_config,
             tokenizer=tokenizer,
         )
         if model is not None:
-            model_.backbone = model
+            state_dict = model.state_dict()
         else:
             state_dict = torch.load(cfg.pretrained_model_name_or_path, weights_only=False)
             state_dict = state_dict["state_dict"]
-            new_state_dict = {}
-            for key in state_dict.keys():
-                new_key = key
-                if "backbone." in key:
-                    new_key = key.replace("backbone.", "")
-                if "_orig_mod." in new_key:
-                    new_key = new_key.replace("_orig_mod.", "")
-                new_state_dict[new_key] = state_dict[key]
-            model_.backbone.load_state_dict(new_state_dict)
+        new_state_dict = {}
+        for key in state_dict.keys():
+            new_key = key
+            if "backbone." in key:
+                new_key = key.replace("backbone.", "")
+            if "_orig_mod." in new_key:
+                new_key = new_key.replace("_orig_mod.", "")
+            new_state_dict[new_key] = state_dict[key]
+        if "sampling_eps_min" in new_state_dict:
+            new_state_dict.pop("sampling_eps_min")
+        if "sampling_eps_max" in new_state_dict:
+            new_state_dict.pop("sampling_eps_max")
+        model_.backbone.load_state_dict(new_state_dict)
         model = model_.to(device)
         model.noise_schedule = LinearNoise()
     model = model.to(device)
@@ -241,7 +256,7 @@ def main(cfg: DictConfig) -> None:
         for st in stop_tokens:
             outputs = outputs.split(st)[0]
         decoded_samples = outputs.strip()
-        if local_rank == 0:
+        if local_rank == 0: # and world_size > 1:
             print("Input:", tokenizer.decode(elem["input_ids"][0]))
             print("Output:", decoded_samples)
             print("Ground truth:", references[elem_id])
@@ -256,7 +271,6 @@ def main(cfg: DictConfig) -> None:
     references = dataset.target_references
     local_indices = list(sampler)[: len(generated_samples)]
     references = [references[i] for i in local_indices]
-    world_size = dist.get_world_size()
     generated_samples = gather_results(generated_samples, world_size)
     references = gather_results(references, world_size)
     parallelism_factors = gather_results(parallelism_factors, world_size)

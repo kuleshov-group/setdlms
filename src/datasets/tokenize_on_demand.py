@@ -856,6 +856,9 @@ class ROCStoriesDataset(Dataset):
         suffix_ids = self.tokenizer(suffix).input_ids
         middle_ids = self.tokenizer(middle).input_ids
 
+        # input_ids = [self.tokenizer.bos_token_id] +\
+        #     prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) +\
+        #     suffix_ids + [self.tokenizer.eos_token_id]
         input_ids = prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) + suffix_ids
         input_ids = torch.LongTensor(input_ids)
         attention_mask = torch.ones_like(input_ids)

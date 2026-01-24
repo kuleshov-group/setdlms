@@ -39,6 +39,12 @@ def main(cfg: DictConfig) -> None:
     reproducibility.seed_all(cfg.seed)
     reproducibility.configure_deterministic_mode()
 
+    # Setup distributed
+    if not dist.is_initialized():
+        log.info("Initializing dist")
+        dist.initialize_dist(timeout=600)
+    log.info("All nodes connected")
+
     # Load tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
@@ -72,17 +78,19 @@ def main(cfg: DictConfig) -> None:
                 revision=getattr(cfg, "pretrained_model_revision", None),
                 **model_config_overrides,
             )
+    # ckpt_desired="/share/kuleshov/ma2238/textdiffusion/checkpoints/ablation_bs16_loglinear_final/last-v1.ckpt"
+    # state_dict = torch.load(ckpt_desired, weights_only=False, map_location=model.device)
+    # # rm backbone. prefix
+    # state_dict["state_dict"] = {k.replace("backbone.", ""): v for k, v in state_dict["state_dict"].items()}
+    # state_dict["state_dict"].pop("sampling_eps_min")
+    # state_dict["state_dict"].pop("sampling_eps_max")
+    # model.backbone.load_state_dict(state_dict["state_dict"])
+
     model = HuggingFaceModel(
         model=model,
         tokenizer=tokenizer,
         metrics=list(hydra.utils.instantiate(cfg.task.metrics).values()),
     )
-
-    # Setup distributed
-    if not dist.is_initialized():
-        log.info("Initializing dist")
-        dist.initialize_dist(timeout=600)
-    log.info("All nodes connected")
 
     print(f"Running likelihood eval for {cfg.task.eval_dataset}")
     eval_dataset = hydra.utils.instantiate(

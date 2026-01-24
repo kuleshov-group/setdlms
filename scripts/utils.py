@@ -290,10 +290,13 @@ def load_model_from_ckpt_dir_path(
             raise ValueError("EMA weights not found in checkpoint.")
     else:
         state_dict = ckpt["state"]["model"]
+    compiled_model_flag = "_orig_mod." in "".join(state_dict.keys())
     _replace_in_state_dict_if_present(state_dict, "_orig_mod.")  # for compiled models
     torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(state_dict, "model.")
     model.load_state_dict(state_dict, strict=False)
-
+    if compiled_model_flag:
+        print("Compiling model backbone")
+        model.backbone = torch.compile(model.backbone)
     return model
 
 

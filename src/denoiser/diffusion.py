@@ -446,6 +446,7 @@ class MDLM(Denoiser):
         max_length: Optional[int] = None,
         device: Optional[str] = None,
         dtype: Optional[torch.dtype] = torch.float64,
+        first_hitting_times: Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
         """Sample timesteps for diffusion generation process."""
         if device is None:
@@ -457,13 +458,14 @@ class MDLM(Denoiser):
             getattr(generation_config, "first_hitting", False)
             and sampling_strategy == "posterior"
         ):
-            fhs_times = self.noise_schedule.compute_first_hitting_times(
-                batch_size=1, length=max_length, device=device, dtype=dtype)[0].sort(descending=True).values
-            return fhs_times
+            if first_hitting_times is None:
+                first_hitting_times = self.noise_schedule.compute_first_hitting_times(
+                    batch_size=1, length=max_length, device=device, dtype=dtype)[0]
+            return first_hitting_times.sort(descending=True).values
         return torch.linspace(  # type: ignore
             1.0,
             0.0,
-            generation_config.num_steps + 1,
+            min(generation_config.num_steps + 1, max_length),
             device=device,
             dtype=dtype,
         )[:-1]
@@ -683,10 +685,18 @@ class MDLM(Denoiser):
         if is_infill_task:
             num_mask_tokens = (inputs == self.mask_token_id).sum()
             if generation_config.align_inputs_to_blocks:
-                pad_length = self.config.length - inputs.shape[-1] % self.config.length
+                if mdlm_inference:
+                    pad_length = inputs.shape[-1] % self.config.length
+                    if pad_length > 0:
+                        pad_length = self.config.length - pad_length
+                else:
+                    pad_length = inputs.shape[-1] % block_size
+                    if pad_length > 0:
+                        pad_length = block_size - pad_length
                 inputs = F.pad(inputs, (0, pad_length), value=self.mask_token_id)
                 mask_tokens = (inputs == self.mask_token_id)
-                mask_tokens[:, -pad_length:] = False
+                if pad_length > 0:
+                    mask_tokens[:, -pad_length:] = False
                 mask_tokens = mask_tokens.view(-1, block_size)
                 max_blocks = (mask_tokens.max(dim=-1).values == 1).sum()
             else:
@@ -792,16 +802,19 @@ class MDLM(Denoiser):
                     inputs_offset + (block_id * block_size) : inputs_offset
                     + ((block_id + 1) * block_size),
                 ]
-                sample_indices = torch.arange(inputs_offset + (block_id * block_size), inputs_offset + ((block_id + 1) * block_size))
+                end_sample_idx = inputs_offset + ((block_id + 1) * block_size)
+                if pad_length is not None and pad_length > 0:
+                    end_sample_idx = min(end_sample_idx, accumulated_samples.shape[-1] - pad_length)
+                sample_indices = torch.arange(inputs_offset + (block_id * block_size), end_sample_idx)
                 input_indices = None
             else:
                 xt = accumulated_samples[
                     :, : inputs_offset + ((block_id + 1) * block_size)]
+                end_sample_idx = inputs_offset + ((block_id + 1) * block_size)
+                if pad_length is not None and pad_length > 0:
+                    end_sample_idx = min(end_sample_idx, accumulated_samples.shape[-1] - pad_length)
                 sample_indices = torch.arange(inputs_offset + (block_id * block_size), min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]))
                 input_indices = (0, inputs_offset + ((block_id + 1) * block_size))
-            if pad_length is not None:
-                if self.mask_token_id not in xt[:, :-pad_length]:
-                    continue
             if self.mask_token_id not in xt:
                 continue
             rank = (
@@ -894,7 +907,7 @@ class MDLM(Denoiser):
                         break
                 else:
                     xt = xs
-                if ((xt == self.mask_token_id).sum().item() == 0) or (pad_length is not None and (xt[:, :-pad_length] == self.mask_token_id).sum().item() == 0):
+                if ((xt == self.mask_token_id).sum().item() == 0) or (pad_length is not None and pad_length > 0 and mdlm_inference and (xt[:, :-pad_length] == self.mask_token_id).sum().item() == 0):
                     if getattr(generation_config, "compute_inf_budget", False):
                         remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
                         inf_budget_per_step.extend([0] * remaining_steps)
@@ -925,7 +938,7 @@ class MDLM(Denoiser):
                     inputs=xt,
                     cache=cache,
                 )
-        if pad_length is not None:
+        if pad_length is not None and pad_length > 0:
             accumulated_samples = accumulated_samples[:, : -pad_length]
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
@@ -2060,7 +2073,6 @@ class AnyOrderBD3LM(BD3LM):
             input_ids is not None or context is not None or new_context_ids is not None
         ), "Must provide either input_ids or context."
         batch_size = input_ids.shape[0]
-        decoder_attention_mask_context = None
         device = input_ids.device
         seq_len = input_ids.shape[1]
         cache = cache if cache is not None else {}
@@ -2068,7 +2080,7 @@ class AnyOrderBD3LM(BD3LM):
         cache_len = self._get_past_key_values_seq_length(past_key_values)
         full_seq_length = cache_len + seq_len
         perm_indices = None
-        # randomly permute rows and cols
+        # permute indices based on expecte unmasking order
         if first_hitting_times is not None:
             # mask tokens at the end
             fhs = torch.where(input_ids == self.mask_token_id, -1e6, first_hitting_times)
@@ -2152,18 +2164,23 @@ class AnyOrderBD3LM(BD3LM):
         batch_size = inputs.shape[0] if inputs is not None else batch_size
         is_infill_task = self.mask_token_id in inputs
         block_size = generation_config.block_size
+        assert block_size == self.config.length, "ao-bd3lm not supported yet"
+
         window_size = self.noise_schedule.compute_window_size()
         window_size = min(generation_config.max_window_size, window_size)
+        first_hitting_times = self.noise_schedule.compute_first_hitting_times(
+            batch_size=batch_size,
+            length=block_size,
+            device=device,
+        )[0]
 
         pad_length = None
         if is_infill_task:
-            mask_tokens = (inputs == self.mask_token_id)
-            max_blocks = math.ceil(mask_tokens.sum() / block_size)
+            assert batch_size == 1, "infill task only supported for batch size 1"
             all_position_ids = torch.arange(inputs.shape[-1], device=device)[None, :].repeat(batch_size, 1)
         else:
-            max_blocks = max(max_new_tokens // block_size, 1)
             all_position_ids = torch.arange(
-                inputs.shape[-1] + max_blocks * block_size, device=device
+                inputs.shape[-1] + block_size, device=device
             )[None, :].repeat(batch_size, 1)
 
         # Sample max generation length tensor from prior
@@ -2171,26 +2188,48 @@ class AnyOrderBD3LM(BD3LM):
             accumulated_samples = inputs
         else:
             accumulated_samples = self.mask_token_id * torch.ones(
-                (batch_size, max_blocks * block_size), dtype=torch.int64, device=device
+                (batch_size, block_size), dtype=torch.int64, device=device
             )
             accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
+        if is_infill_task:
+            inputs_offset = 0
+        else:
+            inputs_offset = accumulated_samples.shape[-1]
         likelihoods = None
         if getattr(generation_config, "save_likelihoods", False):
-            likelihoods = torch.zeros((batch_size, max_blocks * block_size + inputs.shape[-1]), dtype=torch.float, device=device)
+            likelihoods = torch.zeros((batch_size, block_size), dtype=torch.float, device=device)
         first_hitting_times = self.noise_schedule.compute_first_hitting_times(
             batch_size=batch_size,
-            length=max_blocks * block_size,
+            length=accumulated_samples.shape[-1],
             device=device,
         )
+        xt = accumulated_samples[:, inputs_offset:]
+        timesteps = self._sample_generation_timesteps(
+            generation_config, max_length=accumulated_samples.shape[-1], device=device, first_hitting_times=first_hitting_times
+        )
+        timesteps = timesteps[None, :].repeat(batch_size, 1)
+        xt_position_ids = all_position_ids[:, inputs_offset:]
+        masked_positions = (xt == self.mask_token_id)
+        window_start = inputs_offset+ masked_positions.float().argmax(dim=-1)[:, None]
+        masked_positions = masked_positions & (xt_position_ids < (window_start + window_size))
+
         if generation_config.use_cache and inputs.numel() > 0:
             if is_infill_task:
-                inputs_indices = (inputs != self.mask_token_id)[0]
+                # only cache indices that could be unmasked before the first masked token is unmasked
+                # first_masked_token_idx = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[0]
+                # unmasking_time_first_masked_token = first_hitting_times[accumulated_samples == self.mask_token_id].max()
+                # cache_flag = (
+                #     (first_hitting_times >= unmasking_time_first_masked_token) & (accumulated_samples != self.mask_token_id) | (xt_position_ids < first_masked_token_idx)
+                # )
+                cache_flag = (accumulated_samples != self.mask_token_id)
+                inputs_indices = cache_flag.nonzero()[:, 1].sort().values
             else:
                 inputs_indices = torch.arange(inputs.shape[-1], device=device)
             cache = self.update_cache(
                 inputs=inputs[:, inputs_indices],
                 position_ids=all_position_ids[:, inputs_indices],
                 cache={},
+                first_hitting_times=first_hitting_times[:, inputs_indices],
             )
         else:
             cache = {
@@ -2206,168 +2245,165 @@ class AnyOrderBD3LM(BD3LM):
             else 0
         )
         disable_pbar = rank != 0 or kwargs.get("disable_pbar", False)
-
-        block_pbar = tqdm(
-            range(max_blocks),
-            desc="Blocks",
-            leave=True,
-            disable=disable_pbar,
-        )
         num_tokens_generated_per_step = []
         inf_budget_per_step = []
-        if self.mask_token_id in accumulated_samples:
-            inputs_offset = (accumulated_samples == self.mask_token_id)[0].nonzero().min()
-        else:
-            inputs_offset = accumulated_samples.shape[-1]
-        for block_id in block_pbar:
-            block_NFEs = 0
-            xt = accumulated_samples[
-                :,
-                inputs_offset + (block_id * block_size) : inputs_offset
-                + ((block_id + 1) * block_size)
-            ]
-            timesteps = self._sample_generation_timesteps(
-                generation_config, max_length=block_size, device=device
+        block_NFEs = 0
+        clean_len = 0
+
+        for i in range(timesteps.shape[-1]):
+            block_NFEs += 1
+            total_NFEs += 1
+            t = timesteps[:, i].unsqueeze(1).repeat(1, accumulated_samples.shape[-1])
+            if getattr(generation_config, "first_hitting", False):
+                num_generated = sum(num_tokens_generated_per_step)
+                next_t = timesteps[:, num_generated + 1] if num_generated < timesteps.shape[-1] else timesteps[:, -1] * 0
+            else:
+                next_t = timesteps[:, i+1] if i < timesteps.shape[-1] - 1 else timesteps[:, -1] * 0
+            next_t = next_t.unsqueeze(1).repeat(1, accumulated_samples.shape[-1])
+            alpha_t, _ = self.noise_schedule(t)
+            alpha_s, _ = self.noise_schedule(next_t)
+
+            masked_positions_indices = masked_positions.nonzero(as_tuple=False)[:, -1].view(batch_size, -1)
+            masked_xt = torch.gather(xt, dim=-1, index=masked_positions_indices)
+            masked_position_ids = torch.gather(xt_position_ids, dim=-1, index=masked_positions_indices)
+            masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
+
+            # Only decode masked tokens
+            cache_len = 0 if cache.get("past_key_values", None) is None else cache["past_key_values"].get_seq_length()
+            denoiser_inputs, cache = self._prepare_inputs_inference(
+                input_ids=masked_xt,
+                cache=cache,
+                position_ids=masked_position_ids,
+                first_hitting_times=masked_first_hitting_times,
+                return_updated_cache=True if (xt != self.mask_token_id).any() else False,
             )
-            timesteps = timesteps[None, :].repeat(batch_size, 1)
-            xt_position_ids = all_position_ids[
-                :,
-                inputs_offset + (block_id * block_size) : inputs_offset
-                + ((block_id + 1) * block_size)
-            ]
-            masked_positions = (xt == self.mask_token_id)
-            window_start = inputs_offset + (block_id * block_size) + masked_positions.float().argmax(dim=-1)[:, None]
-            masked_positions = masked_positions & (xt_position_ids < (window_start + window_size))
-
-            clean_len = 0
-
-            for i in range(timesteps.shape[-1]):
-                block_NFEs += 1
-                total_NFEs += 1
-                t = timesteps[:, i].unsqueeze(1).repeat(1, block_size)
-                if getattr(generation_config, "first_hitting", False):
-                    num_generated = sum(num_tokens_generated_per_step)
-                    next_t = timesteps[:, num_generated + 1] if num_generated < timesteps.shape[-1] else timesteps[:, -1] * 0
-                else:
-                    next_t = timesteps[:, i+1] if i < timesteps.shape[-1] - 1 else timesteps[:, -1] * 0
-                next_t = next_t.unsqueeze(1).repeat(1, block_size)
-                alpha_t, _ = self.noise_schedule(t)
-                alpha_s, _ = self.noise_schedule(next_t)
-
-                masked_positions_indices = masked_positions.nonzero(as_tuple=False)[:, -1].view(batch_size, -1)
-                masked_xt = torch.gather(xt, dim=-1, index=masked_positions_indices)
-                masked_position_ids = torch.gather(xt_position_ids, dim=-1, index=masked_positions_indices)
-                masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
-
-                # Only decode masked tokens
-                cache_len = 0 if cache.get("past_key_values", None) is None else cache["past_key_values"].get_seq_length()
-                denoiser_inputs, cache = self._prepare_inputs_inference(
-                    input_ids=masked_xt,
-                    cache=cache,
-                    position_ids=masked_position_ids,
-                    first_hitting_times=masked_first_hitting_times,
-                    return_updated_cache=True if (xt != self.mask_token_id).any() else False,
-                )
-                alpha_t_block = torch.gather(alpha_t, dim=-1, index=masked_positions_indices)
-                alpha_s_block = torch.gather(alpha_s, dim=-1, index=masked_positions_indices)
-                return_updated_cache = True if i > 0 or block_id > 0 else False
-                if eval_ground_truth is not None:
-                    eval_ground_truth_t = torch.gather(eval_ground_truth[:, inputs_offset:], dim=-1, index=masked_positions_indices)
-                    eval_ground_truth_t = torch.gather(eval_ground_truth_t, dim=-1, index=denoiser_inputs.backbone_kwargs["permutation_order"])
-                else:
-                    eval_ground_truth_t = None
-                generation_output = self._generate_unconditional(
-                    generation_config=generation_config,
-                    alpha_t=alpha_t_block,
-                    alpha_s=alpha_s_block,
-                    t=t[0][0],
-                    next_t=next_t[0][0],
-                    denoiser_inputs=denoiser_inputs,
-                    cache=cache,
-                    xt=xt,
-                    running_generation=accumulated_samples[:, :(masked_positions.cumsum(-1) > 0).float().argmax(dim=-1) + inputs_offset] if logits_processor is not None else None, # used for logit processing
-                    inputs_offset=inputs_offset,
-                    logits_processor=logits_processor,
-                    return_updated_cache=return_updated_cache,
-                    cache_len=clean_len,
-                    eval_ground_truth=eval_ground_truth_t,
-                    sample_indices=masked_positions_indices[:, clean_len:] + inputs_offset,
-                    window_size=window_size,
-                    block_size=block_size,
-                    **kwargs,
-                )
+            alpha_t_block = torch.gather(alpha_t, dim=-1, index=masked_positions_indices)
+            alpha_s_block = torch.gather(alpha_s, dim=-1, index=masked_positions_indices)
+            return_updated_cache = True if i > 0 else False
+            if eval_ground_truth is not None:
+                eval_ground_truth_t = torch.gather(eval_ground_truth[:, inputs_offset:], dim=-1, index=masked_positions_indices)
+                eval_ground_truth_t = torch.gather(eval_ground_truth_t, dim=-1, index=denoiser_inputs.backbone_kwargs["permutation_order"])
+            else:
+                eval_ground_truth_t = None
+            generation_output = self._generate_unconditional(
+                generation_config=generation_config,
+                alpha_t=alpha_t_block,
+                alpha_s=alpha_s_block,
+                t=t[0][0],
+                next_t=next_t[0][0],
+                denoiser_inputs=denoiser_inputs,
+                cache=cache,
+                xt=xt,
+                running_generation=accumulated_samples[:, :(masked_positions.cumsum(-1) > 0).float().argmax(dim=-1) + inputs_offset] if logits_processor is not None else None, # used for logit processing
+                inputs_offset=inputs_offset,
+                logits_processor=logits_processor,
+                return_updated_cache=return_updated_cache,
+                cache_len=clean_len,
+                eval_ground_truth=eval_ground_truth_t,
+                sample_indices=masked_positions_indices[:, clean_len:] + inputs_offset,
+                window_size=window_size,
+                block_size=accumulated_samples.shape[-1],
+                **kwargs,
+            )
+            if getattr(generation_config, "save_likelihoods", False):
+                xs, model_output_cache, cache, conf = generation_output
+            else:
+                xs, model_output_cache, cache = generation_output
+            # crop kv cache and sampling output
+            if return_updated_cache:
+                # assert cache_len + clean_len <= cache["past_key_values"].get_seq_length(), "Crop length is greater than cache length"
+                # assert cache_len + clean_len > 0, "Crop length is less than 1"
+                # only keep cache for the clean tokens
+                cache["past_key_values"].crop(cache_len + clean_len)
+                position_ids = denoiser_inputs.backbone_kwargs["position_ids"]
+                # update accumulated_samples, xt, masked_positions
+                cached_position_ids = position_ids[:, :clean_len]
+                unmasked_position_ids = position_ids[:, clean_len:]
+                clean_len = (torch.gather(xt, dim=-1, index=(unmasked_position_ids - inputs_offset)) != xs).sum(dim=-1).min()
+                accumulated_samples.scatter_(1, unmasked_position_ids, xs)
+                masked_positions.scatter_(1, cached_position_ids - inputs_offset, False)
+                if is_infill_task:
+                    cache_flag.scatter_(1, cached_position_ids, True)
                 if getattr(generation_config, "save_likelihoods", False):
-                    xs, model_output_cache, cache, conf = generation_output
-                else:
-                    xs, model_output_cache, cache = generation_output
-                # crop kv cache and sampling output
-                if return_updated_cache:
-                    # assert cache_len + clean_len <= cache["past_key_values"].get_seq_length(), "Crop length is greater than cache length"
-                    # assert cache_len + clean_len > 0, "Crop length is less than 1"
-                    # only keep cache for the clean tokens
-                    cache["past_key_values"].crop(cache_len + clean_len)
-                    position_ids = denoiser_inputs.backbone_kwargs["position_ids"]
-                    # update accumulated_samples, xt, masked_positions
-                    cached_position_ids = position_ids[:, :clean_len]
-                    unmasked_position_ids = position_ids[:, clean_len:]
-                    clean_len = (torch.gather(xt, dim=-1, index=(unmasked_position_ids - inputs_offset)) != xs).sum(dim=-1).min()
-                    accumulated_samples.scatter_(1, unmasked_position_ids, xs)
-                    masked_positions.scatter_(1, cached_position_ids - inputs_offset, False)
-                    if getattr(generation_config, "save_likelihoods", False):
-                        likelihoods = torch.scatter_add(likelihoods, 1, unmasked_position_ids.sort(dim=-1).values, torch.where(conf >= -1e6, conf, 0.0))
-                    xt.scatter_(1, unmasked_position_ids - inputs_offset, xs)
-                else:
-                    xt.scatter_(1, masked_position_ids - inputs_offset, xs)
-                    clean_len = (xs != self.mask_token_id).sum(dim=-1).min()
-                    accumulated_samples.scatter_(1, masked_position_ids, xs)
-                    if getattr(generation_config, "save_likelihoods", False):
-                        likelihoods = torch.scatter_add(likelihoods, 1, masked_position_ids.sort(dim=-1).values, torch.where(conf >= -1e6, conf, 0.0))
-                window_start = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[:, None]
-                masked_positions |= (xt == self.mask_token_id) & (xt_position_ids < (window_start + window_size))
-                max_masks_to_add = masked_positions.sum(dim=-1).max()
-                extra_masks_to_add = max_masks_to_add - masked_positions.sum(dim=-1)
-                last_masked_pos = torch.gather(xt_position_ids, dim=-1, index=(masked_positions | (xt != self.mask_token_id)).cumsum(-1).argmax(-1)[:, None]) * (extra_masks_to_add > 0)[:, None]
-                masked_positions |= ((xt == self.mask_token_id) & (xt_position_ids <= (last_masked_pos + extra_masks_to_add[:, None])))
-                assert (masked_positions.sum(dim=-1).unique().numel() == 1), "Multiple masked positions found"
-                num_tokens_generated_per_step.append(
-                    (xs != self.mask_token_id).sum().item()
-                )
+                    likelihoods = torch.scatter_add(likelihoods, 1, unmasked_position_ids.sort(dim=-1).values, torch.where(conf >= -1e6, conf, 0.0))
+                xt.scatter_(1, unmasked_position_ids - inputs_offset, xs)
+            else:
+                xt.scatter_(1, masked_position_ids - inputs_offset, xs)
+                clean_len = (xs != self.mask_token_id).sum(dim=-1).min()
+                accumulated_samples.scatter_(1, masked_position_ids, xs)
+                if getattr(generation_config, "save_likelihoods", False):
+                    likelihoods = torch.scatter_add(likelihoods, 1, masked_position_ids.sort(dim=-1).values, torch.where(conf >= -1e6, conf, 0.0))
+            window_start = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[:, None]
+            masked_positions |= (xt == self.mask_token_id) & (xt_position_ids < (window_start + window_size))
+
+            # if is_infill_task and (accumulated_samples == self.mask_token_id).any():
+            #     # only cache indices that could be unmasked before the first masked token is unmasked
+            #     # do not pick from already cached positions, or token that was just unmasked!
+            #     target_unmasking_time = first_hitting_times[accumulated_samples == self.mask_token_id].max()
+
+            #     # get the unmasking time of the rightmost clean token, that isn't an input token
+            #     rightmost_clean_token_idx = (masked_positions & (xt != self.mask_token_id))
+            #     if rightmost_clean_token_idx.any():
+            #         target_unmasking_time = first_hitting_times[rightmost_clean_token_idx].max()
+            #     else:
+            #         target_unmasking_time = first_hitting_times[accumulated_samples == self.mask_token_id].max()
+            #     new_cache_positions = (
+            #         (first_hitting_times >= target_unmasking_time) & (accumulated_samples != self.mask_token_id) & ~cache_flag & ~masked_positions
+            #     )
+            #     if new_cache_positions.sum().item() > 0:
+            #         # cache = self.update_cache(
+            #         #     inputs=inputs[new_cache_positions].unsqueeze(0),
+            #         #     position_ids=all_position_ids[new_cache_positions].unsqueeze(0),
+            #         #     cache=cache,
+            #         #     first_hitting_times=first_hitting_times[new_cache_positions].unsqueeze(0),
+            #         # )
+            #         clean_len += new_cache_positions.sum()
+            #         # if new_cache_positions.sum().item() > 0:
+            #         #     print("new_cache_positions: ", new_cache_positions.sum().item())
+            #         #     import ipdb; ipdb.set_trace()
+            #         masked_positions |= new_cache_positions
+            #         cache_flag |= new_cache_positions
+
+            # for batched eval only
+            max_masks_to_add = masked_positions.sum(dim=-1).max()
+            extra_masks_to_add = max_masks_to_add - masked_positions.sum(dim=-1)
+            last_masked_pos = torch.gather(xt_position_ids, dim=-1, index=(masked_positions | (xt != self.mask_token_id)).cumsum(-1).argmax(-1)[:, None]) * (extra_masks_to_add > 0)[:, None]
+            masked_positions |= ((xt == self.mask_token_id) & (xt_position_ids <= (last_masked_pos + extra_masks_to_add[:, None])))
+            assert (masked_positions.sum(dim=-1).unique().numel() == 1), "Different # of input positions for each eval example"
+            
+            num_tokens_generated_per_step.append(
+                (xs != self.mask_token_id).sum().item()
+            )
+            if getattr(generation_config, "compute_inf_budget", False):
+                alpha_t_schedule, _ = self.noise_schedule(t)
+                alpha_s_schedule, _ = self.noise_schedule(next_t)
+                alpha_t_prime = (alpha_s_schedule - alpha_t_schedule).abs()
+                inf_budget = ((xt == self.mask_token_id) & (alpha_t_prime != 0.0)).sum().item()
+                inf_budget_per_step.append(inf_budget)
+            if (xt == self.mask_token_id).sum().item() == 0:
                 if getattr(generation_config, "compute_inf_budget", False):
-                    alpha_t_schedule, _ = self.noise_schedule(t)
-                    alpha_s_schedule, _ = self.noise_schedule(next_t)
-                    alpha_t_prime = (alpha_s_schedule - alpha_t_schedule).abs()
-                    inf_budget = ((xt == self.mask_token_id) & (alpha_t_prime != 0.0)).sum().item()
-                    inf_budget_per_step.append(inf_budget)
-                block_pbar.set_postfix(
-                    NFEs=total_NFEs,
-                    block_NFEs=block_NFEs,
-                )
-                if (xt == self.mask_token_id).sum().item() == 0:
-                    if getattr(generation_config, "compute_inf_budget", False):
-                        # for avearage inf budget calculation across all t
-                        remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
-                        inf_budget_per_step.extend([0] * remaining_steps)
-                    break
-                check_stopping_criteria = (i % window_size == 0) and (i > 0)
-                if check_stopping_criteria and (not getattr(generation_config, "compute_inf_budget", False)) and stopping_criteria is not None:
-                    is_done = stopping_criteria(
-                        input_ids=accumulated_samples[  # type: ignore
-                            :,
-                            : window_start[0] + window_size
-                        ],
-                        scores=None,  # type: ignore
-                    )
-                    if torch.any(is_done):
-                        accumulated_samples = accumulated_samples[
-                            :,
-                            : window_start[0] + window_size,
-                        ]
-                        accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
-                        break
-            if tokenizer is not None:
-                print(tokenizer.batch_decode(accumulated_samples))
-            if torch.any(is_done):
+                    # for avearage inf budget calculation across all t
+                    remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
+                    inf_budget_per_step.extend([0] * remaining_steps)
                 break
+            check_stopping_criteria = (i % window_size == 0) and (i > 0)
+            if check_stopping_criteria and (not getattr(generation_config, "compute_inf_budget", False)) and stopping_criteria is not None:
+                is_done = stopping_criteria(
+                    input_ids=accumulated_samples[  # type: ignore
+                        :,
+                        : window_start[0] + window_size
+                    ],
+                    scores=None,  # type: ignore
+                )
+                if torch.any(is_done):
+                    accumulated_samples = accumulated_samples[
+                        :,
+                        : window_start[0] + window_size,
+                    ]
+                    accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
+                    break
+        if tokenizer is not None:
+            print(tokenizer.batch_decode(accumulated_samples))
         if pad_length is not None:
             accumulated_samples = accumulated_samples[:, : -pad_length]
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
