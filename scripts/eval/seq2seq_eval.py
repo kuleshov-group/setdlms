@@ -250,7 +250,7 @@ def main(cfg: DictConfig) -> None:
             if local_rank == 0:
                 end_event.record()
                 torch.cuda.synchronize()
-                elapsed_time_s = start_event.elapsed_time(end_event)
+                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
             if isinstance(generation_outputs, ModelOutput):
                 outputs = generation_outputs.sequences
                 parallelism_factor = generation_outputs.get("parallelism_factor", -1.0)
