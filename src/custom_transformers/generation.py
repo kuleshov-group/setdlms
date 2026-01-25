@@ -114,8 +114,10 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         var_length: bool = False,
     ):
         super().__init__()
-        self.eos_token_id = tokenizer.eos_token_id
         self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
+        if self.tokenizer.eos_token_id is None:
+            self.tokenizer.eos_token = self.tokenizer.cls_token
+        self.eos_token_id = tokenizer.eos_token_id
         self.mask_token_id = self.tokenizer.mask_token_id
         self.entropy_threshold = entropy_threshold
         self.block_size = block_size

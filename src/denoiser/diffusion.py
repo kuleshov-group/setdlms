@@ -2289,10 +2289,14 @@ class AnyOrderBD3LM(BD3LM):
         # Sample max generation length tensor from prior
         if is_infill_task:
             accumulated_samples = inputs
+            num_mask_tokens = (inputs == self.mask_token_id).sum()
+            first_mask_token_idx = (inputs == self.mask_token_id).float().argmax(dim=-1)[0]
         else:
             accumulated_samples = self.mask_token_id * torch.ones(
                 (batch_size, max_new_tokens), dtype=torch.int64, device=device
             )
+            num_mask_tokens = max_new_tokens
+            first_mask_token_idx = inputs.shape[-1]
             accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
         if is_infill_task:
             inputs_offset = 0
@@ -2303,12 +2307,12 @@ class AnyOrderBD3LM(BD3LM):
             likelihoods = torch.zeros((batch_size, max_new_tokens), dtype=torch.float, device=device)
         first_hitting_times = self.noise_schedule.compute_first_hitting_times(
             batch_size=batch_size,
-            length=accumulated_samples.shape[-1],
+            length=num_mask_tokens,
             device=device,
         )
         xt = accumulated_samples[:, inputs_offset:]
         timesteps = self._sample_generation_timesteps(
-            generation_config, max_length=accumulated_samples.shape[-1], device=device, first_hitting_times=first_hitting_times
+            generation_config, max_length=num_mask_tokens, device=device, first_hitting_times=first_hitting_times
         )
         timesteps = timesteps[None, :].repeat(batch_size, 1)
         xt_position_ids = all_position_ids[:, inputs_offset:]
@@ -2332,7 +2336,6 @@ class AnyOrderBD3LM(BD3LM):
                 inputs=inputs[:, inputs_indices],
                 position_ids=all_position_ids[:, inputs_indices],
                 cache={},
-                first_hitting_times=first_hitting_times[:, inputs_indices],
             )
         else:
             cache = {
@@ -2342,12 +2345,6 @@ class AnyOrderBD3LM(BD3LM):
 
         total_NFEs = 0
         is_done = torch.Tensor([False])
-        rank = (
-            torch.distributed.get_rank()
-            if torch.distributed.is_available() and torch.distributed.is_initialized()
-            else 0
-        )
-        disable_pbar = rank != 0 or kwargs.get("disable_pbar", False)
         num_tokens_generated_per_step = []
         inf_budget_per_step = []
         block_NFEs = 0
@@ -2356,20 +2353,23 @@ class AnyOrderBD3LM(BD3LM):
         for i in range(timesteps.shape[-1]):
             block_NFEs += 1
             total_NFEs += 1
-            t = timesteps[:, i].unsqueeze(1).repeat(1, accumulated_samples.shape[-1])
+            t = timesteps[:, i].unsqueeze(1).repeat(1, num_mask_tokens)
             if getattr(generation_config, "first_hitting", False):
                 num_generated = sum(num_tokens_generated_per_step)
                 next_t = timesteps[:, num_generated + 1] if num_generated < timesteps.shape[-1] else timesteps[:, -1] * 0
             else:
                 next_t = timesteps[:, i+1] if i < timesteps.shape[-1] - 1 else timesteps[:, -1] * 0
-            next_t = next_t.unsqueeze(1).repeat(1, accumulated_samples.shape[-1])
+            next_t = next_t.unsqueeze(1).repeat(1, num_mask_tokens)
             # alpha_t, _ = self.noise_schedule(t)
             # alpha_s, _ = self.noise_schedule(next_t)
 
             masked_positions_indices = masked_positions.nonzero(as_tuple=False)[:, -1].view(batch_size, -1)
             masked_xt = torch.gather(xt, dim=-1, index=masked_positions_indices)
             masked_position_ids = torch.gather(xt_position_ids, dim=-1, index=masked_positions_indices)
-            masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
+            if is_infill_task:
+                masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices - first_mask_token_idx)
+            else:
+                masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
 
             # Only decode masked tokens
             cache_len = 0 if cache.get("past_key_values", None) is None else cache["past_key_values"].get_seq_length()
@@ -2405,7 +2405,7 @@ class AnyOrderBD3LM(BD3LM):
                 eval_ground_truth=eval_ground_truth_t,
                 sample_indices=masked_positions_indices[:, clean_len:] + inputs_offset,
                 window_size=window_size,
-                block_size=accumulated_samples.shape[-1],
+                block_size=num_mask_tokens,
                 **kwargs,
             )
             if getattr(generation_config, "save_likelihoods", False):

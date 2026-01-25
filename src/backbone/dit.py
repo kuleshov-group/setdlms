@@ -468,22 +468,6 @@ class DDiTBlockCausal(nn.Module):
       cache_kwargs = {}
       if cache_position is not None:
         cache_kwargs["cache_position"] = cache_position
-      # For DynamicCache, sin/cos are optional and used for position tracking
-      # Since we've already applied rotary embeddings, we can pass them for reference
-      if rotary_cos_sin is not None:
-        cos, sin = rotary_cos_sin
-        # Extract cos/sin for K (index 1 in QKV)
-        # cos/sin shape: [batch, seq_len, 3, 1, dim] or [batch, seq_len, dim]
-        if cos.dim() == 5:
-          # Extract for K (index 1) and squeeze: [batch, seq_len, dim]
-          cos_k = cos[:, :, 1, 0, :]
-          sin_k = sin[:, :, 1, 0, :]
-        else:
-          cos_k = cos
-          sin_k = sin
-        cache_kwargs["sin"] = sin_k
-        cache_kwargs["cos"] = cos_k
-      
       k, v = past_key_values.update(k, v, layer_idx, cache_kwargs)
       
       # past_key_values.update returns full K/V (cached + new)
@@ -491,8 +475,23 @@ class DDiTBlockCausal(nn.Module):
       k = k.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
       v = v.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
       
-      # Use Q (current seq), K (full seq), V (full seq) for attention
-      x = self.cross_attn_with_cache(q, k, v, causal=causal, mask=mask)
+      # # Use Q (current seq), K (full seq), V (full seq) for attention
+      if self.attn_backend == 'flash_attn':
+        q_fa = q.contiguous().to(torch.bfloat16)
+        k_fa = k.contiguous().to(torch.bfloat16)
+        v_fa = v.contiguous().to(torch.bfloat16)
+
+        # returns [B, q_len, H, D]
+        attn = flash_attn.flash_attn_interface.flash_attn_func(
+          q_fa, k_fa, v_fa,
+          dropout_p=0.0,
+          causal=causal,
+        )
+
+        # back to [B, q_len, H*D] (match rest of block)
+        x = rearrange(attn, "b s h d -> b s (h d)")
+      else:
+        x = self.cross_attn_with_cache(q, k, v, causal=False, mask=mask)
     else:
       # No caching, use original QKV tensor
       if self.attn_backend == 'flash_attn':
@@ -711,19 +710,19 @@ class DDiTBlock(nn.Module):
         cache_kwargs["cache_position"] = cache_position
       # For DynamicCache, sin/cos are optional and used for position tracking
       # Since we've already applied rotary embeddings, we can pass them for reference
-      if rotary_cos_sin is not None:
-        cos, sin = rotary_cos_sin
-        # Extract cos/sin for K (index 1 in QKV)
-        # cos/sin shape: [batch, seq_len, 3, 1, dim] or [batch, seq_len, dim]
-        if cos.dim() == 5:
-          # Extract for K (index 1) and squeeze: [batch, seq_len, dim]
-          cos_k = cos[:, :, 1, 0, :]
-          sin_k = sin[:, :, 1, 0, :]
-        else:
-          cos_k = cos
-          sin_k = sin
-        cache_kwargs["sin"] = sin_k
-        cache_kwargs["cos"] = cos_k
+      # if rotary_cos_sin is not None:
+      #   cos, sin = rotary_cos_sin
+      #   # Extract cos/sin for K (index 1 in QKV)
+      #   # cos/sin shape: [batch, seq_len, 3, 1, dim] or [batch, seq_len, dim]
+      #   if cos.dim() == 5:
+      #     # Extract for K (index 1) and squeeze: [batch, seq_len, dim]
+      #     cos_k = cos[:, :, 1, 0, :]
+      #     sin_k = sin[:, :, 1, 0, :]
+      #   else:
+      #     cos_k = cos
+      #     sin_k = sin
+      #   cache_kwargs["sin"] = sin_k
+      #   cache_kwargs["cos"] = cos_k
       
       k, v = past_key_values.update(k, v, layer_idx, cache_kwargs)
       
@@ -945,7 +944,6 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
     if self.causal:
       attention_mask = None
-    
     for i in range(len(self.blocks)):
       layer_output = self.blocks[i](
         x,

@@ -10,6 +10,7 @@ from src.utils import fsspec_exists
 import csv
 
 from datasets import load_dataset
+from scripts.utils import maybe_add_missing_special_tokens
 
 _QUESTION_PREFIX = (
     "Please reason step by step, and put your final answer within $\\boxed{}$. "
@@ -813,6 +814,7 @@ class ROCStoriesDataset(Dataset):
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
+        tokenizer = maybe_add_missing_special_tokens(tokenizer)
         self.tokenizer = tokenizer
         self.num_target_sentences = num_target_sentences
         assert self.num_target_sentences in [1, 3], "Only 1 or 3 target sentences are supported"
@@ -856,10 +858,9 @@ class ROCStoriesDataset(Dataset):
         suffix_ids = self.tokenizer(suffix).input_ids
         middle_ids = self.tokenizer(middle).input_ids
 
-        # input_ids = [self.tokenizer.bos_token_id] +\
-        #     prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) +\
-        #     suffix_ids + [self.tokenizer.eos_token_id]
-        input_ids = prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) + suffix_ids
+        input_ids = [self.tokenizer.bos_token_id] +\
+            prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) +\
+            suffix_ids + [self.tokenizer.eos_token_id]
         input_ids = torch.LongTensor(input_ids)
         attention_mask = torch.ones_like(input_ids)
 

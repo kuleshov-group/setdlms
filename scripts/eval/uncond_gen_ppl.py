@@ -122,7 +122,7 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
         backbone_config = OmegaConf.load(dit_config_path)
         
         # Update backbone config with necessary parameters (resolving the template values)
-        backbone_config.length = cfg.max_length
+        backbone_config.length = 128
         backbone_config.vocab_size = len(tokenizer)
         backbone_config.block_size = getattr(cfg, "block_size", None)
         backbone_config.pretrained_model_name_or_path = getattr(cfg, "pretrained_model_name_or_path", None)
@@ -181,10 +181,10 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
         print(f"Num. trainable params: {format_number(count_parameters(model))}")
     model.eval()
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
-    
     if model.tokenizer.bos_token_id is None:
         if model.tokenizer.eos_token_id is None:
             model.tokenizer.bos_token = model.tokenizer.cls_token
+            model.tokenizer.eos_token = model.tokenizer.cls_token
         else:
             model.tokenizer.bos_token = model.tokenizer.eos_token
 
@@ -237,10 +237,10 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
                 lengths.append(length)
             # postprocess
             output_text = model.tokenizer.decode(outputs[0])
-            # remove all text after the second <|endoftext|>
-            output_text = tokenizer.bos_token + "".join(output_text.split(tokenizer.bos_token)[1:2])
-            # if length > 1024:
             print(output_text)
+            # remove all text after the second <|endoftext|>
+            output_text = model.tokenizer.bos_token + "".join(output_text.split(model.tokenizer.bos_token)[1:2])
+            # if length > 1024:
             generated_samples.append(output_text)
         pbar.set_postfix(tput=f"{np.mean(tputs):.2f} +/- {np.std(tputs):.2f}", parallel=f"{np.mean(parallelism_factors):.2f} +/- {np.std(parallelism_factors):.2f}")
     # gather samples across devices

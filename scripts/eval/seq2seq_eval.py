@@ -25,8 +25,7 @@ from scripts.utils import (
 )
 from src.utils import fsspec_exists, fsspec_mkdirs
 
-THROUGHPUT_SAMPLES = 100
-THROUGHPUT_WARMUP = 100
+THROUGHPUT_WARMUP = 50
 
 
 def gather_results(results, world_size):
@@ -92,7 +91,6 @@ def main(cfg: DictConfig) -> None:
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
-                **getattr(cfg, "model_config_overrides", {}),
             )
         except:  # Model not compatible with CausalLM
             try:
@@ -100,15 +98,15 @@ def main(cfg: DictConfig) -> None:
                     cfg.pretrained_model_name_or_path,
                     trust_remote_code=True,
                     revision=getattr(cfg, "pretrained_model_revision", None),
-                    **getattr(cfg, "model_config_overrides", {}),
                 )
             except:
                 model = None
     # HACK FOR MDLM
     if model is None or not hasattr(model, "generate"):
         # from src.denoiser.diffusion import MDLM, MDLMConfig
-        from src.denoiser.diffusion import BD3LM, BD3LMConfig
-        from src.noise_schedule.noise_schedules import LinearNoise
+        # from src.denoiser.diffusion import BD3LM, BD3LMConfig
+        from src.denoiser.ar import AR, ARConfig
+        # from src.noise_schedule.noise_schedules import LinearNoise
         
         # Create dit backbone config
         # Load the dit config template and update with actual values
@@ -127,8 +125,14 @@ def main(cfg: DictConfig) -> None:
         backbone_config.num_layers = 12
         backbone_config.n_heads = 12
         backbone_config.hidden_size = 768
-        backbone_config.adaln = True
-        
+
+        # for ar
+        backbone_config.adaln = False
+        backbone_config.causal_attention = True
+        backbone_config.attn_backend = "flash_attn"
+
+        # backbone_config.adaln = True
+    
         # Ensure it's a DictConfig
         if not isinstance(backbone_config, DictConfig):
             backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
@@ -137,10 +141,14 @@ def main(cfg: DictConfig) -> None:
         #     length=length,
         #     backbone_config=backbone_config,
         # )
-        mdlm_config = BD3LMConfig(
+        # mdlm_config = BD3LMConfig(
+        #     length=length,
+        #     backbone_config=backbone_config,
+        #     block_size=cfg.block_size,
+        # )
+        mdlm_config = ARConfig(
             length=length,
             backbone_config=backbone_config,
-            block_size=cfg.block_size,
         )
         mdlm_config.mask_token_id = tokenizer.mask_token_id
         mdlm_config.vocab_size = len(tokenizer)
@@ -148,7 +156,11 @@ def main(cfg: DictConfig) -> None:
         #     mdlm_config,
         #     tokenizer=tokenizer,
         # )
-        model_ = BD3LM(
+        # model_ = BD3LM(
+        #     mdlm_config,
+        #     tokenizer=tokenizer,
+        # )
+        model_ = AR(
             mdlm_config,
             tokenizer=tokenizer,
         )
@@ -171,7 +183,7 @@ def main(cfg: DictConfig) -> None:
             new_state_dict.pop("sampling_eps_max")
         model_.backbone.load_state_dict(new_state_dict)
         model = model_.to(device)
-        model.noise_schedule = LinearNoise()
+        # model.noise_schedule = LinearNoise()
     model = model.to(device)
     if local_rank == 0:
         print(f"Num. params: {format_number(count_parameters(model, trainable=False))}")
@@ -188,9 +200,7 @@ def main(cfg: DictConfig) -> None:
     pbar = tqdm(dataloader, desc="Generating", total=len(dataloader), disable=(local_rank != 0))
     references = dataset.target_references
     for elem_id, elem in enumerate(pbar):
-        if getattr(cfg, "throughput_run", False) and elem_id >= (
-            THROUGHPUT_SAMPLES + THROUGHPUT_WARMUP
-        ):
+        if getattr(cfg, "throughput_run", False) and elem_id >= THROUGHPUT_WARMUP:
             if not fsspec_exists(cfg.output_path):
                 fsspec_mkdirs(cfg.output_path)
             tputs_path = f"{cfg.output_path}/throughput-rank{local_rank}"
@@ -207,12 +217,6 @@ def main(cfg: DictConfig) -> None:
             if dist.is_initialized():
                 dist.destroy_process_group()
             sys.exit(0)
-        if local_rank == 0:
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
-        else:
-            start_event, end_event = None, None
         input_ids = elem["input_ids"].to(device)  # type: ignore
         if getattr(dataset, "target_prompt_text", None) is not None:
             prompt_ids = (
@@ -224,6 +228,19 @@ def main(cfg: DictConfig) -> None:
             input_ids = torch.cat((input_ids, prompt_ids), dim=-1)
         # Generate samples
         with torch.no_grad():
+            # if this is an ar model, only pass the left context to the model.
+            if isinstance(model, AR):
+                gen_kwargs.update({
+                    "max_new_tokens": (input_ids == tokenizer.mask_token_id).sum(),
+                })
+                first_mask_index = (input_ids == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][0]
+                input_ids = input_ids[:, :first_mask_index]
+            if local_rank == 0:
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
+            else:
+                start_event, end_event = None, None
             generation_outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=True,
@@ -246,9 +263,9 @@ def main(cfg: DictConfig) -> None:
                 if elem_id >= THROUGHPUT_WARMUP:
                     tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
                     latencies.append(elapsed_time_s)
-        pbar.set_postfix(tput=np.mean(tputs), parallel=np.mean(parallelism_factors))
+        pbar.set_postfix(tput=np.mean(tputs), parallel=np.mean(parallelism_factors), latency=np.mean(latencies))
         if tokenizer.mask_token_id is not None and tokenizer.mask_token_id in elem["input_ids"]:
-            outputs = outputs[elem["input_ids"] == tokenizer.mask_token_id]
+            outputs = outputs[0, (elem["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][0]:(elem["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][-1]+1]
         else:
             outputs = outputs[:, input_ids.shape[-1] :].squeeze(0)
         # Decode the generated samples
@@ -258,7 +275,7 @@ def main(cfg: DictConfig) -> None:
         for st in stop_tokens:
             outputs = outputs.split(st)[0]
         decoded_samples = outputs.strip()
-        if local_rank == 0 and world_size > 1:
+        if local_rank == 0: # and world_size > 1:
             print("Input:", tokenizer.decode(elem["input_ids"][0]))
             print("Output:", decoded_samples)
             print("Ground truth:", references[elem_id])
@@ -268,6 +285,7 @@ def main(cfg: DictConfig) -> None:
             if elem_id >= THROUGHPUT_WARMUP:
                 print(f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
                 print(f"Latency (s): {np.mean(latencies):0.2f} +/- {np.std(latencies):0.2f}")
+                print(f"Latency (ms): {np.mean(np.array(latencies) * 1000):.2f} +/- {np.std(np.array(latencies) * 1000):.2f}")
         generated_samples.append(decoded_samples)
 
     # Compute metrics
@@ -310,6 +328,9 @@ def main(cfg: DictConfig) -> None:
         )
         print(
             f"Latency (s): {np.mean(latencies):0.2f} +/- {np.std(latencies):0.2f}"
+        )
+        print(
+            f"Latency (ms): {np.mean(np.array(latencies) * 1000):.2f} +/- {np.std(np.array(latencies) * 1000):.2f}"
         )
         res_for_json = [
             {"ground_truth": references[i], "result": generated_samples[i]}
