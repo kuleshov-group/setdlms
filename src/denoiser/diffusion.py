@@ -528,23 +528,40 @@ class MDLM(Denoiser):
             if sample_indices is not None and input_indices is not None:
                 logits = logits[:, sample_indices - input_indices[0], :]
                 denoiser_inputs.xt = denoiser_inputs.xt[..., sample_indices - input_indices[0]]
+
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             if logits_processor is not None:
-                if sample_indices.ndim > 1:
-                    sample_indices = sample_indices[0]
+                sample_idx = sample_indices[0] if sample_indices.ndim == 2 else sample_indices
+
+                xs_temp = log_x_theta.argmax(dim=-1)
+                seq0 = running_generation[0]
+                mask = running_generation[0] == self.mask_token_id
+                mask1 = denoiser_inputs.xt[0] == self.mask_token_id
+                if mask.any():
+                    idx = mask.nonzero(as_tuple=True)[0]
+                    old = seq0.index_select(0, idx)
+
+                    vals = xs_temp[0, mask1]
+
+                    seq0.index_copy_(0, idx, vals)
+                sequence_to_process = seq0.unsqueeze(0)
+
                 for lp in logits_processor:
-                    # TODO: DEBUG
-                    for i in range(log_x_theta.shape[1]):
+                    for j in range(log_x_theta.shape[1]):
                         if isinstance(lp, ExponentialDecayLengthPenalty):
-                            log_x_theta[:, i] = lp(
-                                input_ids=running_generation[..., inputs_offset:min(sample_indices[0] + i + 1, running_generation.shape[-1])],
-                                scores=log_x_theta[:, i],  # type: ignore
+                            log_x_theta[:, j] = lp(
+                                input_ids=sequence_to_process[..., sample_idx[0] - inputs_offset + j],
+                                scores=log_x_theta[:, j],
                             )
                         else:
-                            log_x_theta[:, i] = lp(
-                                input_ids=running_generation[..., inputs_offset:min(sample_indices[-1]+1, running_generation.shape[-1])],
-                                scores=log_x_theta[:, i],  # type: ignore
+                            log_x_theta[:, j] = lp(
+                                input_ids=sequence_to_process,
+                                scores=log_x_theta[:, j],
                             )
+
+                if mask.any():
+                    seq0.index_copy_(0, idx, old)
+
                 log_x_theta = torch.log_softmax(log_x_theta, dim=-1)  # re-normalize
             x_theta = log_x_theta.exp()
         else:
@@ -815,7 +832,7 @@ class MDLM(Denoiser):
                 end_input_idx = min(end_input_idx, self.config.length)
                 if pad_length is not None:
                     end_sample_idx = min(end_sample_idx, self.config.length - pad_length)
-                sample_indices = torch.arange(start_sample_idx, end_sample_idx)
+                sample_indices = torch.arange(start_sample_idx, end_sample_idx).to(device)
                 input_indices = (start_input_idx, end_input_idx)
             elif generation_config.use_cache:
                 xt = accumulated_samples[
@@ -826,7 +843,7 @@ class MDLM(Denoiser):
                 end_sample_idx = inputs_offset + ((block_id + 1) * block_size)
                 if pad_length is not None and pad_length > 0:
                     end_sample_idx = min(end_sample_idx, accumulated_samples.shape[-1] - pad_length)
-                sample_indices = torch.arange(inputs_offset + (block_id * block_size), end_sample_idx)
+                sample_indices = torch.arange(inputs_offset + (block_id * block_size), end_sample_idx).to(device)
                 input_indices = None
             else:
                 xt = accumulated_samples[
@@ -858,15 +875,15 @@ class MDLM(Denoiser):
                 if not generation_config.use_cache
                 else None
             )
-            # Used for logit processing
-            if mdlm_inference:
-                running_generation = accumulated_samples
-            else:
-                running_generation = accumulated_samples[
-                    :,
-                    : min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
-                ]
             for i,t in enumerate(step_pbar):
+                # Used for logit processing
+                if mdlm_inference:
+                    running_generation = accumulated_samples
+                else:
+                    running_generation = accumulated_samples[
+                        :,
+                        : min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
+                    ]
                 if model_output_cache is None:
                     block_NFEs += 1
                     total_NFEs += 1
@@ -928,15 +945,15 @@ class MDLM(Denoiser):
                         break
                 else:
                     xt = xs
+                if input_indices is not None:
+                    accumulated_samples.scatter_(dim=-1, index=sample_indices[None, :], src=xt[..., sample_indices - input_indices[0]])
+                else:
+                    accumulated_samples.scatter_(dim=-1, index=sample_indices[None, :], src=xt[:, -block_size:])
                 if ((xt == self.mask_token_id).sum().item() == 0) or (pad_length is not None and pad_length > 0 and mdlm_inference and (xt[:, :-pad_length] == self.mask_token_id).sum().item() == 0):
                     if getattr(generation_config, "compute_inf_budget", False):
                         remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
                         inf_budget_per_step.extend([0] * remaining_steps)
                     break
-            if input_indices is not None:
-                accumulated_samples[..., sample_indices] = xt[..., sample_indices - input_indices[0]]
-            else:
-                accumulated_samples[:, sample_indices] = xt[..., -block_size:]
             if tokenizer is not None:  # Useful for debugging
                 print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
@@ -2259,11 +2276,6 @@ class AnyOrderBD3LM(BD3LM):
 
         window_size = self.noise_schedule.compute_window_size()
         window_size = min(generation_config.max_window_size, window_size)
-        first_hitting_times = self.noise_schedule.compute_first_hitting_times(
-            batch_size=batch_size,
-            length=max_new_tokens,
-            device=device,
-        )[0]
 
         pad_length = None
         if is_infill_task:
@@ -2385,7 +2397,7 @@ class AnyOrderBD3LM(BD3LM):
                 denoiser_inputs=denoiser_inputs,
                 cache=cache,
                 xt=xt,
-                running_generation=accumulated_samples[:, :(masked_positions.cumsum(-1) > 0).float().argmax(dim=-1) + inputs_offset] if logits_processor is not None else None, # used for logit processing
+                running_generation=accumulated_samples[:, :(window_start + window_size)] if logits_processor is not None else None, # used for logit processing
                 inputs_offset=inputs_offset,
                 logits_processor=logits_processor,
                 return_updated_cache=return_updated_cache,

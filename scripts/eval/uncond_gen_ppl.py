@@ -39,8 +39,8 @@ from scripts.utils import (
 )
 from src.utils import fsspec_exists, fsspec_mkdirs
 
-THROUGHPUT_WARMUP = 0
-MAX_SAMPLES = 50
+THROUGHPUT_WARMUP = 50
+MAX_SAMPLES = 250
 
 
 def gather_results(results, world_size):
@@ -223,18 +223,26 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
             else:
                 outputs = generation_output
                 parallelism_factor = -1.0
+            length = outputs.numel() - input_ids.numel()
+            entropy = _compute_entropy(outputs, model.tokenizer.mask_token_id, model.tokenizer.pad_token_id)
+            if length <= 4: # too short samples
+                continue
+            if entropy < 3: # degenereate samples
+                continue
+            print(f"Length: {length}")
 
             if i >= THROUGHPUT_WARMUP:
                 tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
                 parallelism_factors.append(parallelism_factor)
-                lengths.append(outputs.numel() - input_ids.numel())
+                lengths.append(length)
             # postprocess
             output_text = model.tokenizer.decode(outputs[0])
             # remove all text after the second <|endoftext|>
             output_text = tokenizer.bos_token + "".join(output_text.split(tokenizer.bos_token)[1:2])
+            # if length > 1024:
             print(output_text)
             generated_samples.append(output_text)
-        pbar.set_postfix(tput=np.mean(tputs), parallel=np.mean(parallelism_factors))
+        pbar.set_postfix(tput=f"{np.mean(tputs):.2f} +/- {np.std(tputs):.2f}", parallel=f"{np.mean(parallelism_factors):.2f} +/- {np.std(parallelism_factors):.2f}")
     # gather samples across devices
     generated_samples = gather_results(generated_samples, dist.get_world_size())
     tputs = gather_results(tputs, dist.get_world_size())
@@ -413,7 +421,7 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
 
     eval_dataloader = DataLoader(
         list(zip(input_ids, attention_mask)),
-        batch_size=min(128, len(input_ids)),
+        batch_size=min(64, len(input_ids)),
         shuffle=False,
     )
 
