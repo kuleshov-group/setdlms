@@ -104,9 +104,9 @@ def main(cfg: DictConfig) -> None:
     # HACK FOR MDLM
     if model is None or not hasattr(model, "generate"):
         # from src.denoiser.diffusion import MDLM, MDLMConfig
-        # from src.denoiser.diffusion import BD3LM, BD3LMConfig
+        from src.denoiser.diffusion import BD3LM, BD3LMConfig
         from src.denoiser.ar import AR, ARConfig
-        # from src.noise_schedule.noise_schedules import LinearNoise
+        from src.noise_schedule.noise_schedules import LinearNoise
         
         # Create dit backbone config
         # Load the dit config template and update with actual values
@@ -127,11 +127,11 @@ def main(cfg: DictConfig) -> None:
         backbone_config.hidden_size = 768
 
         # for ar
-        backbone_config.adaln = False
-        backbone_config.causal_attention = True
-        backbone_config.attn_backend = "flash_attn"
+        # backbone_config.adaln = False
+        # backbone_config.causal_attention = True
+        # backbone_config.attn_backend = "flash_attn"
 
-        # backbone_config.adaln = True
+        backbone_config.adaln = True
     
         # Ensure it's a DictConfig
         if not isinstance(backbone_config, DictConfig):
@@ -141,29 +141,29 @@ def main(cfg: DictConfig) -> None:
         #     length=length,
         #     backbone_config=backbone_config,
         # )
-        # mdlm_config = BD3LMConfig(
-        #     length=length,
-        #     backbone_config=backbone_config,
-        #     block_size=cfg.block_size,
-        # )
-        mdlm_config = ARConfig(
+        mdlm_config = BD3LMConfig(
             length=length,
             backbone_config=backbone_config,
+            block_size=cfg.block_size,
         )
+        # mdlm_config = ARConfig(
+        #     length=length,
+        #     backbone_config=backbone_config,
+        # )
         mdlm_config.mask_token_id = tokenizer.mask_token_id
         mdlm_config.vocab_size = len(tokenizer)
         # model_ = MDLM(
         #     mdlm_config,
         #     tokenizer=tokenizer,
         # )
-        # model_ = BD3LM(
-        #     mdlm_config,
-        #     tokenizer=tokenizer,
-        # )
-        model_ = AR(
+        model_ = BD3LM(
             mdlm_config,
             tokenizer=tokenizer,
         )
+        # model_ = AR(
+        #     mdlm_config,
+        #     tokenizer=tokenizer,
+        # )
         if model is not None:
             state_dict = model.state_dict()
         else:
@@ -183,7 +183,7 @@ def main(cfg: DictConfig) -> None:
             new_state_dict.pop("sampling_eps_max")
         model_.backbone.load_state_dict(new_state_dict)
         model = model_.to(device)
-        # model.noise_schedule = LinearNoise()
+        model.noise_schedule = LinearNoise()
     model = model.to(device)
     if local_rank == 0:
         print(f"Num. params: {format_number(count_parameters(model, trainable=False))}")
@@ -247,6 +247,10 @@ def main(cfg: DictConfig) -> None:
                 # tokenizer=tokenizer,  # For debugging: prints intermediate generation
                 **gen_kwargs,
             )
+            if local_rank == 0:
+                end_event.record()
+                torch.cuda.synchronize()
+                elapsed_time_s = start_event.elapsed_time(end_event)
             if isinstance(generation_outputs, ModelOutput):
                 outputs = generation_outputs.sequences
                 parallelism_factor = generation_outputs.get("parallelism_factor", -1.0)
@@ -255,19 +259,16 @@ def main(cfg: DictConfig) -> None:
             else:
                 outputs = generation_outputs
                 parallelism_factor = -1.0
+            if tokenizer.mask_token_id is not None and tokenizer.mask_token_id in elem["input_ids"]:
+                outputs = outputs[0, (elem["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][0]:(elem["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][-1]+1]
+            else:
+                outputs = outputs[:, input_ids.shape[-1] :].squeeze(0)
             parallelism_factors.append(parallelism_factor)
             if local_rank == 0:
-                end_event.record()
-                torch.cuda.synchronize()
-                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
                 if elem_id >= THROUGHPUT_WARMUP:
-                    tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
+                    tputs.append(outputs.numel() / elapsed_time_s)
                     latencies.append(elapsed_time_s)
         pbar.set_postfix(tput=np.mean(tputs), parallel=np.mean(parallelism_factors), latency=np.mean(latencies))
-        if tokenizer.mask_token_id is not None and tokenizer.mask_token_id in elem["input_ids"]:
-            outputs = outputs[0, (elem["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][0]:(elem["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][-1]+1]
-        else:
-            outputs = outputs[:, input_ids.shape[-1] :].squeeze(0)
         # Decode the generated samples
         outputs = tokenizer.decode(outputs)
         # Post-process:
