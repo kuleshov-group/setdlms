@@ -399,6 +399,17 @@ class Denoiser(ABC, PreTrainedModel):
 
         raise ValueError(f"Expected probs dim 2 or 3, got {probs.dim()}")
 
+    # @staticmethod
+    # def _sample_categorical(categorical_probs, do_sample=True):
+    #     """Helper function to sample from a categorical distribution."""
+    #     categorical_probs = categorical_probs.to(torch.float64)
+    #     if not do_sample:
+    #         return categorical_probs.argmax(dim=-1)
+    #     gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log()).to(
+    #         categorical_probs.dtype
+    #     )
+    #     return (categorical_probs / gumbel_norm).argmax(dim=-1)
+
     @staticmethod
     def _preprocess_attention_mask(attention_mask, dtype):
         min_dtype = torch.finfo(dtype).min

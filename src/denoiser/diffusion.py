@@ -545,17 +545,14 @@ class MDLM(Denoiser):
                     old = seq0.index_select(0, idx)
 
                     vals = xs_temp[0, mask1]
-                    try:
-                        seq0.index_copy_(0, idx, vals)
-                    except Exception as e:
-                        import ipdb; ipdb.set_trace()
+                    seq0.index_copy_(0, idx, vals)
                 sequence_to_process = seq0.unsqueeze(0)
 
                 for lp in logits_processor:
                     for j in range(log_x_theta.shape[1]):
                         if isinstance(lp, ExponentialDecayLengthPenalty):
                             log_x_theta[:, j] = lp(
-                                input_ids=sequence_to_process[..., sample_idx[0] - inputs_offset + j],
+                                input_ids=sequence_to_process[..., inputs_offset:sample_idx[j]],
                                 scores=log_x_theta[:, j],
                             )
                         else:
@@ -773,9 +770,9 @@ class MDLM(Denoiser):
                 cache = None
             else:
                 cache = self.update_cache(
-                    inputs=inputs[:, : block_size * (inputs.shape[-1] // block_size)]
+                    inputs=inputs[:, : block_size * (inputs.shape[-1] // block_size)][:, -self.config.length:]
                     if generation_config.align_inputs_to_blocks
-                    else inputs,
+                    else inputs[:, -self.config.length:],
                     cache={},
                 )
         else:
@@ -979,8 +976,8 @@ class MDLM(Denoiser):
                         :,
                         : sample_indices[-1] + 1,
                     ]
-                    if hasattr(stopping_criteria[0], "truncate_idx"):
-                        accumulated_samples = accumulated_samples[:, : stopping_criteria[0].truncate_idx[0]]
+                    # if hasattr(stopping_criteria[0], "truncate_idx"):
+                    #     accumulated_samples = accumulated_samples[:, : stopping_criteria[0].truncate_idx[0]]
                     accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
                     break
             if generation_config.use_cache and getattr(self.config, "block_size", self.config.length) < self.config.length:
@@ -2164,6 +2161,8 @@ class AnyOrderBD3LM(BD3LM):
             past_key_values = self._crop_kv_cache_left(past_key_values, overflow)
             cache_len -= overflow
             full_seq_length = cache_len + input_ids.shape[-1]
+            assert cache_len > 0, "cache_len must be greater than 0"
+            assert cache_len + seq_len <= self.config.length, "cache_len + seq_len must be less than or equal to length"
 
         perm_indices = None
         # permute indices based on expecte unmasking order
@@ -2317,7 +2316,7 @@ class AnyOrderBD3LM(BD3LM):
             likelihoods = torch.zeros((batch_size, max_new_tokens), dtype=torch.float, device=device)
         first_hitting_times = self.noise_schedule.compute_first_hitting_times(
             batch_size=batch_size,
-            length=num_mask_tokens if not is_infill_task else accumulated_samples.shape[-1],
+            length=num_mask_tokens if getattr(generation_config, "ar_caching", False) else accumulated_samples.shape[-1],
             device=device,
         )
         xt = accumulated_samples[:, inputs_offset:]
@@ -2345,10 +2344,10 @@ class AnyOrderBD3LM(BD3LM):
             else:
                 inputs_indices = torch.arange(inputs.shape[-1], device=device)
             cache = self.update_cache(
-                inputs=inputs[:, inputs_indices],
-                position_ids=all_position_ids[:, inputs_indices],
+                inputs=inputs[:, inputs_indices][:, -self.config.length:],
+                position_ids=all_position_ids[:, inputs_indices][:, -self.config.length:],
                 cache={},
-                first_hitting_times=first_hitting_times[:, inputs_indices]
+                first_hitting_times=first_hitting_times[:, inputs_indices][:, -self.config.length:] if not getattr(generation_config, "ar_caching", False) else None
             )
         else:
             cache = {
@@ -2379,10 +2378,7 @@ class AnyOrderBD3LM(BD3LM):
             masked_positions_indices = masked_positions.nonzero(as_tuple=False)[:, -1].view(batch_size, -1)
             masked_xt = torch.gather(xt, dim=-1, index=masked_positions_indices)
             masked_position_ids = torch.gather(xt_position_ids, dim=-1, index=masked_positions_indices)
-            if is_infill_task:
-                masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
-            else:
-                masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
+            masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
 
             # Only decode masked tokens
             cache_len = 0 if cache.get("past_key_values", None) is None else cache["past_key_values"].get_seq_length()
@@ -2514,8 +2510,8 @@ class AnyOrderBD3LM(BD3LM):
                         : window_start[0] + window_size,
                     ]
                     accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
-                    if hasattr(stopping_criteria[0], "truncate_idx"):
-                        accumulated_samples = accumulated_samples[:, : min(stopping_criteria[0].truncate_idx[0], accumulated_samples.shape[-1])]
+                    # if hasattr(stopping_criteria[0], "truncate_idx"):
+                    #     accumulated_samples = accumulated_samples[:, : min(stopping_criteria[0].truncate_idx[0], accumulated_samples.shape[-1])]
                     break
         if tokenizer is not None:
             print(tokenizer.batch_decode(accumulated_samples))

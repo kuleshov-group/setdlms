@@ -122,7 +122,8 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
         backbone_config = OmegaConf.load(dit_config_path)
         
         # Update backbone config with necessary parameters (resolving the template values)
-        backbone_config.length = 128
+        backbone_config.length = 128 if getattr(cfg, "eval_model_name", "gpt2-large") == "bert-base-uncased" else 1024
+        print("hardcoding length to", backbone_config.length)
         backbone_config.vocab_size = len(tokenizer)
         backbone_config.block_size = getattr(cfg, "block_size", None)
         backbone_config.pretrained_model_name_or_path = getattr(cfg, "pretrained_model_name_or_path", None)
@@ -198,6 +199,12 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
     tputs = []
     parallelism_factors = []
     lengths = []
+    # divide MAX_SAMPLES by world size, if rank is 0, use the remainder
+    if dist.is_available() and dist.is_initialized():
+        world_size = dist.get_world_size()
+        MAX_SAMPLES = int(MAX_SAMPLES // world_size)
+        if dist.get_rank() == 0:
+            MAX_SAMPLES += int(MAX_SAMPLES % world_size)
     pbar = tqdm(range(MAX_SAMPLES), desc="Generating")
     for i in pbar:
         input_ids = torch.tensor([model.tokenizer.bos_token_id])[None, :].to(model.device)
@@ -252,12 +259,12 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
         print(f"TPUT (tok/s) over {len(tputs)} samples: {np.mean(tputs)} +/- {np.std(tputs)}")
         print(f"Parallelism factor over {len(parallelism_factors)} samples: {np.mean(parallelism_factors)} +/- {np.std(parallelism_factors)}")
         print(f"Lengths over {len(lengths)} samples: {np.mean(lengths)} +/- {np.std(lengths)}")
-    with open(f"{cfg.generated_samples_output_path}/generated_samples.json", "w") as f:
-        json.dump(
-            generated_samples,
-            f,  # type: ignore
-            indent=2,
-        )
+        with open(f"{cfg.generated_samples_output_path}/generated_samples.json", "w") as f:
+            json.dump(
+                generated_samples,
+                f,  # type: ignore
+                indent=2,
+            )
         
     return generated_samples
 
@@ -504,7 +511,8 @@ def main(cfg: DictConfig) -> None:
     local_rank = setup_ddp()
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     if not os.path.exists(cfg.generated_samples_output_path):
-        os.makedirs(cfg.generated_samples_output_path)
+        if local_rank == 0:
+            os.makedirs(cfg.generated_samples_output_path, exist_ok=True)
     if not getattr(cfg, "eval_only", False):
         samples = generate_samples(cfg, device, local_rank)
     else:

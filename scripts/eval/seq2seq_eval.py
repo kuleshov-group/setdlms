@@ -14,7 +14,10 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 from transformers.generation import StopStringCriteria
 from transformers.modeling_outputs import ModelOutput
-
+from collections import OrderedDict
+from src.denoiser.diffusion import BD3LM, BD3LMConfig
+from src.denoiser.ar import AR, ARConfig
+from src.noise_schedule.noise_schedules import LinearNoise
 from scripts.utils import (
     count_parameters,
     format_number,
@@ -76,6 +79,7 @@ def main(cfg: DictConfig) -> None:
     dataloader = DataLoader(
         dataset, batch_size=1, sampler=sampler, num_workers=0, pin_memory=True
     )
+    local_indices = list(sampler)
 
     # Load model
     try:
@@ -104,8 +108,6 @@ def main(cfg: DictConfig) -> None:
     # HACK FOR MDLM
     if model is None or not hasattr(model, "generate"):
         # from src.denoiser.diffusion import MDLM, MDLMConfig
-        from src.denoiser.diffusion import BD3LM, BD3LMConfig
-        from src.denoiser.ar import AR, ARConfig
         from src.noise_schedule.noise_schedules import LinearNoise
         
         # Create dit backbone config
@@ -193,13 +195,15 @@ def main(cfg: DictConfig) -> None:
     stop_tokens = ["<|endoftext|>"]
 
     # Iterate through the dataset and sample
+    example_ids = []
     generated_samples = []
     tputs = []
     parallelism_factors = []
     latencies = []
     pbar = tqdm(dataloader, desc="Generating", total=len(dataloader), disable=(local_rank != 0))
-    references = dataset.target_references
     for elem_id, elem in enumerate(pbar):
+        ex_id = int(local_indices[elem_id])
+        example_ids.append(ex_id)
         if getattr(cfg, "throughput_run", False) and elem_id >= THROUGHPUT_WARMUP:
             if not fsspec_exists(cfg.output_path):
                 fsspec_mkdirs(cfg.output_path)
@@ -279,7 +283,7 @@ def main(cfg: DictConfig) -> None:
         if local_rank == 0: # and world_size > 1:
             print("Input:", tokenizer.decode(elem["input_ids"][0]))
             print("Output:", decoded_samples)
-            print("Ground truth:", references[elem_id])
+            print("Ground truth:", dataset.target_references[ex_id])
             print(
                 f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
             )
@@ -290,15 +294,28 @@ def main(cfg: DictConfig) -> None:
         generated_samples.append(decoded_samples)
 
     # Compute metrics
-    references = dataset.target_references
-    local_indices = list(sampler)[: len(generated_samples)]
-    references = [references[i] for i in local_indices]
+
+    references = [dataset.target_references[i] for i in example_ids]
+
+    # Gather from all ranks
+    example_ids = gather_results(example_ids, world_size)
+
     generated_samples = gather_results(generated_samples, world_size)
     references = gather_results(references, world_size)
     parallelism_factors = gather_results(parallelism_factors, world_size)
     throughputs = gather_results(tputs, world_size)
     latencies = gather_results(latencies, world_size)
     if local_rank == 0:
+        # Deduplicate padded/duplicated samples introduced by DistributedSampler (drop_last=False),
+        # and restore deterministic ordering by example id.
+        by_id = OrderedDict()
+        for i, pred, ref in zip(example_ids, generated_samples, references):
+            if i not in by_id:
+                by_id[i] = (pred, ref)
+        ordered_ids = sorted(by_id.keys())
+        generated_samples = [by_id[i][0] for i in ordered_ids]
+        references = [by_id[i][1] for i in ordered_ids]
+
         rouge = evaluate.load("rouge")
         bleu = evaluate.load("sacrebleu")
         meteor = evaluate.load("meteor")

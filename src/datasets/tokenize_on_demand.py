@@ -506,16 +506,16 @@ class CNNDailyMailDataset(Dataset):
 
                 # IMPORTANT: return a list[bool], not a single bool
                 return [(len(a) + len(t) + 3) <= max_length for a, t in zip(art_ids, tgt_ids)]
-
-            ds_filtered = self.dataset.filter(
-                length_filter,
-                batched=True,
-                batch_size=1024,
-                num_proc=8,
-            )
-            print(f"Filtered {len(ds_filtered)} examples out of {len(self.dataset)}")
-            ds_filtered.save_to_disk(self.cache_path)
-            self.dataset = ds_filtered
+            if cache_path != "":
+                ds_filtered = self.dataset.filter(
+                    length_filter,
+                    batched=True,
+                    batch_size=1024,
+                    num_proc=8,
+                )
+                print(f"Filtered {len(ds_filtered)} examples out of {len(self.dataset)}")
+                ds_filtered.save_to_disk(self.cache_path)
+                self.dataset = ds_filtered
 
         self.max_length = max_length
         self.padding = padding

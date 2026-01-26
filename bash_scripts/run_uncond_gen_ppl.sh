@@ -9,13 +9,13 @@ source setup_env.sh
 # KV_CACHING=false
 # ALIGN_INPUTS_TO_BLOCKS=false
 
-MAX_LENGTH=128
+MAX_LENGTH=1024
 L=$((MAX_LENGTH - 1)) # for block diffusion / aoarm, we can override the length here for the correct attn masks. mdlm will use sliding window.
 
 #### BDL3M
 BLOCK_SIZE=16
 MAX_WINDOW_SIZE=16
-# MODEL_PATH="kuleshov-group/bd3lm-owt-block_size16"
+MODEL_PATH="kuleshov-group/bd3lm-owt-block_size16"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
 # MODEL_PATH="/home/ubuntu/mar/runs/ablation_bs16_loglinear_final/last-v1.ckpt"
 # MODEL_PATH="/home/ubuntu/mar/runs/ablation_bs4_loglinear_final/last-v1.ckpt"
@@ -46,15 +46,15 @@ DO_SAMPLE=true
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
-CONFIDENCE_THRESHOLD=0.9
+CONFIDENCE_THRESHOLD=1e6
 CKPT="best"
 USE_EMA=true
 
 REPETITION_PENALTY=2.0
 NUCLEUS_P=0.9
 
-# TOKENIZER_PATH="gpt2"
-TOKENIZER_PATH="bert-base-uncased"
+TOKENIZER_PATH="gpt2"
+# TOKENIZER_PATH="bert-base-uncased"
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 

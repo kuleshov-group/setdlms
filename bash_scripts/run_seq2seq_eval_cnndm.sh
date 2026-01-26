@@ -15,31 +15,44 @@ source setup_env.sh
 # REPETITION_PENALTY=1.0
 
 ########### MDLM
-KV_CACHING=false
-ALIGN_INPUTS_TO_BLOCKS=false
-BLOCK_SIZE=128
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
-LEN_PENALTY=1.1
-REGULATION_START=80
-REPETITION_PENALTY=1.5
-
-########### BD3LM
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#BLOCK_SIZE=8
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_BD3LM_SAVED_MODEL_DIR>"#LEN_PENALTY=1.1
-#LEN_PENALTY=1.1
-#REGULATION_START=80
-#REPETITION_PENALTY=1.5
-
-########### E2D2
-# BLOCK_SIZE=32
-# echo "MODEL_PATH: ${MODEL_PATH}"
 # KV_CACHING=false
 # ALIGN_INPUTS_TO_BLOCKS=false
+# BLOCK_SIZE=1024
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
 # LEN_PENALTY=1.1
 # REGULATION_START=80
 # REPETITION_PENALTY=1.5
+
+########### BD3LM
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
+# BLOCK_SIZE=4
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
+# LEN_PENALTY=1.1
+# REGULATION_START=80
+# REPETITION_PENALTY=1.5
+
+########### E2D2
+BLOCK_SIZE=1024
+echo "MODEL_PATH: ${MODEL_PATH}"
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=false
+LEN_PENALTY=1.1
+REGULATION_START=80
+REPETITION_PENALTY=1.5
+MAX_WINDOW_SIZE=16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_v3"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
+
+echo "MODEL_PATH: ${MODEL_PATH}"
+echo "BLOCK_SIZE: ${BLOCK_SIZE}"
+echo "KV_CACHING: ${KV_CACHING}"
+echo "ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS}"
+echo "LEN_PENALTY: ${LEN_PENALTY}"
+echo "REGULATION_START: ${REGULATION_START}"
+echo "REPETITION_PENALTY: ${REPETITION_PENALTY}"
+echo "MAX_WINDOW_SIZE: ${MAX_WINDOW_SIZE}"
 
 OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail"
 REVISION=null
@@ -53,19 +66,20 @@ FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
 CONF_THRESHOLD=1e6
-MAX_LENGTH=1024
+MAX_LENGTH=4096
+MAX_NEW_TOKENS=1024
 CKPT="best"
 USE_EMA=true
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}"
-PORT=29504
+PORT=$((RANDOM % 10000 + 29500))
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/seq2seq_eval.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \
   hydra/job_logging=disabled \
   hydra/hydra_logging=disabled \
   +eval/seq2seq@task=cnn_dailymail \
-  +task.dataset.cache_path=/share/kuleshov/ma2238/dllm-data/cnn_dailymail_eval_${MAX_LENGTH}.dat \
+  +task.dataset.cache_path="" \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   +ckpt_file="${CKPT}-rank0.pt" \
@@ -74,7 +88,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_length=${MAX_LENGTH} \
-  max_new_tokens=${L} \
+  max_new_tokens=${MAX_NEW_TOKENS} \
   block_size=${BLOCK_SIZE} \
   generation_config.num_steps=${T} \
   generation_config.do_sample=${DO_SAMPLE} \
@@ -85,7 +99,9 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.confidence_threshold=${CONF_THRESHOLD} \
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
+  generation_config.max_window_size=${MAX_WINDOW_SIZE} \
   generation/stopping_criteria@stopping_criteria_list='[cnndm_stop_string_criteria]' \
   generation/logits_processor@logits_processor_list='[exponential_decay_length_penalty,repetition_penalty_logits_processor]' \
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY} \
-  logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]"
+  logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]" \
+  +generation_config.ar_caching=true
