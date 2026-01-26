@@ -525,9 +525,12 @@ class MDLM(Denoiser):
                 denoiser_inputs.xt = denoiser_inputs.xt[:, cache_len:]
                 if eval_ground_truth is not None:
                     eval_ground_truth = eval_ground_truth[:, cache_len:]
-            if sample_indices is not None and input_indices is not None:
+            elif (sample_indices is not None and input_indices is not None):
                 logits = logits[:, sample_indices - input_indices[0], :]
                 denoiser_inputs.xt = denoiser_inputs.xt[..., sample_indices - input_indices[0]]
+            else:
+                logits = logits[:, sample_indices - sample_indices[0], :]
+                denoiser_inputs.xt = denoiser_inputs.xt[..., sample_indices - sample_indices[0]] # truncate any extra padding tokens
 
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
             if logits_processor is not None:
@@ -542,8 +545,10 @@ class MDLM(Denoiser):
                     old = seq0.index_select(0, idx)
 
                     vals = xs_temp[0, mask1]
-
-                    seq0.index_copy_(0, idx, vals)
+                    try:
+                        seq0.index_copy_(0, idx, vals)
+                    except Exception as e:
+                        import ipdb; ipdb.set_trace()
                 sequence_to_process = seq0.unsqueeze(0)
 
                 for lp in logits_processor:
@@ -606,8 +611,9 @@ class MDLM(Denoiser):
             output = xs.clone()
 
             # Noise
-            est_noise_indices_next = (next_t * block_size).to(torch.int)
-            est_noise_indices_curr = (t * block_size).to(torch.int)
+            # TODO: fix later
+            est_noise_indices_next = (next_t * block_size).round().to(torch.int)
+            est_noise_indices_curr = (t * block_size).round().to(torch.int)
             num_to_decode = est_noise_indices_curr - est_noise_indices_next
             num_noise_indices = denoiser_inputs.xt.shape[-1] - num_to_decode
             if generation_config.confidence_based_noising:
@@ -747,6 +753,8 @@ class MDLM(Denoiser):
         # Sample max generation length tensor from prior
         if is_infill_task:
             accumulated_samples = inputs
+            first_mask_token_idx = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[0]
+            last_mask_token_idx = (accumulated_samples != self.mask_token_id)[:, first_mask_token_idx:].float().argmax(dim=-1)[0] + first_mask_token_idx
         else:
             accumulated_samples = self.mask_token_id * torch.ones(
                 (batch_size, num_mask_tokens), dtype=torch.int64, device=device
@@ -884,6 +892,8 @@ class MDLM(Denoiser):
                         :,
                         : min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
                     ]
+                if is_infill_task:
+                    running_generation = accumulated_samples[:, first_mask_token_idx:min(last_mask_token_idx, sample_indices[-1]+1)]
                 if model_output_cache is None:
                     block_NFEs += 1
                     total_NFEs += 1
@@ -978,8 +988,6 @@ class MDLM(Denoiser):
                     inputs=xt,
                     cache=cache,
                 )
-        if pad_length is not None and pad_length > 0:
-            accumulated_samples = accumulated_samples[:, : -pad_length]
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
         )
@@ -2291,6 +2299,7 @@ class AnyOrderBD3LM(BD3LM):
             accumulated_samples = inputs
             num_mask_tokens = (inputs == self.mask_token_id).sum()
             first_mask_token_idx = (inputs == self.mask_token_id).float().argmax(dim=-1)[0]
+            last_mask_token_idx = (inputs != self.mask_token_id).float()[:, first_mask_token_idx:].argmax(dim=-1)[0] + first_mask_token_idx
         else:
             accumulated_samples = self.mask_token_id * torch.ones(
                 (batch_size, max_new_tokens), dtype=torch.int64, device=device
@@ -2298,6 +2307,7 @@ class AnyOrderBD3LM(BD3LM):
             num_mask_tokens = max_new_tokens
             first_mask_token_idx = inputs.shape[-1]
             accumulated_samples = torch.cat([inputs, accumulated_samples], dim=-1)
+            last_mask_token_idx = accumulated_samples.shape[-1] - 1
         if is_infill_task:
             inputs_offset = 0
         else:
@@ -2307,12 +2317,12 @@ class AnyOrderBD3LM(BD3LM):
             likelihoods = torch.zeros((batch_size, max_new_tokens), dtype=torch.float, device=device)
         first_hitting_times = self.noise_schedule.compute_first_hitting_times(
             batch_size=batch_size,
-            length=num_mask_tokens,
+            length=num_mask_tokens if not is_infill_task else accumulated_samples.shape[-1],
             device=device,
         )
         xt = accumulated_samples[:, inputs_offset:]
         timesteps = self._sample_generation_timesteps(
-            generation_config, max_length=num_mask_tokens, device=device, first_hitting_times=first_hitting_times
+            generation_config, max_length=num_mask_tokens, device=device, first_hitting_times=first_hitting_times if not is_infill_task else first_hitting_times[accumulated_samples == self.mask_token_id]
         )
         timesteps = timesteps[None, :].repeat(batch_size, 1)
         xt_position_ids = all_position_ids[:, inputs_offset:]
@@ -2323,12 +2333,14 @@ class AnyOrderBD3LM(BD3LM):
         if generation_config.use_cache and inputs.numel() > 0:
             if is_infill_task:
                 # only cache indices that could be unmasked before the first masked token is unmasked
-                # first_masked_token_idx = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[0]
-                # unmasking_time_first_masked_token = first_hitting_times[accumulated_samples == self.mask_token_id].max()
-                # cache_flag = (
-                #     (first_hitting_times >= unmasking_time_first_masked_token) & (accumulated_samples != self.mask_token_id) | (xt_position_ids < first_masked_token_idx)
-                # )
-                cache_flag = (accumulated_samples != self.mask_token_id)
+                first_masked_token_idx = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[0]
+                unmasking_time_first_masked_token = first_hitting_times[accumulated_samples == self.mask_token_id].max()
+                cache_flag = (
+                    (first_hitting_times >= unmasking_time_first_masked_token) & (accumulated_samples != self.mask_token_id) | (xt_position_ids < first_masked_token_idx)
+                )
+                # cache_flag = (accumulated_samples != self.mask_token_id)
+                # cache_flag[:, first_mask_token_idx:] = False
+                # cache_flag[:, :first_mask_token_idx] = 1e6
                 inputs_indices = cache_flag.nonzero()[:, 1].sort().values
             else:
                 inputs_indices = torch.arange(inputs.shape[-1], device=device)
@@ -2336,6 +2348,7 @@ class AnyOrderBD3LM(BD3LM):
                 inputs=inputs[:, inputs_indices],
                 position_ids=all_position_ids[:, inputs_indices],
                 cache={},
+                first_hitting_times=first_hitting_times[:, inputs_indices]
             )
         else:
             cache = {
@@ -2367,7 +2380,7 @@ class AnyOrderBD3LM(BD3LM):
             masked_xt = torch.gather(xt, dim=-1, index=masked_positions_indices)
             masked_position_ids = torch.gather(xt_position_ids, dim=-1, index=masked_positions_indices)
             if is_infill_task:
-                masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices - first_mask_token_idx)
+                masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
             else:
                 masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
 
@@ -2397,13 +2410,13 @@ class AnyOrderBD3LM(BD3LM):
                 denoiser_inputs=denoiser_inputs,
                 cache=cache,
                 xt=xt,
-                running_generation=accumulated_samples[:, :(window_start + window_size)] if logits_processor is not None else None, # used for logit processing
+                running_generation=accumulated_samples[:, first_mask_token_idx:(min(last_mask_token_idx + 1, (window_start + window_size)))] if logits_processor is not None else None, # used for logit processing
                 inputs_offset=inputs_offset,
                 logits_processor=logits_processor,
                 return_updated_cache=return_updated_cache,
                 cache_len=clean_len,
                 eval_ground_truth=eval_ground_truth_t,
-                sample_indices=masked_positions_indices[:, clean_len:] + inputs_offset,
+                sample_indices=masked_positions_indices + inputs_offset,
                 window_size=window_size,
                 block_size=num_mask_tokens,
                 **kwargs,
@@ -2439,33 +2452,30 @@ class AnyOrderBD3LM(BD3LM):
             window_start = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[:, None]
             masked_positions |= (xt == self.mask_token_id) & (xt_position_ids < (window_start + window_size))
 
-            # if is_infill_task and (accumulated_samples == self.mask_token_id).any():
-            #     # only cache indices that could be unmasked before the first masked token is unmasked
-            #     # do not pick from already cached positions, or token that was just unmasked!
-            #     target_unmasking_time = first_hitting_times[accumulated_samples == self.mask_token_id].max()
+            if is_infill_task and (accumulated_samples == self.mask_token_id).any():
+                # only cache indices that could be unmasked before the first masked token is unmasked
+                # do not pick from already cached positions, or token that was just unmasked!
+                target_unmasking_time = first_hitting_times[accumulated_samples == self.mask_token_id].max()
+                just_unmasked_idx = (masked_positions) & (xt != self.mask_token_id) & ~cache_flag
+                target_unmasking_time = first_hitting_times[just_unmasked_idx].min()
+                
+                new_cache_positions = (
+                    (first_hitting_times >= target_unmasking_time) & (accumulated_samples != self.mask_token_id) & ~cache_flag & ~masked_positions
+                )
+                # pick the cache position w/ the highest fhs
 
-            #     # get the unmasking time of the rightmost clean token, that isn't an input token
-            #     rightmost_clean_token_idx = (masked_positions & (xt != self.mask_token_id))
-            #     if rightmost_clean_token_idx.any():
-            #         target_unmasking_time = first_hitting_times[rightmost_clean_token_idx].max()
-            #     else:
-            #         target_unmasking_time = first_hitting_times[accumulated_samples == self.mask_token_id].max()
-            #     new_cache_positions = (
-            #         (first_hitting_times >= target_unmasking_time) & (accumulated_samples != self.mask_token_id) & ~cache_flag & ~masked_positions
-            #     )
-            #     if new_cache_positions.sum().item() > 0:
-            #         # cache = self.update_cache(
-            #         #     inputs=inputs[new_cache_positions].unsqueeze(0),
-            #         #     position_ids=all_position_ids[new_cache_positions].unsqueeze(0),
-            #         #     cache=cache,
-            #         #     first_hitting_times=first_hitting_times[new_cache_positions].unsqueeze(0),
-            #         # )
-            #         clean_len += new_cache_positions.sum()
-            #         # if new_cache_positions.sum().item() > 0:
-            #         #     print("new_cache_positions: ", new_cache_positions.sum().item())
-            #         #     import ipdb; ipdb.set_trace()
-            #         masked_positions |= new_cache_positions
-            #         cache_flag |= new_cache_positions
+                if new_cache_positions.sum().item() > 0:
+                    # highest_fhs = first_hitting_times[new_cache_positions].max(dim=-1).values
+                    # new_cache_positions &= first_hitting_times == highest_fhs
+                    # cache = self.update_cache(
+                    #     inputs=inputs[new_cache_positions].unsqueeze(0),
+                    #     position_ids=all_position_ids[new_cache_positions].unsqueeze(0),
+                    #     cache=cache,
+                    #     first_hitting_times=first_hitting_times[new_cache_positions].unsqueeze(0),
+                    # )
+                    clean_len += new_cache_positions.sum()
+                    masked_positions |= new_cache_positions
+                    cache_flag |= new_cache_positions
 
             # for batched eval only
             # max_masks_to_add = masked_positions.sum(dim=-1).max()
