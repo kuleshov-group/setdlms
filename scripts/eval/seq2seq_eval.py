@@ -233,7 +233,7 @@ def main(cfg: DictConfig) -> None:
         # Generate samples
         with torch.no_grad():
             # if this is an ar model, only pass the left context to the model.
-            if isinstance(model, AR):
+            if isinstance(model, AR) and (input_ids == tokenizer.mask_token_id).any():
                 gen_kwargs.update({
                     "max_new_tokens": (input_ids == tokenizer.mask_token_id).sum(),
                 })
@@ -280,7 +280,7 @@ def main(cfg: DictConfig) -> None:
         for st in stop_tokens:
             outputs = outputs.split(st)[0]
         decoded_samples = outputs.strip()
-        if local_rank == 0: # and world_size > 1:
+        if local_rank == 0 and (elem_id % 100 == 0): # and world_size > 1:
             print("Input:", tokenizer.decode(elem["input_ids"][0]))
             print("Output:", decoded_samples)
             print("Ground truth:", dataset.target_references[ex_id])

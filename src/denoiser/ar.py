@@ -166,15 +166,17 @@ class AR(Denoiser):
         batch_size = x.shape[0]
         vocab_size = self.backbone.vocab_size
         device = x.device
-        noise = (torch.distributions.Gumbel(0, 1)
+
+        if logits_processor is not None:
+            log_x_theta = logits_processor(input_ids=x, scores=log_x_theta)
+        if getattr(generation_config, "do_sample", False):
+            # log_x_theta = self._nucleus_sample(log_x_theta.exp(), p=getattr(generation_config, "nucleus_sampling_p", 1.0)).log()
+            noise = (torch.distributions.Gumbel(0, 1)
                 .sample((batch_size, vocab_size))
                 .to(device))
-        if logits_processor is not None:
-            log_x_theta = logits_processor(input_ids=x[:, :i+1], scores=log_x_theta)
-        # log_x_theta = log_x_theta.exp()
-        # log_x_theta = self._nucleus_sample(log_x_theta, p=getattr(generation_config, "nucleus_sampling_p", 1.0)).log()
-        y = (log_x_theta[:, -1] + noise).argmax(-1)
-        # y = log_x_theta[:, -1].argmax(-1)
+            y = (log_x_theta + noise).argmax(-1)
+        else:
+            y = log_x_theta.argmax(-1)
         return y
 
     def _crop_kv_cache_left(
@@ -258,9 +260,9 @@ class AR(Denoiser):
                 logits = backbone_output.to(torch.float64)
             else:
                 logits = backbone_output["logits"].to(torch.float64)
-            logits[:, :, self.mask_token_id] = -torch.inf
+            logits[:, :, self.tokenizer.mask_token_id] = -torch.inf
             log_x_theta = self._forward(logits, cache_inputs, **kwargs)
-            x[:, input_len] = self._generate_unconditional(generation_config, x[:, :input_len], log_x_theta, logits_processor)
+            x[:, input_len] = self._generate_unconditional(generation_config, x[:, :0], log_x_theta[:, -1], logits_processor)
             cache["past_key_values"] = backbone_output["past_key_values"]
         for i in range(input_len, x.shape[-1] - 1):
             denoiser_inputs = self._prepare_inputs_inference(x[:, i].unsqueeze(-1), None, None, None, cache)
@@ -272,10 +274,10 @@ class AR(Denoiser):
             else:
                 logits = backbone_output["logits"].to(torch.float64)
             logits = logits[:, -1].unsqueeze(1)
-            logits[:, :, self.mask_token_id] = -torch.inf
+            logits[:, :, self.tokenizer.mask_token_id] = -torch.inf
             cache["past_key_values"] = backbone_output["past_key_values"]
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
-            x[:, i + 1] = self._generate_unconditional(generation_config, x[:, :i+1], log_x_theta, logits_processor)
+            x[:, i + 1] = self._generate_unconditional(generation_config, x[:, input_len:i+1], log_x_theta[:, -1], logits_processor)
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
                     input_ids=x[:, :i+2],

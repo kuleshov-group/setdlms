@@ -39,8 +39,8 @@ from scripts.utils import (
 )
 from src.utils import fsspec_exists, fsspec_mkdirs
 
-THROUGHPUT_WARMUP = 50
-MAX_SAMPLES = 250
+THROUGHPUT_WARMUP = 0
+MAX_SAMPLES = 100
 
 
 def gather_results(results, world_size):
@@ -200,51 +200,63 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
     parallelism_factors = []
     lengths = []
     # divide MAX_SAMPLES by world size, if rank is 0, use the remainder
+    MAX_SAMPLES = 500
     if dist.is_available() and dist.is_initialized():
         world_size = dist.get_world_size()
-        MAX_SAMPLES = int(MAX_SAMPLES // world_size)
+        new_max_samples = int(MAX_SAMPLES // world_size)
         if dist.get_rank() == 0:
-            MAX_SAMPLES += int(MAX_SAMPLES % world_size)
+            new_max_samples += int(MAX_SAMPLES % world_size)
+        MAX_SAMPLES = new_max_samples
     pbar = tqdm(range(MAX_SAMPLES), desc="Generating")
-    for i in pbar:
+    for ind, i in enumerate(pbar):
         input_ids = torch.tensor([model.tokenizer.bos_token_id])[None, :].to(model.device)
         # Generate samples
         with torch.no_grad():
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
-            generation_output = model.generate(
-                inputs=input_ids,
-                disable_pbar=True,
-                # tokenizer=tokenizer,  # For debugging: prints intermediate generation
-                **gen_kwargs,
-            )
-            end_event.record()
-            torch.cuda.synchronize()
-            elapsed_time_s = start_event.elapsed_time(end_event) / 1000
-            if isinstance(generation_output, ModelOutput):
-                outputs = generation_output.sequences
-                parallelism_factor = generation_output.get("parallelism_factor", -1.0)
-                if parallelism_factor is None:
+            while True:
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
+                generation_output = model.generate(
+                    inputs=input_ids,
+                    disable_pbar=True,
+                    # tokenizer=tokenizer,  # For debugging: prints intermediate generation
+                    **gen_kwargs,
+                )
+                end_event.record()
+                torch.cuda.synchronize()
+                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+                if isinstance(generation_output, ModelOutput):
+                    outputs = generation_output.sequences
+                    parallelism_factor = generation_output.get("parallelism_factor", -1.0)
+                    if parallelism_factor is None:
+                        parallelism_factor = -1.0
+                else:
+                    outputs = generation_output
                     parallelism_factor = -1.0
-            else:
-                outputs = generation_output
-                parallelism_factor = -1.0
-            length = outputs.numel() - input_ids.numel()
-            entropy = _compute_entropy(outputs, model.tokenizer.mask_token_id, model.tokenizer.pad_token_id)
-            if length <= 4: # too short samples
-                continue
-            if entropy < 3: # degenereate samples
-                continue
+                length = outputs.numel() - input_ids.numel()
+                entropy = _compute_entropy(outputs, model.tokenizer.mask_token_id, model.tokenizer.pad_token_id)
+                if hasattr(gen_kwargs["stopping_criteria"][0], "truncate_idx") and gen_kwargs["stopping_criteria"][0].truncate_idx is not None:
+                    truncate_idx = gen_kwargs["stopping_criteria"][0].truncate_idx[0]
+                    if truncate_idx is not None:
+                        outputs = outputs[:, :min(truncate_idx, outputs.shape[1])]
+                if outputs.shape[1] <= 4: # too short samples
+                    continue
+                if entropy < 3: # degenereate samples
+                    continue
+                break
             print(f"Length: {length}")
+            print("final length:", outputs.shape[1])
+
+            if ind % 100 == 0:
+                print(tokenizer.decode(outputs[0]))
 
             if i >= THROUGHPUT_WARMUP:
-                tputs.append((outputs.numel() - input_ids.numel()) / elapsed_time_s)
+                tputs.append(length / elapsed_time_s)
                 parallelism_factors.append(parallelism_factor)
-                lengths.append(length)
+                lengths.append(outputs.shape[1])
             # postprocess
             output_text = model.tokenizer.decode(outputs[0])
-            print(output_text)
+            # print(output_text)
             # remove all text after the second <|endoftext|>
             output_text = model.tokenizer.bos_token + "".join(output_text.split(model.tokenizer.bos_token)[1:2])
             # if length > 1024:
@@ -428,7 +440,7 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
 
     eval_dataloader = DataLoader(
         list(zip(input_ids, attention_mask)),
-        batch_size=min(64, len(input_ids)),
+        batch_size=min(1, len(input_ids)),
         shuffle=False,
     )
 
@@ -507,8 +519,8 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
-    set_seed(cfg.seed)
     local_rank = setup_ddp()
+    set_seed(cfg.seed + local_rank)
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     if not os.path.exists(cfg.generated_samples_output_path):
         if local_rank == 0:

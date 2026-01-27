@@ -552,7 +552,7 @@ class MDLM(Denoiser):
                     for j in range(log_x_theta.shape[1]):
                         if isinstance(lp, ExponentialDecayLengthPenalty):
                             log_x_theta[:, j] = lp(
-                                input_ids=sequence_to_process[..., inputs_offset:sample_idx[j]],
+                                input_ids=sequence_to_process[..., :sample_idx[j] - inputs_offset],
                                 scores=log_x_theta[:, j],
                             )
                         else:
@@ -813,12 +813,12 @@ class MDLM(Denoiser):
         sample_indices = None
         input_indices = None
         if mdlm_inference:
-            if inputs_offset < self.config.length:
+            if inputs_offset <= self.config.length:
                 start_input_idx = 0
                 end_input_idx = min(self.config.length, accumulated_samples.shape[-1])
             else:
-                start_input_idx = inputs_offset - self.config.length + 32
-                end_input_idx = start_input_idx + self.config.length
+                end_input_idx = max(inputs_offset + 32, self.config.length)
+                start_input_idx = end_input_idx - self.config.length
             start_sample_idx = inputs_offset
             end_sample_idx = min(start_sample_idx + block_size, end_input_idx)
             if pad_length is not None:
@@ -833,8 +833,8 @@ class MDLM(Denoiser):
                     end_input_idx = end_sample_idx
                     start_input_idx = end_input_idx - self.config.length
                 xt = accumulated_samples[:, start_input_idx:end_input_idx]
-                end_sample_idx = min(end_sample_idx, self.config.length)
-                end_input_idx = min(end_input_idx, self.config.length)
+                end_input_idx = min(end_input_idx, accumulated_samples.shape[-1])
+                end_sample_idx = min(end_sample_idx,end_input_idx)
                 if pad_length is not None:
                     end_sample_idx = min(end_sample_idx, self.config.length - pad_length)
                 sample_indices = torch.arange(start_sample_idx, end_sample_idx).to(device)
@@ -883,11 +883,11 @@ class MDLM(Denoiser):
             for i,t in enumerate(step_pbar):
                 # Used for logit processing
                 if mdlm_inference:
-                    running_generation = accumulated_samples
+                    running_generation = accumulated_samples[:, inputs_offset:sample_indices[-1] + 1]
                 else:
                     running_generation = accumulated_samples[
                         :,
-                        : min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
+                        inputs_offset: min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
                     ]
                 if is_infill_task:
                     running_generation = accumulated_samples[:, first_mask_token_idx:min(last_mask_token_idx, sample_indices[-1]+1)]
@@ -909,6 +909,7 @@ class MDLM(Denoiser):
                     cache=cache if generation_config.use_cache else None,
                 )
                 next_t = timesteps[i+1] if i < timesteps.shape[-1] - 1 else timesteps[-1] * 0
+
                 generation_output = self._generate_unconditional(
                     generation_config=generation_config,
                     block_size=block_size,
@@ -927,6 +928,7 @@ class MDLM(Denoiser):
                     eval_ground_truth=None if eval_ground_truth is None else eval_ground_truth[..., sample_indices],
                     **kwargs,
                 )
+                
                 if getattr(generation_config, "save_likelihoods", False):
                     xs, model_output_cache, cache, conf = generation_output
                     # likelihoods[:, sample_indices][(xs != denoiser_inputs.xt).bool()] = conf[(xs != denoiser_inputs.xt).bool()]
