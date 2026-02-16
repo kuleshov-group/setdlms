@@ -148,32 +148,7 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         """
         device = input_ids.device
         bsz, seq_len = input_ids.shape
-        if seq_len < self.block_size:
-            return False
         self._ensure_state(bsz)
-
-        # Compute entropy on the last `block_size` tokens (or all if shorter)
-        last_block = input_ids[:, -self.block_size:]
-        entropy = self._compute_entropy(last_block)  # should return float or tensor scalar
-
-        # Make it a python float for comparisons
-        if torch.is_tensor(entropy):
-            # If returns (batch,) you can adapt, but your original looks scalar.
-            entropy_val = float(entropy.detach().mean().cpu())
-        else:
-            entropy_val = float(entropy)
-
-        stop_any = False
-
-        # Criterion: low entropy => stop
-        if entropy_val < self.entropy_threshold:
-            stop_any = True
-            if self.var_length:
-                # In your code: truncate_idx = x.shape[1] - 256
-                for i in range(bsz):
-                    self.truncate_idx[i] = max(seq_len - self.block_size, 0)
-                    self.stop_reason[i] = "low_entropy"
-
         if self.var_length:
             # Criterion: stop at second EOS *only if no mask tokens appear before it*
             eos_mask = (input_ids == self.eos_token_id)  # (B, L)
@@ -198,6 +173,32 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
                             stop_any = True
                             self.truncate_idx[i] = min(second_eos_pos + 1, seq_len)
                             self.stop_reason[i] = "second_eos"
+        if seq_len < self.block_size:
+            return False
 
+
+        # Compute entropy on the last `block_size` tokens (or all if shorter)
+        last_block = input_ids[:, -self.block_size:]
+        entropy = self._compute_entropy(last_block)  # should return float or tensor scalar
+
+        # Make it a python float for comparisons
+        if torch.is_tensor(entropy):
+            # If returns (batch,) you can adapt, but your original looks scalar.
+            entropy_val = float(entropy.detach().mean().cpu())
+        else:
+            entropy_val = float(entropy)
+
+        stop_any = False
+
+        # Criterion: low entropy => stop
+        if entropy_val < self.entropy_threshold:
+            stop_any = True
+            if self.var_length:
+                # In your code: truncate_idx = x.shape[1] - 256
+                for i in range(bsz):
+                    self.truncate_idx[i] = max(seq_len - self.block_size, 0)
+                    self.stop_reason[i] = "low_entropy"
+
+    
         # Note: Hugging Face expects a single bool: stop generation for the whole batch.
         return stop_any

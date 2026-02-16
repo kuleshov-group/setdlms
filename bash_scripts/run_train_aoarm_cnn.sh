@@ -11,7 +11,7 @@ HIDDEN_SIZE=256
 INTERMEDIATE_SIZE=768
 N_LAYERS=28
 
-DESIRED_BLOCK_SIZE=4
+DESIRED_BLOCK_SIZE=8
 MAX_BLOCK_SIZE=1024
 
 # Hyperparameters
@@ -21,7 +21,7 @@ BATCH_SIZE=128
 MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
-TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_v2"
+TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_len1k_v2"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -48,7 +48,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=aoarm_efficient \
   model.config.attn_backend="sdpa" \
-  training.compile_backbone=false \
+  training.compile_backbone=true \
   model.config.length=1024 \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=true \

@@ -11,7 +11,7 @@ N_LAYERS=1
 TOP_LAYERS=false
 REINIT_MODEL=false
 
-DESIRED_BLOCK_SIZE=16
+DESIRED_BLOCK_SIZE=1
 MAX_BLOCK_SIZE=1024
 ANNEAL_STEPS="0ba"
 
@@ -30,7 +30,7 @@ MAX_EVAL_SAMPLES=null  # Set to null or remove this line to use full dataset
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_distill_v23"
+TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_distill_eso_v4"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -82,7 +82,9 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
   model.config.noise_config.length=1024 \
   model.config.noise_config.plot_schedule=false \
-  model.config.noise_config.int_min=0.1
+  composer.callbacks.log_gradient_variance.accumulation_steps=2 \
+  eval_dataloader.batch_size=1 \
+  +model.config.inefficient_training=true
   #  \
   # +composer/algorithms=noise_level_annealing \
   # composer.algorithms.noise_level_annealing.anneal_duration=${ANNEAL_STEPS} \

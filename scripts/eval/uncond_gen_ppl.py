@@ -26,6 +26,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import math
+from src.denoiser.ar import AR, ARConfig
 log = logging.getLogger(__name__)
 
 
@@ -72,7 +73,7 @@ def setup_ddp() -> int:
 
 def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer.pretrained_model_name_or_path)
-    maybe_add_missing_special_tokens(tokenizer)
+    tokenizer = maybe_add_missing_special_tokens(tokenizer)
     # Load model
     try:
         model = load_model_from_ckpt_dir_path(
@@ -109,8 +110,9 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
 
     # HACK FOR MDLM/BD3LM HF MODELS
     if model is None or not hasattr(model, "generate"):
-        # from src.denoiser.diffusion import MDLM, MDLMConfig
+        from src.denoiser.diffusion import MDLM, MDLMConfig
         from src.denoiser.diffusion import BD3LM, BD3LMConfig
+        from src.denoiser.ar import AR, ARConfig
         from src.noise_schedule.noise_schedules import LinearNoise
         
         # Create dit backbone config
@@ -132,12 +134,18 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
         backbone_config.hidden_size = 768
         backbone_config.adaln = True
         
+        # backbone_config.adaln = False
+        
         # Ensure it's a DictConfig
         if not isinstance(backbone_config, DictConfig):
             backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
+        # mdlm_config = ARConfig(
+        #     length=backbone_config.length,
+        #     backbone_config=backbone_config,
+        # )
         
         # mdlm_config = MDLMConfig(
-        #     length=length,
+        #     length=backbone_config.length,
         #     backbone_config=backbone_config,
         # )
         mdlm_config = BD3LMConfig(
@@ -155,6 +163,10 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
             mdlm_config,
             tokenizer=tokenizer,
         )
+        # model_ = AR(
+        #     mdlm_config,
+        #     tokenizer=tokenizer,
+        # )
         if model is not None:
             state_dict = model.state_dict()
         else:
@@ -200,7 +212,7 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
     parallelism_factors = []
     lengths = []
     # divide MAX_SAMPLES by world size, if rank is 0, use the remainder
-    MAX_SAMPLES = 500
+    MAX_SAMPLES = 5000
     if dist.is_available() and dist.is_initialized():
         world_size = dist.get_world_size()
         new_max_samples = int(MAX_SAMPLES // world_size)
@@ -219,7 +231,7 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
                 generation_output = model.generate(
                     inputs=input_ids,
                     disable_pbar=True,
-                    # tokenizer=tokenizer,  # For debugging: prints intermediate generation
+                    tokenizer=tokenizer,
                     **gen_kwargs,
                 )
                 end_event.record()
@@ -235,7 +247,7 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
                     parallelism_factor = -1.0
                 length = outputs.numel() - input_ids.numel()
                 entropy = _compute_entropy(outputs, model.tokenizer.mask_token_id, model.tokenizer.pad_token_id)
-                if hasattr(gen_kwargs["stopping_criteria"][0], "truncate_idx") and gen_kwargs["stopping_criteria"][0].truncate_idx is not None:
+                if gen_kwargs["stopping_criteria"] is not None and hasattr(gen_kwargs["stopping_criteria"][0], "truncate_idx") and gen_kwargs["stopping_criteria"][0].truncate_idx is not None:
                     truncate_idx = gen_kwargs["stopping_criteria"][0].truncate_idx[0]
                     if truncate_idx is not None:
                         outputs = outputs[:, :min(truncate_idx, outputs.shape[1])]
@@ -258,7 +270,7 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
             output_text = model.tokenizer.decode(outputs[0])
             # print(output_text)
             # remove all text after the second <|endoftext|>
-            output_text = model.tokenizer.bos_token + "".join(output_text.split(model.tokenizer.bos_token)[1:2])
+            # output_text = model.tokenizer.bos_token + "".join(output_text.split(model.tokenizer.bos_token)[1:2])
             # if length > 1024:
             generated_samples.append(output_text)
         pbar.set_postfix(tput=f"{np.mean(tputs):.2f} +/- {np.std(tputs):.2f}", parallel=f"{np.mean(parallelism_factors):.2f} +/- {np.std(parallelism_factors):.2f}")
@@ -318,13 +330,13 @@ def _accumulate_nll_sliding_window(
     stride: int,
     eos_token_id: int | None,
     device: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     """
     Computes token-level NLL over full sequences using a sliding window
     (like your reference code), ignoring padding and optionally ignoring EOS.
 
     Returns:
-      nll_sum (float64 scalar), nll_sumsq (float64 scalar), nll_count (float64 scalar)
+      nlls (B, L) tensor of nlls for each token
     """
     B, L = input_ids.shape
 
@@ -384,13 +396,7 @@ def _accumulate_nll_sliding_window(
             valid_accum[:, update_start:end] += mask[:, -update_window:]
     # Convert to per-token values (typically valid_accum is 0/1; division is defensive)
     valid = (valid_accum > 0).to(torch.float32)
-    nll_tok = torch.where(valid > 0, nll_accum / torch.clamp(valid_accum, min=1.0), torch.zeros_like(nll_accum))
-
-    nll_sum = (nll_tok * valid).sum(dtype=torch.float64)
-    nll_sumsq = ((nll_tok.to(torch.float64) ** 2) * valid.to(torch.float64)).sum(dtype=torch.float64)
-    nll_count = valid.sum(dtype=torch.float64)
-
-    return nll_sum, nll_sumsq, nll_count
+    return nll_accum[torch.where(valid > 0)]
 
 
 
@@ -440,20 +446,15 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
 
     eval_dataloader = DataLoader(
         list(zip(input_ids, attention_mask)),
-        batch_size=min(1, len(input_ids)),
+        batch_size=min(16, len(input_ids)),
         shuffle=False,
     )
 
     # We aggregate globally without gathering all per-token values:
     #   nll: token-level (ignoring padding and the first token)
     #   entropy: sequence-level (one per sample)
-    local_nll_sum = torch.zeros((), device=device, dtype=torch.float64)
-    local_nll_sumsq = torch.zeros((), device=device, dtype=torch.float64)
-    local_nll_count = torch.zeros((), device=device, dtype=torch.float64)
-
-    local_ent_sum = torch.zeros((), device=device, dtype=torch.float64)
-    local_ent_sumsq = torch.zeros((), device=device, dtype=torch.float64)
-    local_ent_count = torch.zeros((), device=device, dtype=torch.float64)
+    nlls = torch.tensor([], device=device, dtype=torch.float64)
+    entropies = torch.tensor([], device=device, dtype=torch.float64)
 
 
     with torch.no_grad():
@@ -462,7 +463,7 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
             input_ids, attention_mask = [x.to(device) for x in batch]
 
             # Sliding-window token likelihood (handles long sequences)
-            nll_sum, nll_sumsq, nll_count = _accumulate_nll_sliding_window(
+            nlls_batch = _accumulate_nll_sliding_window(
                 eval_model,
                 input_ids,
                 attention_mask,
@@ -471,9 +472,7 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
                 eos_token_id=eval_tokenizer.eos_token_id,
                 device=device,
             )
-            local_nll_sum += nll_sum
-            local_nll_sumsq += nll_sumsq
-            local_nll_count += nll_count
+            nlls = torch.cat([nlls, nlls_batch], dim=0)
 
             # sequence-level entropy (one per sample in batch)
             entropy = _compute_entropy(
@@ -481,38 +480,27 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
                 eval_tokenizer.mask_token_id,
                 eval_tokenizer.pad_token_id,
             ).to(torch.float64)  # (B,)
-            local_ent_sum += entropy.sum()
-            local_ent_sumsq += (entropy ** 2).sum()
-            local_ent_count += torch.tensor(entropy.numel(), device=device, dtype=torch.float64)
-            pbar.set_postfix(nll_mean=local_nll_sum.item() / local_nll_count.item(), ent_mean=local_ent_sum.item() / local_ent_count.item())
+            entropies = torch.cat([entropies, entropy], dim=0)
+            pbar.set_postfix(nll_mean=nlls.mean().item(), ent_mean=entropies.mean().item())
+
+    # gather nlls and entropies across devices
+    nlls = gather_results(nlls.detach().cpu().numpy(), dist.get_world_size())
+    entropies = gather_results(entropies.detach().cpu().numpy(), dist.get_world_size())
  
-
-    if world_size > 1:
-        dist.all_reduce(local_nll_sum, op=dist.ReduceOp.SUM)
-        dist.all_reduce(local_nll_sumsq, op=dist.ReduceOp.SUM)
-        dist.all_reduce(local_nll_count, op=dist.ReduceOp.SUM)
-
-        dist.all_reduce(local_ent_sum, op=dist.ReduceOp.SUM)
-        dist.all_reduce(local_ent_sumsq, op=dist.ReduceOp.SUM)
-        dist.all_reduce(local_ent_count, op=dist.ReduceOp.SUM)
-
-    nll_mean = (local_nll_sum / local_nll_count).to(torch.float32)
-    nll_var = (local_nll_sumsq / local_nll_count) - (nll_mean.to(torch.float64) ** 2)
-    nll_std = torch.sqrt(torch.clamp(nll_var.to(torch.float32), min=0.0))
-
-    ent_mean = (local_ent_sum / local_ent_count).to(torch.float32)
-    ent_var = (local_ent_sumsq / local_ent_count) - (ent_mean.to(torch.float64) ** 2)
-    ent_std = torch.sqrt(torch.clamp(ent_var.to(torch.float32), min=0.0))
+    nll_mean = np.mean(nlls)
+    nll_std = np.std(nlls)
+    ent_mean = np.mean(entropies)
+    ent_std = np.std(entropies)
 
     return {
-        "nll_mean": nll_mean.item(),
-        "nll_std": nll_std.item(),
-        "ppl": torch.exp(nll_mean).item(),
-        "entropy_mean": ent_mean.item(),
-        "entropy_std": ent_std.item(),
+        "nll_mean": nll_mean,
+        "nll_std": nll_std,
+        "ppl": np.exp(nll_mean),
+        "entropy_mean": ent_mean,
+        "entropy_std": ent_std,
         "num_samples_local": len(local_samples),
-        "num_samples_global": int(local_ent_count.item()),
-        "num_tokens_global": int(local_nll_count.item()),
+        "num_samples_global": len(nlls),
+        "num_tokens_global": len(nlls),
         "eval_context_size": int(context_size),
         "eval_stride": int(stride),
     }

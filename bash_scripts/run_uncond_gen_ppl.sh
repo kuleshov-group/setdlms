@@ -12,16 +12,34 @@ source setup_env.sh
 MAX_LENGTH=1024
 L=$((MAX_LENGTH - 1)) # for block diffusion / aoarm, we can override the length here for the correct attn masks. mdlm will use sliding window.
 
-#### BDL3M
-BLOCK_SIZE=4
+### BDL3M
+# BLOCK_SIZE=16
+# MAX_WINDOW_SIZE=${BLOCK_SIZE}
+# MODEL_PATH="kuleshov-group/bd3lm-owt-block_size${BLOCK_SIZE}"
+# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
+# # MODEL_PATH="/home/ubuntu/mar/runs/ablation_bs16_loglinear_final/last-v1.ckpt"
+# # MODEL_PATH="/home/ubuntu/mar/runs/ablation_bs4_loglinear_final/last-v1.ckpt"
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
+# T=${BLOCK_SIZE}
+
+# mdlm
+# BLOCK_SIZE=32
+# MAX_WINDOW_SIZE=${BLOCK_SIZE}
+# MODEL_PATH="kuleshov-group/mdlm-owt"
+# KV_CACHING=false
+# ALIGN_INPUTS_TO_BLOCKS=true
+# T=${BLOCK_SIZE}
+
+# ar
+BLOCK_SIZE=1
 MAX_WINDOW_SIZE=${BLOCK_SIZE}
-MODEL_PATH="kuleshov-group/bd3lm-owt-block_size${BLOCK_SIZE}"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
-# MODEL_PATH="/home/ubuntu/mar/runs/ablation_bs16_loglinear_final/last-v1.ckpt"
-# MODEL_PATH="/home/ubuntu/mar/runs/ablation_bs4_loglinear_final/last-v1.ckpt"
+# MODEL_PATH=/share/kuleshov/ssahoo/textdiffusion/text-diffusion-exp-v4-AgBZrc-small-ar-param-ar_data-openwebtext-split_seqlen-1024_maxs-1300001_bs-512/checkpoints/last.ckpt
+MODEL_PATH="kuleshov-group/ar-noeos-owt"
 KV_CACHING=true
 ALIGN_INPUTS_TO_BLOCKS=true
 T=${BLOCK_SIZE}
+
 
 
 #### SBD
@@ -50,15 +68,15 @@ CONFIDENCE_THRESHOLD=1e6
 CKPT="best"
 USE_EMA=true
 
-REPETITION_PENALTY=2.0
-NUCLEUS_P=0.99
+REPETITION_PENALTY=1.0
+NUCLEUS_P=0.8
+
+echo "MODEL_PATH: ${MODEL_PATH} BLOCK_SIZE: ${BLOCK_SIZE} MAX_WINDOW_SIZE: ${MAX_WINDOW_SIZE} NUCLEUS_P: ${NUCLEUS_P} REPETITION_PENALTY: ${REPETITION_PENALTY}"
 
 TOKENIZER_PATH="gpt2"
 # TOKENIZER_PATH="bert-base-uncased"
 
-echo "MODEL_PATH: ${MODEL_PATH}"
-
-OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-T${T}-do_sample-${DO_SAMPLE}-first_hitting-${FIRST_HITTING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}"
+OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-T${T}-do_sample-${DO_SAMPLE}-first_hitting-${FIRST_HITTING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}-nucleus_p${NUCLEUS_P}-repetition_penalty${REPETITION_PENALTY}-conf${CONFIDENCE_THRESHOLD}"
 PORT=$((RANDOM % 10000 + 29500))
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/uncond_gen_ppl.py \
   hydra.output_subdir=null \

@@ -248,7 +248,7 @@ def main(cfg: DictConfig) -> None:
             generation_outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=True,
-                # tokenizer=tokenizer,  # For debugging: prints intermediate generation
+                tokenizer=tokenizer,
                 **gen_kwargs,
             )
             if local_rank == 0:

@@ -10,27 +10,28 @@ source setup_env.sh
 # ALIGN_INPUTS_TO_BLOCKS=true
 # BLOCK_SIZE=1
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_len1k_v1"
-# LEN_PENALTY=1.0
-# REGULATION_START=0
-# REPETITION_PENALTY=1.0
-
-########### MDLM
-KV_CACHING=false
-ALIGN_INPUTS_TO_BLOCKS=false
-BLOCK_SIZE=32
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
-LEN_PENALTY=1.1
-REGULATION_START=80
-REPETITION_PENALTY=1.5
-
-########### BD3LM
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=true
-# BLOCK_SIZE=4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
 # LEN_PENALTY=1.1
 # REGULATION_START=80
 # REPETITION_PENALTY=1.5
+
+########### MDLM
+# KV_CACHING=false
+# ALIGN_INPUTS_TO_BLOCKS=false
+# BLOCK_SIZE=32
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
+# LEN_PENALTY=1.1
+# REGULATION_START=80
+# REPETITION_PENALTY=1.5
+
+########### BD3LM
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=true
+BLOCK_SIZE=16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block16_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
+LEN_PENALTY=1.1
+REGULATION_START=80
+REPETITION_PENALTY=1.5
 
 ########### E2D2
 # BLOCK_SIZE=1024
@@ -40,10 +41,10 @@ REPETITION_PENALTY=1.5
 # LEN_PENALTY=1.1
 # REGULATION_START=80
 # REPETITION_PENALTY=1.5
-# MAX_WINDOW_SIZE=16
+# MAX_WINDOW_SIZE=4
 # # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_v3"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
+# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 echo "BLOCK_SIZE: ${BLOCK_SIZE}"
@@ -79,6 +80,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   hydra/job_logging=disabled \
   hydra/hydra_logging=disabled \
   +eval/seq2seq@task=cnn_dailymail \
+  +task.dataset.cache_path="" \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   +ckpt_file="${CKPT}-rank0.pt" \

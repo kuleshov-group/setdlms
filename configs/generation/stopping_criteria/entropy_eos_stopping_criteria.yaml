@@ -1,6 +1,6 @@
 entropy_eos_stopping_criteria:
   _target_: src.custom_transformers.generation.EntropyEosStoppingCriteria
   tokenizer: ${tokenizer}
-  entropy_threshold: 4.0
+  entropy_threshold: -1.0
   block_size: 256
   var_length: true

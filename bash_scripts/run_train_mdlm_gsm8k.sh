@@ -20,7 +20,7 @@ PRECISION="amp_bf16"
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="mdlm_distill_v5"
+TAG="mdlm_distill_v6"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else

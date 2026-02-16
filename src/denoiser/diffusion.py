@@ -473,7 +473,10 @@ class MDLM(Denoiser):
     def _nucleus_sample(self, p_x0: torch.FloatTensor, p: float):
         if p == 1.0:
             return p_x0
-        p_x0_ = p_x0[:, -self.config.block_size:].clone()
+        if getattr(self.config, "block_size", None) is not None:
+            p_x0_ = p_x0[:, -self.config.block_size:].clone()
+        else:
+            p_x0_ = p_x0
         sorted_probs, sorted_indices = p_x0_.sort(dim=-1, descending=True)
         cum_probs = sorted_probs.cumsum(dim=-1)
         nucleus_mask = cum_probs <= p
@@ -481,7 +484,10 @@ class MDLM(Denoiser):
         sorted_probs = sorted_probs * nucleus_mask
         p_x0_.scatter_(-1, sorted_indices, sorted_probs * nucleus_mask)
         p_x0_ /= p_x0_.sum(-1, keepdim=True)
-        p_x0[:, -self.config.block_size:] = p_x0_
+        if getattr(self.config, "block_size", None) is not None:
+            p_x0[:, -self.config.block_size:] = p_x0_
+        else:
+            p_x0 = p_x0_
         return p_x0
 
     def _generate_unconditional(
@@ -860,6 +866,8 @@ class MDLM(Denoiser):
                 input_indices = (0, inputs_offset + ((block_id + 1) * block_size))
             if self.mask_token_id not in xt:
                 continue
+            if sample_indices.shape[-1] == 0:
+                break
             rank = (
                 torch.distributed.get_rank()
                 if torch.distributed.is_available() and torch.distributed.is_initialized()
@@ -963,8 +971,6 @@ class MDLM(Denoiser):
                         remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
                         inf_budget_per_step.extend([0] * remaining_steps)
                     break
-            if tokenizer is not None:  # Useful for debugging
-                print(tokenizer.batch_decode(accumulated_samples))
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
                     input_ids=accumulated_samples[  # type: ignore
@@ -989,7 +995,7 @@ class MDLM(Denoiser):
                 )
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
-        )
+        ) if len(num_tokens_generated_per_step) > 0 else 0
         inf_budget = None
         if getattr(generation_config, "compute_inf_budget", False):
             inf_budget = sum(inf_budget_per_step) / len(inf_budget_per_step)
@@ -2515,8 +2521,6 @@ class AnyOrderBD3LM(BD3LM):
                     # if hasattr(stopping_criteria[0], "truncate_idx"):
                     #     accumulated_samples = accumulated_samples[:, : min(stopping_criteria[0].truncate_idx[0], accumulated_samples.shape[-1])]
                     break
-        if tokenizer is not None:
-            print(tokenizer.batch_decode(accumulated_samples))
         if pad_length is not None:
             accumulated_samples = accumulated_samples[:, : -pad_length]
         parallelism_factor = sum(num_tokens_generated_per_step) / len(

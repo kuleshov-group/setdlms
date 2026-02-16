@@ -18,7 +18,7 @@ MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG="ar"
+TAG="ar_len1k_v1"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -26,7 +26,7 @@ GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
     MICRO_BATCH_SIZE=16
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=8
+    MICRO_BATCH_SIZE=4
 else
     MICRO_BATCH_SIZE=4
 fi

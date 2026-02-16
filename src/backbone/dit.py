@@ -491,7 +491,7 @@ class DDiTBlockCausal(nn.Module):
         # back to [B, q_len, H*D] (match rest of block)
         x = rearrange(attn, "b s h d -> b s (h d)")
       else:
-        x = self.cross_attn_with_cache(q, k, v, causal=False, mask=mask)
+        x = self.cross_attn_with_cache(q, k, v, causal=True, mask=mask)
     else:
       # No caching, use original QKV tensor
       if self.attn_backend == 'flash_attn':

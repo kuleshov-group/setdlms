@@ -27,7 +27,10 @@ fi
 WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
-NUM_VISIBLE_DEVICES=8
+export TMPDIR=/share/kuleshov/${USERNAME}/tmp
+export TRITON_CACHE_DIR=/share/kuleshov/${USERNAME}/triton_cache
+export TORCHINDUCTOR_CACHE_DIR=/share/kuleshov/${USERNAME}/torchinductor_cache
+NUM_VISIBLE_DEVICES=4
 RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev"
 DATA_DIR="/share/kuleshov/ma2238/dllm-data"
 mkdir -p ${RUN_DIR}
@@ -37,8 +40,8 @@ sbatch \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=gpu \
-  --constraint="[h100|a100|a6000]" \
+  --partition=kuleshov,gpu \
+  --constraint="[a6000]" \
   --time=960:00:00 \
   --mem=128000 \
   --nodes=1 \
@@ -47,6 +50,6 @@ sbatch \
   --mail-user=${USERNAME}@cornell.edu \
   --mail-type=ALL \
   --requeue \
-  --exclude=nikola-compute-12,goyal-compute-01,snavely-compute-02,rush-compute-02 \
+  --exclude=nikola-compute-12,goyal-compute-01,snavely-compute-02,rush-compute-02,sun-compute-01,klara,rush-compute-03,ma-compute-02 \
   --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
   ${script_full_path}

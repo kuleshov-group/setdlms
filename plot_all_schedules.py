@@ -6,7 +6,7 @@ import plotly.colors as pc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-L = 6
+L = 4
 
 def schedule_curves(noise_schedule, n_points=1000):
     num_blocks = noise_schedule.length // noise_schedule.block_size
@@ -75,6 +75,7 @@ widths=[0.25, 0.6, 0.8, 1.0]
 # widths = [1/desired_block_sizes[-1], 1/2, 2/3, 1.0]
 # ks = [None, 0.5, 0.5, None]
 ks = [None] * len(desired_block_sizes)
+ks[0] = 1
 nrows2 = 2
 ncols2 = 2
 
@@ -87,7 +88,6 @@ for j, desired_block_size in enumerate(desired_block_sizes, start=1):
         max_block_size=L,
         length=L,
         plot_schedule=False,
-        int_min=0.1 if (widths[j-1] is None and ks[j-1] is None) else None,
         b=widths[j-1],
         k=ks[j-1],
     )
@@ -98,19 +98,19 @@ for j, desired_block_size in enumerate(desired_block_sizes, start=1):
     
     # expected_active = max(float(np.trapz(y[:, 0], ts[:, 0])) * L, 1.0)
     if desired_block_size == 1:
-        subplot_title = f'<b>AR</b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
+        subplot_title = f'<b>AR</b><br>C̄ = {expected_active:.1f} token(s)'
     elif desired_block_size == L:
-        subplot_title = f'<b>MDLM</b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
+        subplot_title = f'<b>Diffusion</b><br>C̄ = {expected_active:.1f} token(s)'
     else:
         text_color = "green"
-        subplot_title = f'<b><span style="color:{text_color};"><i>Soft Block DLM</i></span></b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
+        subplot_title = f'<b><span style="color:{text_color};"><i>Set Diffusion</i></span></b><br>C̄ = {expected_active:.1f} token(s)'
     subplot_titles += [subplot_title]
 
     # main_title_name = f"Matched to BD3LM block size {desired_block_size}"
     # if desired_block_size == 1:
     #     main_title_name = "Matched to AR"
     # elif desired_block_size == L:
-    #     main_title_name = "Matched  MDLM"
+    #     main_title_name = "Matched  Diffusion"
     # subplot_titles += [f'<b>{main_title_name}</b><br>Avg inference budget = {expected_active:.1f} token(s)']
 fig2 = make_subplots(
     rows=nrows2,
@@ -119,7 +119,7 @@ fig2 = make_subplots(
     shared_xaxes=True,
     shared_yaxes=True,
     horizontal_spacing=0.08,
-    vertical_spacing=0.32,
+    vertical_spacing=0.23,
 )
 for ann in fig2.layout.annotations:
     ann.yshift = 15  # increase this value for more space
@@ -155,7 +155,7 @@ fig2.update_layout(
     title_y=1.0,
     template="plotly",
     plot_bgcolor="white",
-    height=500,
+    height=450,
     width=500,
 
     # reserve space for title + legend
@@ -166,7 +166,7 @@ fig2.update_layout(
         title="<b>Token index</b>",
         orientation="h",
         x=0.5,
-        y=1.35,          # below title_y=0.97, above subplot titles
+        y=1.3,          # keep padding, reduce whitespace above legend
         xanchor="center",
         yanchor="top",
         font=dict(size=16),
@@ -205,6 +205,8 @@ for c in range(1, ncols2 + 1):
         row=nrows2,
         col=c,
         title_font_size=16,
+        title_standoff=0,
+        automargin=True,
     )
 
 fig2.update_layout(
@@ -212,14 +214,14 @@ fig2.update_layout(
     margin=dict(
         l=40,   # just enough for y-label
         r=10,
-        t=5,
-        b=20,
+        t=0,
+        b=45,
     ),
 )
 # fname = "all_schedules_new.png"
 # fig2.write_image(fname)
 # write to pdf
-fig2.write_image("all_schedules.png")
+fig2.write_image("all_schedules.pdf")
 
 
 # print(f"Wrote {fname}")

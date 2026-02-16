@@ -19,6 +19,12 @@ def all_nonzero_patterns_sorted(L: int):
 
     return sorted(pats, key=sort_key)
 
+# --- Font sizing (make all fonts bigger)
+BASE_FONT_SIZE = 20
+AXIS_TITLE_FONT_SIZE = 22
+SUBPLOT_TITLE_FONT_SIZE = 18
+XLABEL_FONT_SIZE = 18
+TICK_FONT_SIZE = 16
 
 def sample_permutation_order(noise, L, num_samples=100):
     t = torch.rand(1, L)
@@ -193,6 +199,7 @@ def plot_pattern_probabilities(
         tick0=0,
         dtick=1,
         showticklabels=False,
+        tickfont=dict(size=TICK_FONT_SIZE),
         showgrid=False,
         zeroline=False,
         row=row,
@@ -259,6 +266,7 @@ def plot_pattern_probabilities(
         tick0=0,
         dtick=1,
         showticklabels=False,
+        tickfont=dict(size=TICK_FONT_SIZE),
         showgrid=False,
         zeroline=False,
         row=row,
@@ -293,13 +301,14 @@ def plot_pattern_probabilities_multi_schedule(
         cols=ncols,
         shared_yaxes=True,
         horizontal_spacing=horizontal_spacing,
-        vertical_spacing=0.18,
+        vertical_spacing=0.16,
         subplot_titles=[""] * (nrows * ncols),
     )
     
     fig.update_layout(
         height=figsize[1] * 80,
         width=figsize[0] * 80,
+        font=dict(size=BASE_FONT_SIZE),
     )
 
     # reserve a bottom band for the glyph grid (shared across subplots)
@@ -317,7 +326,7 @@ def plot_pattern_probabilities_multi_schedule(
     # --- Clean header layout (no Plotly legend)
     fig.update_layout(
         showlegend=False,
-        margin=dict(b=120, t=210),
+        margin=dict(b=120, t=170),
         plot_bgcolor="white",  # room for: mega title + legend row + subplot titles
     )
 
@@ -338,12 +347,12 @@ def plot_pattern_probabilities_multi_schedule(
     mr = m.r or 0
     mt = m.t or 0
     mb = m.b or 0
-    header_y = 1.2
+    header_y = 1.16
 
-    # Slightly bigger legend fonts
-    LEGEND_LABEL_FS = 15   # was ~14
-    LEGEND_SQUARE_FS = 19  # was ~18 for mask, ~20 for clean border
-    LEGEND_AR_FS = 15      # was ~14
+    # Bigger legend fonts (custom header row)
+    LEGEND_LABEL_FS = 18
+    LEGEND_SQUARE_FS = 21
+    LEGEND_AR_FS = 18
     d_legend = 0.0125      # keep your spacing from square -> label
 
     # Compute paper-units-per-pixel for width-based centering
@@ -366,13 +375,15 @@ def plot_pattern_probabilities_multi_schedule(
     m_tw  = _text_w_paper(masked_label, LEGEND_LABEL_FS)
     c_tw  = _text_w_paper(clean_label,  LEGEND_LABEL_FS)
 
-    item_gap = 0.06  # gap between the two legend items (tweak if desired)
+    item_gap = 0.08  # gap between the two legend items (tweak if desired)
 
     masked_item_w = sq_w + d_legend + m_tw
     clean_item_w  = sq_w + d_legend + c_tw
     group_w = masked_item_w + item_gap + clean_item_w
 
-    group_left = 0.5 - group_w / 2.0
+    # Shift the (Masked, Clean) legend group slightly left
+    legend_center_x = 0.5
+    group_left = legend_center_x - group_w / 2.0
 
     # Centers of the square glyphs
     mask_x  = group_left + sq_w / 2.0
@@ -440,7 +451,7 @@ def plot_pattern_probabilities_multi_schedule(
     fig.add_annotation(
         xref="paper", yref="paper",
         x=x_ar + d_legend, y=header_y,
-        text="AR prediction",
+        text="AR masking",
         showarrow=False,
         xanchor="left", yanchor="middle",
         font=dict(size=LEGEND_AR_FS),
@@ -474,12 +485,12 @@ def plot_pattern_probabilities_multi_schedule(
     
         # expected_active = max(float(np.trapz(y[:, 0], ts[:, 0])) * L, 1.0)
         if ns.b <= 1 / L:
-            title = f'<b>AR</b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
+            title = f'<b>AR</b><br>C̄ = {expected_active:.1f} token(s)'
         elif ns.b == 1.0:
-            title = f'<b>MDLM</b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
+            title = f'<b>Masked Diffusion</b><br>C̄ = {expected_active:.1f} token(s)'
         else:
             text_color = "green"
-            title = f'<b><span style="color:{text_color};"><i>Soft Block DLM</i></span></b><br>Max parallel: {max_overlap:d} token(s)<br>Avg. predicted: {expected_active:.1f} token(s)'
+            title = f'<b><span style="color:{text_color};"><i>Set Masked Diffusion</i></span></b><br>C̄ = {expected_active:.1f} token(s)'
 
         # title = f'Unmasking width: {ns.b:.1f}<br><span style="color:{color};">Masking patterns possible: {int(percent_masking_patterns):d}%</span>'    
         titles.append(title)  # Store title for later annotation
@@ -519,7 +530,7 @@ def plot_pattern_probabilities_multi_schedule(
             x=x_center,
             y=y_top,   # just above each subplot
             showarrow=False,
-            font=dict(size=14),
+            font=dict(size=SUBPLOT_TITLE_FONT_SIZE),
             xanchor="center",
             yanchor="bottom",
         )
@@ -568,14 +579,27 @@ def plot_pattern_probabilities_multi_schedule(
     # )
     
     # Add y-axis label to the first subplot
-    fig.update_yaxes(title_text=r"$\text{Sampling prob. } q(\mathbf{z}_t | \mathbf{x})$", row=1, col=1)
+    fig.update_yaxes(
+        title_text=r"$\text{Sampling prob. } q(\mathbf{z}_t | \mathbf{x})$",
+        title_font=dict(size=AXIS_TITLE_FONT_SIZE),
+        tickfont=dict(size=TICK_FONT_SIZE),
+        row=1,
+        col=1,
+    )
 
-    fig.update_yaxes(title_text=r"$\text{Sampling prob. } q(\mathbf{z}_t | \mathbf{x})$", row=2, col=1)
+    fig.update_yaxes(
+        title_text=r"$\text{Sampling prob. } q(\mathbf{z}_t | \mathbf{x})$",
+        title_font=dict(size=AXIS_TITLE_FONT_SIZE),
+        tickfont=dict(size=TICK_FONT_SIZE),
+        row=2,
+        col=1,
+    )
     
     # Add y-ticks for both subplots
     for col_idx in range(1, n + 1):
         fig.update_yaxes(
             showticklabels=True,
+            tickfont=dict(size=TICK_FONT_SIZE),
             row=1,
             col=col_idx,
         )
@@ -595,10 +619,10 @@ def plot_pattern_probabilities_multi_schedule(
         showarrow=False,
         xanchor="center",
         yanchor="top",
-        font=dict(size=14),
+        font=dict(size=XLABEL_FONT_SIZE),
     )
     fig.update_layout(
-        margin=dict(l=35, r=15, t=85, b=40, pad=0),
+        margin=dict(l=35, r=15, t=70, b=40, pad=0),
     )
 
     # fig.update_layout(
