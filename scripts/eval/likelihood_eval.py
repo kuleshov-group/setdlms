@@ -5,7 +5,7 @@ import hydra
 import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from streaming import StreamingDataset
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 from src.denoiser.diffusion import MDLM, MDLMConfig
@@ -46,7 +46,6 @@ def main(cfg: DictConfig) -> None:
 
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
 
-
     # Setup distributed
     if not dist.is_initialized():
         log.info("Initializing dist")
@@ -61,7 +60,6 @@ def main(cfg: DictConfig) -> None:
     model_config_overrides = getattr(cfg, "model_config_overrides", None) or {}
     # Convert to plain dict if it's a DictConfig to ensure proper merging
     if isinstance(model_config_overrides, DictConfig):
-        from omegaconf import OmegaConf
         model_config_overrides = OmegaConf.to_container(model_config_overrides, resolve=True)
     if fsspec_exists(os.path.join(cfg.pretrained_model_name_or_path, "config.yaml")):
         model = load_model_from_ckpt_dir_path(
@@ -77,16 +75,17 @@ def main(cfg: DictConfig) -> None:
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
-                **model_config_overrides,
             )
         except:  # Model not compatible with CausalLM
-            model = AutoModelForMaskedLM.from_pretrained(
-                cfg.pretrained_model_name_or_path,
-                trust_remote_code=True,
-                revision=getattr(cfg, "pretrained_model_revision", None),
-                **model_config_overrides,
-            )
-    # HACK FOR MDLM
+            try:
+                model = AutoModelForMaskedLM.from_pretrained(
+                    cfg.pretrained_model_name_or_path,
+                    trust_remote_code=True,
+                    revision=getattr(cfg, "pretrained_model_revision", None),
+                )
+            except:
+                model = None
+    # HACK for legacy codebase compatibility
     if model is None or not hasattr(model, "generate"):
         
         # Create dit backbone config
@@ -107,44 +106,47 @@ def main(cfg: DictConfig) -> None:
         backbone_config.n_heads = 12
         backbone_config.hidden_size = 768
 
-        # for ar
-        # backbone_config.adaln = False
-        # backbone_config.causal_attention = True
-        # backbone_config.attn_backend = "flash_attn"
-
-        backbone_config.adaln = True
+        if "-ar-" in backbone_config.pretrained_model_name_or_path:
+            backbone_config.adaln = False
+            backbone_config.causal_attention = True
+            backbone_config.attn_backend = "flash_attn"
+        else:
+            backbone_config.adaln = True
     
         # Ensure it's a DictConfig
         if not isinstance(backbone_config, DictConfig):
             backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
-        
-        mdlm_config = MDLMConfig(
-            length=length,
-            backbone_config=backbone_config,
-        )
-        # mdlm_config = BD3LMConfig(
-        #     length=length,
-        #     backbone_config=backbone_config,
-        #     block_size=cfg.block_size,
-        # )
-        # mdlm_config = ARConfig(
-        #     length=length,
-        #     backbone_config=backbone_config,
-        # )
-        mdlm_config.mask_token_id = tokenizer.mask_token_id
-        mdlm_config.vocab_size = len(tokenizer)
-        model_ = MDLM(
-            mdlm_config,
-            tokenizer=tokenizer,
-        )
-        # model_ = BD3LM(
-        #     mdlm_config,
-        #     tokenizer=tokenizer,
-        # )
-        # model_ = AR(
-        #     mdlm_config,
-        #     tokenizer=tokenizer,
-        # )
+        if "mdlm-" in backbone_config.pretrained_model_name_or_path:
+            model_config = MDLMConfig(
+                length=length,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = MDLM(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        elif "ar-" in backbone_config.pretrained_model_name_or_path:
+            model_config = ARConfig(
+                length=length,
+                backbone_config=backbone_config,
+            )
+            denoiser = AR(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        else:
+            model_config = BD3LMConfig(
+                length=length,
+                backbone_config=backbone_config,
+                block_size=cfg.block_size,
+            )
+            denoiser = BD3LM(
+                model_config,
+                tokenizer=tokenizer,
+            )
         if model is not None:
             state_dict = model.state_dict()
         else:
@@ -162,10 +164,9 @@ def main(cfg: DictConfig) -> None:
             new_state_dict.pop("sampling_eps_min")
         if "sampling_eps_max" in new_state_dict:
             new_state_dict.pop("sampling_eps_max")
-        model_.backbone.load_state_dict(new_state_dict)
-        model = model_.to(device)
+        denoiser.backbone.load_state_dict(new_state_dict)
+        model = denoiser.to(device)
         model.noise_schedule = LinearNoise()
-
     model = HuggingFaceModel(
         model=model,
         tokenizer=tokenizer,

@@ -19,7 +19,7 @@ PRECISION="amp_bf16"
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 NUM_SHOT=0
 
-TAG="ar_distill_v5"
+TAG="ar_distill_v6"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=gsm8k-${NUM_SHOT}shot_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
 
@@ -45,6 +45,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.reinit_model=false \
   model.config.backbone_config.num_layers=${N_LAYERS} \
   model.config.backbone_config.keep_top_layers=false \
+  model.config.backbone_config.use_causal_mask=true \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \

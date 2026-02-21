@@ -1,46 +1,82 @@
+import math
+import re
+
 import numpy as np
 import plotly.graph_objects as go
-import re
-import math
-from plotly.colors import sequential
-from collections import defaultdict
-import copy
-# import plotly.io as pio
-# pio.kaleido.scope.mathjax = None   # avoids some MathJax-related JS issues
-
 
 avg_block_size = 4
-
 
 xaxis_key = "speed_x"
 
 filename = f"line_plot_block{avg_block_size}_{xaxis_key}.png"
 show_xerr = False
 
-# Optional vector export (requires kaleido, same as PNG export).
 save_pdf = True
 pdf_filename = filename.rsplit(".", 1)[0] + ".pdf"
 
-from typing import Optional, Tuple
-
-# If set, force the maximum x value shown on the plot (in data units).
-# Example: xaxis_max = 3.0
 if xaxis_key == "x":
     xaxis_min = 0.8
     xaxis_max = 4.2
 else:
     xaxis_min = 30
     xaxis_max = 170
-AR_COLOR = "#636EFA"  # keep consistent with the trace
-
+AR_COLOR = "#636EFA"
 
 legend_font_size = 14
 
 xaxis_std_key = xaxis_key + "_std"
 
+_S_RE = re.compile(r"S\s*=\s*(\d+)")
+FIXED_COLOR_BY_S: dict[int, str] = {
+    4: "#ff7f0e",
+    16: "#1f77b4",
+}
 
-# ----- Initialize data -----
-ar_dict =  {
+
+def _extract_s(name: str) -> int | None:
+    m = _S_RE.search(name)
+    return int(m.group(1)) if m else None
+
+
+def _is_block_diff(name: str) -> bool:
+    n = name.lower()
+    return ("block diff" in n) and ("set" not in n)
+
+
+def _is_soft_block_diff(name: str) -> bool:
+    return "set" in name.lower()
+
+
+def _unified_color_by_s(s_values: list[int]) -> dict[int, str]:
+    if not s_values:
+        return {}
+    s_sorted = sorted(set(s_values))
+    palette = [
+        "#ff7f0e",
+        "#1f77b4",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+    ]
+    out: dict[int, str] = {}
+    for i, s in enumerate(s_sorted):
+        out[s] = FIXED_COLOR_BY_S.get(s, palette[i % len(palette)])
+    return out
+
+
+def _paper_aspect(fig: go.Figure) -> float:
+    m = fig.layout.margin
+    pw = float(fig.layout.width - (m.l + m.r))
+    ph = float(fig.layout.height - (m.t + m.b))
+    return ph / max(pw, 1e-9)
+
+
+ar_dict = {
     "name": "AR",
     "x": np.array([1.0]),
     "x_std": np.array([0.0]),
@@ -48,33 +84,22 @@ ar_dict =  {
     "speed_x_std": np.array([0.25]),
     "y": np.array([80.21]),
 }
-# groups = [
-#     {
-#         "name": "Block diff (S=16)",
-#         "x": np.array([2.61, 2.89]),
-#         "x_std": np.array([0.50, 0.58])
-#         "y": np.array([46.78, 45.03]),
-#     },
-# ]
 
 
-def _rounded_rect_path(x0: float, y0: float, x1: float, y1: float, r: float) -> str:
-    """
-    SVG path for a rounded rectangle in paper coords.
-    (Plotly doesn't have per-legend-group boxes, so we draw our own.)
-    """
-    r = max(0.0, min(r, (x1 - x0) / 2, (y1 - y0) / 2))
-    return (
-        f"M {x0+r},{y0} "
-        f"L {x1-r},{y0} "
-        f"Q {x1},{y0} {x1},{y0+r} "
-        f"L {x1},{y1-r} "
-        f"Q {x1},{y1} {x1-r},{y1} "
-        f"L {x0+r},{y1} "
-        f"Q {x0},{y1} {x0},{y1-r} "
-        f"L {x0},{y0+r} "
-        f"Q {x0},{y0} {x0+r},{y0} Z"
-    )
+def _legend_grouping(name: str) -> tuple[str | None, str, int]:
+    if name == "AR":
+        return ("AR", "AR", 0)
+    s = _extract_s(name)
+    if s is None:
+        return (None, name, 0)
+    lg = f"Block size {s}"
+    if _is_block_diff(name):
+        return (lg, f"Block Diffusion (S={int(s)})", 0)
+    if _is_soft_block_diff(name):
+        return (lg, f"Ours: Set Diffusion (S ≤ {int(s * 2)})", 1)
+    return (lg, name, 2)
+
+
 def _add_custom_grouped_legend(
     fig: go.Figure,
     *,
@@ -82,20 +107,11 @@ def _add_custom_grouped_legend(
     block_color_by_s: dict[int, str],
     soft_color_by_s: dict[int, str],
 ):
-    s_present = sorted(
-        {int(m.group(1)) for g in groups_ for m in [_S_RE.search(g["name"])] if m is not None}
-    )
+    s_present = sorted({s for s in (_extract_s(g["name"]) for g in groups_) if s is not None})
     has_ar = any(g.get("name") == "AR" for g in groups_)
 
     if not s_present and not has_ar:
         return
-
-    # ---------------- helpers ----------------
-    def _paper_aspect(fig: go.Figure) -> float:
-        m = fig.layout.margin
-        pw = float(fig.layout.width - (m.l + m.r))
-        ph = float(fig.layout.height - (m.t + m.b))
-        return ph / max(pw, 1e-9)
 
     def _star_path(cx, cy, r_outer, r_inner, aspect, n=5):
         ry_o = r_outer / max(aspect, 1e-9)
@@ -112,28 +128,23 @@ def _add_custom_grouped_legend(
         return f"M {cx},{cy+ry_adj} L {cx+rx},{cy} L {cx},{cy-ry_adj} L {cx-rx},{cy} Z"
 
     aspect = _paper_aspect(fig)
-    # -----------------------------------------
 
-    # legend band
     y0, y1 = 1.02, 1.24
     y_center = 0.5 * (y0 + y1)
 
     pad_x = 0.01
 
-    # ===== spacing knobs =====
-    box_w = 0.28          # width of each S group box
-    base_gap = 0.02       # small spacing at the very end
-    group_gap = 0.22      # BIG spacing BETWEEN S-groups (e.g., S=4 <-> S=16)
-    ar_group_gap = 0.09   # smaller spacing BETWEEN AR and first S-group
+    box_w = 0.28
+    base_gap = 0.02
+    group_gap = 0.22
+    ar_group_gap = 0.09
     legend_shift_x = -0.1
-    # =========================
 
     shapes = list(fig.layout.shapes) if fig.layout.shapes else []
     ann = list(fig.layout.annotations) if fig.layout.annotations else []
 
     x_cursor = pad_x + legend_shift_x
 
-    # ---- AR (as its own group, but with smaller following gap) ----
     if has_ar:
         ar_w = 0.04
 
@@ -154,13 +165,11 @@ def _add_custom_grouped_legend(
 
         x_cursor += ar_w
 
-        # AR -> first S group uses ar_group_gap (not group_gap)
         if len(s_present) > 0:
             x_cursor += ar_group_gap
         else:
             x_cursor += base_gap
 
-    # ---- S groups ----
     for i, s in enumerate(s_present):
         x0 = x_cursor
         x1 = x0 + box_w
@@ -183,7 +192,6 @@ def _add_custom_grouped_legend(
         bc = block_color_by_s.get(s, "#666")
         sc = soft_color_by_s.get(s, bc)
 
-        # Block Diffusion
         shapes.append(dict(type="line", xref="paper", yref="paper",
                            x0=x_icon0, y0=y_row1, x1=x_icon1, y1=y_row1,
                            line=dict(color=bc, width=3), layer="above"))
@@ -198,7 +206,6 @@ def _add_custom_grouped_legend(
             font=dict(size=legend_font_size, color="#111"),
         ))
 
-        # Set Diffusion
         shapes.append(dict(type="line", xref="paper", yref="paper",
                            x0=x_icon0, y0=y_row2, x1=x_icon1, y1=y_row2,
                            line=dict(color=sc, width=3), layer="above"))
@@ -218,50 +225,15 @@ def _add_custom_grouped_legend(
 
         x_cursor = x1
 
-        # S-group -> next S-group uses BIG group_gap
         if i < len(s_present) - 1:
             x_cursor += group_gap
         else:
             x_cursor += base_gap
 
     fig.update_layout(shapes=shapes, annotations=ann)
-def _legend_grouping(name: str) -> Tuple[Optional[str], str, Optional[str], int]:
-    """
-    Returns:
-      legendgroup: group key (e.g., "S=4") or None
-      display_name: trace label inside the group ("Block Diffusion" / "Set Diffusion" / "AR" / etc.)
-      group_title: legend group title (shown once per group) or None
-      type_rank: used for ordering within group (Block Diff before Soft Block Diff)
-    """
-    if name == "AR":
-        return ("AR", "AR", None, 0)
-
-    s = _extract_s(name)
-    if s is None:
-        # Fallback: keep as-is, no grouping
-        return (None, name, None, 0)
-
-    lg = f"Block size {s}"
-    if _is_block_diff(name):
-        # Put group title on the Block Diff trace so it appears once per S-group
-        return (lg, f"Block Diffusion (S={int(s)})", None, 0)
-    if _is_soft_block_diff(name):
-        return (lg, f"Ours: Set Diffusion (S ≤ {int(s * 2)})", None, 1)
-
-    # Unknown trace type but has S; group it anyway without a title
-    return (lg, name, None, 2)
-
 
 
 groups = [
-    # {
-    #     "name": "Block Diffusion (S=4)",
-    #     "x": np.array([1.0, 1.55, 1.64, 1.70, 1.74, 1.78, 1.93, 2.05, 2.15, 2.25, 2.36, 2.47, 2.59]),
-    #     "x_std": np.array([0.0, 0.19, 0.21, 0.22, 0.22, 0.23, 0.25, 0.26, 0.28, 0.28, 0.29, 0.30, 0.31]),
-    #     "speed_x": np.array([40.51, 55.36, 57.19, 59.83, 59.96, 61.10, 64.61, 67.06, 69.27, 71.68, 73.50, 75.33, 77.8]),
-    #     "speed_x_std": np.array([0.21, 4.53, 4.59, 4.81, 4.72, 4.87, 5.02, 5.31, 5.30, 5.51, 4.98, 4.85, 4.84]),
-    #     "y": np.array([63.53, 63.61, 63.68, 63.38, 63.31, 63.31, 61.56, 60.42, 60.05, 58.91, 57.62, 54.97, 52.62]),
-    # },
     {
         "name": "Block Diffusion (S=4)",
         "x": np.array([1.0, 1.55, 1.78, 1.93, 2.05, 2.15, 2.25, 2.36, 2.47, 2.59]),
@@ -278,24 +250,7 @@ groups = [
         "speed_x": np.array([45.25, 69.79, 80.82, 87.47, 92.62, 96.81, 102.86, 107.24, 116.60, 122.25]),
         "speed_x_std": np.array([0.17, 7.73, 9.48, 9.93, 10.17, 10.12, 10.65, 11.43, 10.33, 11.26]),
         "y": np.array([66.41, 67.85, 67.10, 65.73, 64.37, 63.68, 61.56, 58.23, 58.23, 54.81]),
-    },      
-    # {
-    #     "name": "Set Diffusion (match w/ S=4)",
-    #     "x": np.array([1.0,1.52,1.74, 1.91,2.03,2.15,2.26,2.40,2.54,2.64]),
-    #     "x_std": np.array([0.0,0.16,0.21,0.23,0.25,0.26,0.27,0.28,0.29,0.28]),
-    #     "speed_x": np.array([45.60, 67.35,77.11,84.58,90.21,95.04,99.87,105.37,111.14,117.62]),
-    #     "speed_x_std": np.array([0.23,7.06,8.43,9.27,9.74,10.50,10.98,11.14,11.30, 11.28]),
-    #     "y": np.array([65.66, 66.41, 64.59, 64.82, 64.44,63.38, 61.41,59.14,56.56,52.77]),
-    # },
-    # {
-    #     "name": "Set Diffusion (match w/ S=4)",
-    #     "x": np.array([1.0,2.40,2.57,2.77,2.99,3.24]),
-    #     "x_std": np.array([0.0,0.37,0.42,0.45,0.48]),
-    #     "conf": np.array([1e6,0.8,0.75,0.70,0.65,0.60,]),
-    #     "speed_x": np.array([]),
-    #     "speed_x_std": np.array([]),
-    #     "y": np.array([64.44,54.74,51.33,46.47,37.53,33.13]),
-    # },
+    },
     {
         "name": "Block Diffusion (S=16)",
         "x": np.array([1.0, 1.83, 2.28, 2.61, 2.89, 3.18, 3.43, 3.71]),
@@ -312,26 +267,15 @@ groups = [
         "speed_x": np.array([41.51,69.74,82.77,92.93,101.39,111.24,121.78,132.43,147.4,160.68]),
         "speed_x_std": np.array([0.37,8.52,11.45,12.54,14.77,17.41,19.53,20.39,29.66,32.25]),
         "y": np.array([61.94,60.12,60.73,59.59,57.9,56.56,54.13,49.20,44.58,41.62]),
-    },                                                                                            
-    # {
-    #     "name": "Set Diffusion (match w/ S=16)",
-    #     "x": np.array([1.0, 1.69, 2.15, 2.54, 2.93])
-    #     "x_std": np.array([0.0,0.23,-1.0,0.75,1.04]),
-    #     "conf": np.array([1e6, 0.99, 0.95,0.90,0.85,0.80,0.75,0.70])
-    #     "speed_x": np.array([40.84, 67.67, 87.73, 0.0, 0.0, 135.80,154.57, 178.79]),
-    #     "speed_x_std": np.array([0.31, 7.62, 20.10, 0.0, 0.0, 53.84,69.0,83.22]),
-    #     "y": np.array([60.8,60.58,61.11,59.74,57.24]),
-    # },
+    },
 ]
 
-# make sure everything has the same len
 for g in groups:
     assert len(g[xaxis_key]) == len(g["y"]), f"len of {g['name']} is {len(g[xaxis_key])} != {len(g['y'])}"
 
 groups = [ar_dict] + groups
 
 
-# ----- Plot extents (for custom axis arrows/gradient baselines) -----
 def _compute_extents(groups_: list[dict]) -> tuple[float, float, float, float]:
     xs = np.concatenate([g[xaxis_key] for g in groups_])
     ys = np.concatenate([g["y"] for g in groups_])
@@ -363,10 +307,6 @@ def _axis_gradient_shapes(
     end_gray: int = 0,
     width: int = 3,
 ) -> list[dict]:
-    """
-    Draw x- and y- axis baseline lines with a gray->black gradient in the + direction.
-    We use many short line segments because Plotly axis lines can't be true gradients.
-    """
     shapes: list[dict] = []
 
     dx = x1 - x0
@@ -430,111 +370,22 @@ if xaxis_max is not None:
 if xaxis_min is not None:
     x0_axis = float(xaxis_min)
 
-
-
-# ----- Color styling helpers -----
-_S_RE = re.compile(r"S\s*=\s*(\d+)")
-
-# Fixed per-block-size colors (applies to both Block Diff and Soft Block Diff).
-# Requested: S=4 -> orange, S=16 -> blue.
-FIXED_COLOR_BY_S: dict[int, str] = {
-    4: "#ff7f0e",   # Plotly orange
-    16: "#1f77b4",  # Plotly blue
-}
-
-
-def _extract_s(name: str) -> int | None:
-    m = _S_RE.search(name)
-    return int(m.group(1)) if m else None
-
-
-def _is_block_diff(name: str) -> bool:
-    n = name.lower()
-    return ("block diff" in n) and ("set" not in n)
-
-
-def _is_soft_block_diff(name: str) -> bool:
-    return "set" in name.lower()
-
-
-def _gray_shades_by_s(s_values: list[int]) -> dict[int, str]:
-    # Light -> dark as S increases.
-    if not s_values:
-        return {}
-    s_sorted = sorted(set(s_values))
-    n = len(s_sorted)
-    if n == 1:
-        return {s_sorted[0]: "#7f7f7f"}
-
-    light = 0.6  # near-white gray
-    dark = 0.1   # dark gray
-    levels = light - (light - dark) * (np.arange(n) / (n - 1))
-    colors = []
-    for lvl in levels:
-        v = int(round(255 * float(lvl)))
-        colors.append(f"#{v:02x}{v:02x}{v:02x}")
-    return dict(zip(s_sorted, colors))
-
-
-def _green_shades_by_s(s_values: list[int]) -> dict[int, str]:
-    # Use Plotly sequential greens; light -> dark as S increases.
-    if not s_values:
-        return {}
-    s_sorted = sorted(set(s_values))
-    n = len(s_sorted)
-    palette = list(sequential.Greens)
-    # Avoid the very lightest entries so points remain visible on white.
-    palette = palette[3:-2] if len(palette) > 2 else palette
-    if n == 1:
-        return {s_sorted[0]: palette[len(palette) // 2]}
-    idxs = np.linspace(0, len(palette) - 1, n).round().astype(int)
-    return {s: palette[i] for s, i in zip(s_sorted, idxs)}
-
-def _unified_color_by_s(s_values: list[int]) -> dict[int, str]:
-    """
-    Return a single color per block size S, used for both Block Diff and Set Diffusion
-    Prefers `FIXED_COLOR_BY_S`; falls back to a palette for any other S.
-    """
-    if not s_values:
-        return {}
-    s_sorted = sorted(set(s_values))
-    # Fallback palette (in case other S values appear).
-    palette = [
-        "#ff7f0e",  # orange
-        "#1f77b4",  # blue
-        "#2ca02c",  # green
-        "#d62728",  # red
-        "#9467bd",  # purple
-        "#8c564b",  # brown
-        "#e377c2",  # pink
-        "#7f7f7f",  # gray
-        "#bcbd22",  # olive
-        "#17becf",  # cyan
-    ]
-    out: dict[int, str] = {}
-    for i, s in enumerate(s_sorted):
-        out[s] = FIXED_COLOR_BY_S.get(s, palette[i % len(palette)])
-    return out
-
-
 block_s = [_extract_s(g["name"]) for g in groups if _is_block_diff(g["name"])]
 block_s = [s for s in block_s if s is not None]
 soft_s = [_extract_s(g["name"]) for g in groups if _is_soft_block_diff(g["name"])]
 soft_s = [s for s in soft_s if s is not None]
 
-# Single color per S across both trace types (and legend icons).
 color_by_s = _unified_color_by_s(block_s + soft_s)
 block_color_by_s = color_by_s
 soft_color_by_s = color_by_s
 
 
-# ----- Create figure -----
 fig = go.Figure()
 
 for group in groups:
     is_single_point = len(group[xaxis_key]) == 1
     name = group["name"]
-    legendgroup, display_name, group_title, type_rank = _legend_grouping(name)
+    legendgroup, display_name, type_rank = _legend_grouping(name)
     s = _extract_s(name)
 
     trace_color = None
@@ -554,10 +405,6 @@ for group in groups:
             mode="lines+markers" if not is_single_point else "markers",
             name=display_name,
             legendgroup=legendgroup,
-            # Title appears once per legendgroup (we set it only on Block Diff traces)
-            legendgrouptitle_text=group_title,
-            # Keep groups ordered by S, and within group: Block Diff then Soft Block Diff
-            # (AR stays first because its legendrank is small)
             legendrank=(0 if legendgroup == "AR" else (1000 * int(s or 0) + 10 * type_rank)),
 
             line=dict(color=trace_color, width=2) if (not is_single_point and trace_color) else dict(width=2),
@@ -565,7 +412,6 @@ for group in groups:
                 dict(
                     symbol=symbol,
                     size=10 if is_single_point else 8,
-                    # For Block Diff, use a white-filled square so the line doesn't show through.
                     color=("white" if _is_block_diff(name) else trace_color),
                     line=dict(color=trace_color, width=(2 if _is_block_diff(name) else 1)),
                 )
@@ -579,43 +425,24 @@ for group in groups:
             ),
         )
     )
-# ----- Layout -----
 fig.update_layout(
-    # title=f"GSM8K Accuracy-Parallelism Tradeoff",
-    # Make figure taller + skinnier (in pixels) for PNG export.
     width=500,
     height=500,
     xaxis_title="Parallelism factor (↑)" if xaxis_key != "speed_x" else "Speed (tokens/sec; ↑)",
     yaxis_title="Accuracy (↑)",
     legend_title="",
-    # White background (both plot area + surrounding paper)
     plot_bgcolor="white",
     paper_bgcolor="white",
-    # Legend on top, horizontal
     showlegend=False,
-    # Give enough room for the custom boxed legend band we draw in paper coords.
     margin=dict(t=90, l=55, r=20, b=55),
 )
 _add_custom_grouped_legend(fig, groups_=groups, block_color_by_s=block_color_by_s, soft_color_by_s=soft_color_by_s)
-
-# ===== Diagonal "Improved Tradeoff" arrow (clean + aligned) =====
-import math
-
-def _paper_aspect(fig: go.Figure) -> float:
-    """pixel aspect of plotting area (paper-y per paper-x)."""
-    m = fig.layout.margin
-    pw = float(fig.layout.width  - (m.l + m.r))
-    ph = float(fig.layout.height - (m.t + m.b))
-    return ph / max(pw, 1e-9)
 
 def _arrowhead_path_paper_aspect(
     xh, yh, xt, yt, aspect_y_over_x,
     head_len=0.05,
     head_w=0.034,
 ):
-    """
-    Arrowhead triangle aligned with the visible shaft direction.
-    """
     dx = xh - xt
     dy = (yh - yt) * aspect_y_over_x
     n = math.hypot(dx, dy)
@@ -636,7 +463,6 @@ def _arrowhead_path_paper_aspect(
     return f"M {xh},{yh} L {x1},{y1} L {x2},{y2} Z"
 
 
-# ---- placement ----
 x_tail, y_tail = 0.72, 0.68
 x_head, y_head = 0.95, 0.91
 
@@ -649,15 +475,14 @@ dy_p = y_head - y_tail
 dx_s = dx_p
 dy_s = dy_p * aspect
 n_s = math.hypot(dx_s, dy_s)
-ux_s, uy_s = dx_s / n_s, dy_s / n_s  # unit direction in screen-like coords
-shaft_back = 0.018  # shorten the shaft near the head (paper-x units; tuned visually)
+ux_s, uy_s = dx_s / n_s, dy_s / n_s
+shaft_back = 0.018
 x_shaft_end = x_head - shaft_back * ux_s
 y_shaft_end = y_head - (shaft_back * uy_s) / aspect
 
 xm = 0.5 * (x_tail + x_head)
 ym = 0.5 * (y_tail + y_head)
 
-# ---- draw arrow shaft ----
 shapes = list(fig.layout.shapes) if fig.layout.shapes else []
 
 shapes.append(dict(
@@ -669,7 +494,6 @@ shapes.append(dict(
     layer="above",
 ))
 
-# ---- draw arrowhead ----
 shapes.append(dict(
     type="path",
     xref="paper", yref="paper",
@@ -702,7 +526,7 @@ fig.add_annotation(
     yref="paper",
     text="Improved Tradeoff",
     showarrow=False,
-    textangle=-angle_deg,  # EXACT match to arrow's rendered angle
+    textangle=-angle_deg,
     xanchor="center",
     yanchor="bottom",
     font=dict(size=16, color=arrow_color),
@@ -716,7 +540,7 @@ fig.update_xaxes(
     tickfont=dict(size=16),
     title_font=dict(size=18),
     range=[x0_axis, x1_axis],
-    showline=False,  # we draw custom gradient + arrow baselines instead
+    showline=False,
     zeroline=False,
 )
 fig.update_yaxes(
@@ -724,16 +548,14 @@ fig.update_yaxes(
     tickfont=dict(size=16),
     title_font=dict(size=18),
     range=[y0_axis, y1_axis],
-    showline=False,  # we draw custom gradient + arrow baselines instead
+    showline=False,
     zeroline=False,
 )
 
-# ----- Custom axis baselines: gradient + arrowheads -----
 axis_shapes = _axis_gradient_shapes(x0=x0_axis, x1=x1_axis, y0=y0_axis, y1=y1_axis)
 existing_shapes = list(fig.layout.shapes) if fig.layout.shapes else []
 fig.update_layout(shapes=existing_shapes + axis_shapes)
 
-# Arrowheads (draw only a short final segment so we don't override the gradient)
 arrow_frac = 0.02
 fig.add_annotation(
     x=x1_axis,
@@ -768,7 +590,6 @@ fig.add_annotation(
     text="",
 )
 
-# ----- Save -----
 fig.write_image(filename)
 if save_pdf:
     fig.write_image(pdf_filename)

@@ -2,14 +2,46 @@
 # Setup environment
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
+# TODO: Uncomment a model and run
 
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_again_v2"
+# setdlm s <= 8
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_again_v2"
+# BLOCK_SIZE=1024
+
+# setdlm s <= 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt8_max1024_distill_v23"
+# BLOCK_SIZE=1024
+
+# setdlm s <= 32
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_again_v2"
+# BLOCK_SIZE=1024
+
+# TODO: REDO TRAIN
+# ar
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_distill_v5"
+# BLOCK_SIZE=1
+
+# TODO: DEBUG
+# mdlm
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v5"
+BLOCK_SIZE=1024
+
+# bd3lm s = 4
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"
+# BLOCK_SIZE=4
+
+# bd3lm s = 8
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block8_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs8_v10"
+# BLOCK_SIZE=8
+
+# bd3lm s = 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block16_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs16_v10"
+# BLOCK_SIZE=16
 
 # MODEL_PATH="outputs/<PATH_TO_SAVED_MODEL_DIR>"
 REVISION=null
 
 EVAL_DATASET="gsm8k_eval_distill"
-BLOCK_SIZE=1024  # TODO: Change as needed
 BATCH_SIZE=1
 PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-1.7B-Base"  # TODO: Change as needed
 CKPT_FILE="best-rank0.pt"
@@ -44,7 +76,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   ~generation@generation_config \
   ~generation/logits_processor@logits_processor_list \
   ~generation/stopping_criteria@stopping_criteria_list \
-  gen_kwargs=null \
-  +model_config_overrides.block_size=${BLOCK_SIZE} \
-  +model_config_overrides.eval_block_size=${BLOCK_SIZE} \
-  +model_config_overrides.eval_nll=false
+  gen_kwargs=null

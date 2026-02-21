@@ -130,10 +130,17 @@ class AR(Denoiser):
         loss = -torch.gather(model_output, -1, denoiser_inputs.x0).squeeze(-1)
 
         nlls = loss * denoiser_inputs.tokens_mask
-        count = denoiser_inputs.tokens_mask.sum(dim=-1)
 
-        batch_nll = nlls.sum(dim=-1)
-        token_nll = (batch_nll / count).mean()
+        # Compute per-batch counts and losses to avoid division by zero
+        count = denoiser_inputs.tokens_mask.sum(dim=-1)  # Per-batch counts
+        batch_nll = nlls.sum(dim=-1)  # Per-batch losses
+
+        # Avoid division by zero: if count is 0, set token_nll to 0
+        token_nll = torch.where(
+            count > 0,
+            batch_nll / count,
+            torch.zeros_like(batch_nll)
+        ).mean()
 
         return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
 
@@ -155,16 +162,10 @@ class AR(Denoiser):
         x: torch.LongTensor,
         log_x_theta: torch.FloatTensor,
         logits_processor: Optional[LogitsProcessorList] = None,
-        tokenizer: Optional[PreTrainedTokenizer] = None,
     ) -> torch.LongTensor:
-        # need to sample a gumbel for each token
-        # to save memory in variable-length sampling
-        batch_size = x.shape[0]
-        device = x.device
-        # assert tokenizer is not None, "Tokenizer is required"
-        # if logits_processor is not None:
-        #     log_x_theta = logits_processor(input_ids=x, scores=log_x_theta)
-        #     log_x_theta = log_x_theta.log_softmax(dim=-1)
+        if logits_processor is not None:
+            log_x_theta = logits_processor(input_ids=x, scores=log_x_theta)
+            log_x_theta = log_x_theta.log_softmax(dim=-1)
         log_x_theta = self._nucleus_sample(log_x_theta.exp(), p=getattr(generation_config, "nucleus_p", 1.0)).log()
         y = self._sample_categorical(log_x_theta.exp(), do_sample=getattr(generation_config, "do_sample", False))
         return y
@@ -210,27 +211,24 @@ class AR(Denoiser):
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         assert tokenizer is not None, "Tokenizer is required"
-
-        # if hasattr(self.backbone, "model") and hasattr(self.backbone.model, "generate"):
-        #     outputs = self.backbone.model.generate(
-        #         inputs=inputs,
-        #         attention_mask=torch.ones_like(inputs),
-        #         generation_config=generation_config,
-        #         logits_processor=logits_processor,
-        #         # TODO: debug: passing EOS stopping criteria generates EOS right away?
-        #         # stopping_criteria=stopping_criteria,
-        #         max_length=max_length,
-        #         max_new_tokens=max_new_tokens,
-        #         # TODO: Can we pass this in `generation_config`?
-        #         # eos_token_id=None,  # Uncomment for t-put runs; prevents stopping at EOS
-        #         **kwargs,
-        #     )
-        #     return outputs
+        if hasattr(self.backbone, "model") and hasattr(self.backbone.model, "generate"):
+            outputs = self.backbone.model.generate(
+                inputs=inputs,
+                attention_mask=torch.ones_like(inputs),
+                generation_config=generation_config,
+                logits_processor=logits_processor,
+                stopping_criteria=stopping_criteria,
+                max_length=max_length,
+                max_new_tokens=max_new_tokens,
+                # TODO: Can we pass this in `generation_config`?
+                # eos_token_id=None,  # Uncomment for t-put runs; prevents stopping at EOS
+                **kwargs,
+            )
+            return outputs
         num_pred_tokens = max_new_tokens
         batch_size = inputs.shape[0]
         input_len = inputs.shape[-1]
         device = inputs.device
-        vocab_size = tokenizer.vocab_size
         cache = {}
         all_position_ids = torch.arange(input_len + num_pred_tokens).to(device).unsqueeze(0)
 
@@ -254,7 +252,7 @@ class AR(Denoiser):
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
             log_x_theta = self._forward(logits, cache_inputs, **kwargs)
-            x[:, input_len] = self._generate_unconditional(generation_config, x[:, :input_len], log_x_theta[:, -1], logits_processor, tokenizer)
+            x[:, input_len] = self._generate_unconditional(generation_config, x[:, :input_len], log_x_theta[:, -1], logits_processor)
             cache["past_key_values"] = backbone_output["past_key_values"]
         
         for i in range(input_len, x.shape[-1] - 1):
@@ -269,7 +267,7 @@ class AR(Denoiser):
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
             cache["past_key_values"] = backbone_output["past_key_values"]
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
-            x[:, i + 1] = self._generate_unconditional(generation_config, x[:, input_len:i+1], log_x_theta[:, -1], logits_processor, tokenizer)
+            x[:, i + 1] = self._generate_unconditional(generation_config, x[:, input_len:i+1], log_x_theta[:, -1], logits_processor)
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
                     input_ids=x[:, :i+2],

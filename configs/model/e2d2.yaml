@@ -1,7 +1,0 @@
-defaults:
-  - bd3lm@_here_
-  - _self_
-
-_target_: src.denoiser.diffusion.E2D2
-config:
-  _target_: src.denoiser.diffusion.E2D2Config

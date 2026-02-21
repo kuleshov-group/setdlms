@@ -6,4 +6,3 @@ _target_: src.denoiser.diffusion.MDLM
 config:
   _target_: src.denoiser.diffusion.MDLMConfig
   keep_clean_bos: false
-  eval_nll: false

@@ -2,58 +2,58 @@
 # Setup environment
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
-
 # TODO: Uncomment a model and run
 
-######## AR
+# setdlm s <= 8
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=4
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# setdlm s <= 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_v3"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=4
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# setdlm s <= 32
+# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=4
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# ar
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_len1k_v1"
+# BLOCK_SIZE=1
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=true
-# BLOCK_SIZE=1
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_len1k_v1"
-# LEN_PENALTY=1.1
-# REGULATION_START=80
-# REPETITION_PENALTY=1.5
 
-########### MDLM
+# mdlm
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
+# BLOCK_SIZE=32
 # KV_CACHING=false
 # ALIGN_INPUTS_TO_BLOCKS=false
-# BLOCK_SIZE=32
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
-# LEN_PENALTY=1.1
-# REGULATION_START=80
-# REPETITION_PENALTY=1.5
 
-########### BD3LM
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=true
-BLOCK_SIZE=16
+# bd3lm s = 4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block16_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
-LEN_PENALTY=1.1
-REGULATION_START=80
-REPETITION_PENALTY=1.5
-
-########### E2D2
-# BLOCK_SIZE=1024
-# echo "MODEL_PATH: ${MODEL_PATH}"
+# BLOCK_SIZE=4
 # KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
-# LEN_PENALTY=1.1
-# REGULATION_START=80
-# REPETITION_PENALTY=1.5
-# MAX_WINDOW_SIZE=4
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_v3"
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
+# ALIGN_INPUTS_TO_BLOCKS=true
 
-echo "MODEL_PATH: ${MODEL_PATH}"
-echo "BLOCK_SIZE: ${BLOCK_SIZE}"
-echo "KV_CACHING: ${KV_CACHING}"
-echo "ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS}"
-echo "LEN_PENALTY: ${LEN_PENALTY}"
-echo "REGULATION_START: ${REGULATION_START}"
-echo "REPETITION_PENALTY: ${REPETITION_PENALTY}"
-echo "MAX_WINDOW_SIZE: ${MAX_WINDOW_SIZE}"
+# bd3lm s = 8
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block8_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
+# BLOCK_SIZE=8
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
+
+# bd3lm s = 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block16_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
+# BLOCK_SIZE=16
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
 
 OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail"
 REVISION=null
@@ -71,8 +71,27 @@ MAX_LENGTH=4096
 MAX_NEW_TOKENS=1024
 CKPT="best"
 USE_EMA=true
+LEN_PENALTY=1.1
+REGULATION_START=80
+REPETITION_PENALTY=1.5
+
+echo "MODEL_PATH: ${MODEL_PATH}"
+echo "BLOCK_SIZE: ${BLOCK_SIZE}"
+echo "KV_CACHING: ${KV_CACHING}"
+echo "ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS}"
+echo "MAX_WINDOW_SIZE: ${MAX_WINDOW_SIZE}"
+echo "LEN_PENALTY: ${LEN_PENALTY}"
+echo "REGULATION_START: ${REGULATION_START}"
+echo "REPETITION_PENALTY: ${REPETITION_PENALTY}"
+echo "CONF_THRESHOLD: ${CONF_THRESHOLD}"
+echo "MAX_LENGTH: ${MAX_LENGTH}"
+echo "MAX_NEW_TOKENS: ${MAX_NEW_TOKENS}"
+echo "CKPT: ${CKPT}"
+echo "USE_EMA: ${USE_EMA}"
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}"
+mkdir -p ${OUTPUT_PATH}
+
 PORT=$((RANDOM % 10000 + 29500))
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/seq2seq_eval.py \
   hydra.output_subdir=null \

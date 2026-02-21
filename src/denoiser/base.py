@@ -26,15 +26,12 @@ from transformers.modeling_outputs import ModelOutput
 # Local imports not used, but added here so that HF push_to_hub adds them to model repo
 # noinspection PyUnresolvedReferences
 from src.backbone.automodel import AutoModelFromPreTrained  # noqa: F401
-from src.backbone.encoder_decoder import (  # noqa: F401
-    LLMasEncoderDecoder,
-    LLMasEncoderDecoderShareKV,
-)
 from src.noise_schedule.noise_schedules import (  # noqa: F401
     CosineNoise,
     ExponentialNoise,
     LinearNoise,
     LogarithmicNoise,
+    StaggeredNoise,
 )
 
 

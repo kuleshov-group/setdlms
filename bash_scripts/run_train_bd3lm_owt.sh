@@ -6,8 +6,8 @@ source setup_env.sh
 
 # Model arch
 LENGTH=1024
-BLOCK_SIZE=${LENGTH}
-EVAL_BLOCK_SIZE=${LENGTH}
+BLOCK_SIZE=16
+EVAL_BLOCK_SIZE=${BLOCK_SIZE}
 HIDDEN_SIZE=768
 INTERMEDIATE_SIZE=3072
 N_LAYERS=12
@@ -27,12 +27,9 @@ WARMUP_DURATION="2500ba"
 BATCH_SIZE=512
 MAX_DURATION="1000000ba"
 
-DESIRED_BLOCK_SIZE=1024
-MAX_BLOCK_SIZE=1024
-
 PRETRAINED_MODEL_NAME_OR_PATH=null
 
-TAG="aoarm_norm${NORM_TYPE}_adaln${ADALN}_block${DESIRED_BLOCK_SIZE}_vscratch"
+TAG="bd3lm_norm${NORM_TYPE}_adaln${ADALN}_vscratch"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=owt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -59,7 +56,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_num_checkpoints_to_keep=-1 \
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
-  model=aoarm_efficient \
+  model=bd3lm \
   model.config.attn_backend=${ATTN_BACKEND} \
   training.compile_backbone=true \
   composer.optimizer.betas=[0.9,0.999] \
@@ -85,14 +82,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_interval="10000ba" \
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
-  composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  noise@model.config.noise_config=power \
-  model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
-  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
-  model.config.noise_config.length=${LENGTH} \
-  model.config.noise_config.plot_schedule=false \
-  noise@model.config.noise_config=power \
-  model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
-  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
-  model.config.noise_config.length=1024 \
-  model.config.noise_config.plot_schedule=false
+  composer.callbacks.hf_compatible_checkpointing.disable_hf=true

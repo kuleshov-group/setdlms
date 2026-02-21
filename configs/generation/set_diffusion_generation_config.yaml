@@ -1,0 +1,6 @@
+defaults:
+  - diffusion_generation_config@_here_
+  - _self_
+_target_: src.denoiser.diffusion.SetDiffusionGenerationConfig
+max_window_size: ${block_size}
+ar_caching: true

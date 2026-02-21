@@ -103,7 +103,6 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
   generation/stopping_criteria@stopping_criteria_list='[entropy_eos_stopping_criteria]' \
-  gen_kwargs.return_dict_in_generate=true \
   batch_size=1 \
   +throughput_run=true \
   +model_config_overrides.noise_config.block_size=${MAX_LENGTH} \

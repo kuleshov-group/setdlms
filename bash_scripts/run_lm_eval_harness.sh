@@ -3,115 +3,89 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-QWEN_MODEL="Qwen/Qwen3-1.7B-Base"
-NUM_FEW_SHOT=0
-
 # TODO: Uncomment a model and run
 
-########### AR
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_AR_SAVED_MODEL_DIR>"
-#BLOCK_SIZE=1
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#USE_EMA=true
-
-############ MDLM
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_MDLM_SAVED_MODEL_DIR>"
-#BLOCK_SIZE=64
-#KV_CACHING=false
-#ALIGN_INPUTS_TO_BLOCKS=false
-#USE_EMA=true
-
-############ BD3LM
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_BD3LM_SAVED_MODEL_DIR>"
-#BLOCK_SIZE=4
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#USE_EMA=true
-
-# MODEL_PATH=
-
-
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_distill_v5"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v5"
-BLOCK_SIZE=32
-MAX_WINDOW_SIZE=32
-ALIGN_INPUTS_TO_BLOCKS=true
-T=${BLOCK_SIZE}
-
+# base model
 # MODEL_PATH="Qwen/Qwen3-1.7B-Base"
 
-
+# setdlm s <= 8
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_again_v2"
 # BLOCK_SIZE=1024
 # MAX_WINDOW_SIZE=4
 # ALIGN_INPUTS_TO_BLOCKS=false
-# T=1024
 
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_again_v2"
-# BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=16
-# ALIGN_INPUTS_TO_BLOCKS=false
-# T=1024
-
+# setdlm s <= 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt8_max1024_distill_v23"
 # BLOCK_SIZE=1024
 # MAX_WINDOW_SIZE=8
 # ALIGN_INPUTS_TO_BLOCKS=false
-# T=1024
 
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_distill_staggered_scale1_v1"
+# setdlm s <= 32
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_again_v2"
 # BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=32
-# ALIGN_INPUTS_TO_BLOCKS=false
-# T=1024
-
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"
-# BLOCK_SIZE=4
-# MAX_WINDOW_SIZE=4
-# ALIGN_INPUTS_TO_BLOCKS=true
-# T=4
-
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block16_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs16_v10"
-# BLOCK_SIZE=16
 # MAX_WINDOW_SIZE=16
-# ALIGN_INPUTS_TO_BLOCKS=true
-# T=16
+# ALIGN_INPUTS_TO_BLOCKS=false
 
+# ar
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_distill_v5"
+# KV_CACHING=true
+
+# mdlm
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v5"
+# KV_CACHING=false
+# BLOCK_SIZE=32
+# MAX_WINDOW_SIZE=${BLOCK_SIZE}
+# ALIGN_INPUTS_TO_BLOCKS=true
+
+# bd3lm s = 4
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"
+# KV_CACHING=true
+# BLOCK_SIZE=4
+# MAX_WINDOW_SIZE=${BLOCK_SIZE}
+# ALIGN_INPUTS_TO_BLOCKS=true
+
+# bd3lm s = 8
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block8_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs8_v10"
+# KV_CACHING=true
 # BLOCK_SIZE=8
-# MAX_WINDOW_SIZE=8
+# MAX_WINDOW_SIZE=${BLOCK_SIZE}
 # ALIGN_INPUTS_TO_BLOCKS=true
-# T=8
 
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max32_distill_v2"
-# BLOCK_SIZE=1024
+# bd3lm s = 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block16_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs16_v10"
+# KV_CACHING=true
+# BLOCK_SIZE=16
+# MAX_WINDOW_SIZE=${BLOCK_SIZE}
+# ALIGN_INPUTS_TO_BLOCKS=true
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 
-KV_CACHING=true
 USE_EMA=true
 OUTPUT_DIR="outputs/${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 
+T=${BLOCK_SIZE}
 L=1024
-RETURN_DICT_IN_GENERATE=true
-COMPUTE_INF_BUDGET=false
 DO_SAMPLE=false
 SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
-CONFIDENCE_THRESHOLD=1e6
+CONFIDENCE_THRESHOLD=1e6 # TODO: Change as needed
 CKPT="best"
 LINEAR_UNMASKING=true
 
-echo "MAX WINDOW SIZE ${MAX_WINDOW_SIZE}"
+echo "CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD}"
+echo "T: ${T}"
+echo "LINEAR_UNMASKING: ${LINEAR_UNMASKING}"
+echo "DO_SAMPLE: ${DO_SAMPLE}"
+echo "SAMPLING_STRATEGY: ${SAMPLING_STRATEGY}"
+echo "FIRST_HITTING: ${FIRST_HITTING}"
+echo "CONFIDENCE_BASED_NOISING: ${CONFIDENCE_BASED_NOISING}"
+echo "CONFIDENCE_MARGIN_BASED_NOISING: ${CONFIDENCE_MARGIN_BASED_NOISING}"
+echo "ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS}"
 
-echo "CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD} T: ${T} LINEAR_UNMASKING: ${LINEAR_UNMASKING} DO_SAMPLE: ${DO_SAMPLE} SAMPLING_STRATEGY: ${SAMPLING_STRATEGY} FIRST_HITTING: ${FIRST_HITTING} CONFIDENCE_BASED_NOISING: ${CONFIDENCE_BASED_NOISING} CONFIDENCE_MARGIN_BASED_NOISING: ${CONFIDENCE_MARGIN_BASED_NOISING} ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS} CKPT: ${CKPT} USE_EMA: ${USE_EMA}"
-
-OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}"
-OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_${NUM_FEW_SHOT}shot_L${L}_block${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hit${FIRST_HITTING}-conf_noise${CONFIDENCE_BASED_NOISING}-conf_margin_noise${CONFIDENCE_MARGIN_BASED_NOISING}-conf_thold${CONFIDENCE_THRESHOLD}-align_to_blocks${ALIGN_INPUTS_TO_BLOCKS}"
+OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_L${L}_block${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hit${FIRST_HITTING}-conf_noise${CONFIDENCE_BASED_NOISING}-conf_margin_noise${CONFIDENCE_MARGIN_BASED_NOISING}-conf_thold${CONFIDENCE_THRESHOLD}-align_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-max_window_size${MAX_WINDOW_SIZE}"
 mkdir -p ${OUTPUT_PATH}
 
 PORT=$((RANDOM % 10000 + 29500))
@@ -121,12 +95,11 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   hydra/job_logging=disabled \
   hydra/hydra_logging=disabled \
   +eval/lm_eval_harness@task=gsm8k \
-  task.num_fewshot=${NUM_FEW_SHOT} \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
   task.model.ckpt_file="${CKPT}-rank0.pt" \
   task.model.load_ema_weights=${USE_EMA} \
-  tokenizer.pretrained_model_name_or_path=${QWEN_MODEL} \
+  tokenizer.pretrained_model_name_or_path="Qwen/Qwen3-1.7B-Base" \
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_length=${L} \
@@ -142,8 +115,6 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
-  gen_kwargs.return_dict_in_generate=${RETURN_DICT_IN_GENERATE} \
-  +generation_config.compute_inf_budget=${COMPUTE_INF_BUDGET} \
   +generation_config.ar_caching=true \
   generation_config.linear_unmasking=${LINEAR_UNMASKING} \
   ~generation/logits_processor@logits_processor_list \

@@ -1,33 +1,17 @@
-# dllm-dev
-Internal repo for iteration on Diffusion LLMs
+# Set Diffusion: Interpolating Token Orderings between Autoregression and Diffusion for Fast and Flexible Decoding
+
+[![deploy](https://img.shields.io/badge/Paper_📃-green)](https://arxiv.org/abs/2510.22852)
+[![deploy](https://img.shields.io/badge/Blog_📝%20%20-8A2BE2)](https://m-arriola.com/e2d2)
+[![deploy](https://img.shields.io/badge/HuggingFace_🤗%20-E2D2%20-orange)](https://huggingface.co/collections/kuleshov-group/e2d2)
 
 
 ## 0. Setup
 
-### Provision hardware
-
-If necessary, provision accelerator-enabled VMs with [SkyPilot](https://docs.skypilot.co/en/latest/).
-
-For Lambda, e.g., this is all it takes to create a single A100 node for development:
-
-```bash
-pip install skypilot[lambda]
-sky launch --cluster dllm --gpus A100
-ssh dllm # sky creates ssh configs for you
-```
-
-SkyPilot can also provision clusters, setup environments, manage task execution and some
-other useful stuff.
-See [docs/skypilot.md](docs/skypilot.md) for more details.
-
 ### Setup environment
 
-Install mamba or conda (mamba is far faster):
+Install conda:
 
 ```bash
-# For mamba: https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html#umamba-install
-"${SHELL}" <(curl -L micro.mamba.pm/install.sh)
-
 # For conda: https://docs.conda.io/projects/conda/en/stable/user-guide/install/linux.html
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh && \
 bash miniconda.sh -b -p /opt/conda
@@ -35,15 +19,10 @@ bash miniconda.sh -b -p /opt/conda
 
 Setup a conda environment and install dependencies using:
 
-```bash
-micromamba env create -y -f requirements.yaml --channel-priority flexible
-```
-
 Activate the environment:
 
 ```bash
 conda activate dllm-dev
-# OR micromamba activate dllm-dev
 ```
 
 We also include a [`setup_env.sh`](./setup_env.sh) script that can be used to set up the
@@ -75,23 +54,6 @@ huggingface-cli login --token ${HUGGINGFACE_TOKEN} --add-to-git-credential
 - WandB token can be found [here](https://wandb.ai/authorize).
 - HuggingFace token can be setup [here](https://huggingface.co/settings/tokens).
 
-### Contributing to the repo
-We will try to use GitHub issues to track bugs, features, and todos.
-To contribute to the repo, please create a new issue and assign it to yourself.
-Then [create a new branch from the issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-a-branch-for-an-issue)
-and open a pull request.
-
-
-We use [pre-commit](https://pre-commit.com/) to run linters and formatters on the code.
-To install the pre-commit hooks, run:
-
-```bash
-pre-commit install
-```
-On every `git commit`,
-the pre-commit hooks will run automatically and report any issues / automatic fixes that
-were applied.
-
 ## 1. Code Organization
 1. [`bash_scripts`](bash_scripts): These shells scripts can be used to reproduce the
 experiments from our work.
@@ -117,9 +79,53 @@ experiments from our work.
       2. `Diffusion`: We implement masked diffusion models:
          - `MDLM`: Standard masked diffusion.
          - `BD3LM`: Block diffusion models.
-         - `E2D2`: Our encoder-decoder implementation.
+         - `SetMDLM`: Set diffusion models.
    2. [`src/backbone`](src/backbone): These are the underlying neural networks the take
    in noisy inputs and produce logits.
    Each denoiser is parameterized by a backbone.
    The denoiser can optionally, post-process the logit outputs of the backbone to
    produce log-probs over the clean sequence.
+
+## 2. Reproducing Experiments
+The shell scripts provided in [`bash_scripts`](bash_scripts) can be used to reproduce
+the training and evaluations from our work.
+- For training, the files follow a convention where the dataset and denoiser class are
+specified.
+For example, to train the fine-tuning SetMDLM model on the GSM8K dataset, use the following
+shell script: [`run_train_setmdlm_gsm8k.sh`](bash_scripts/run_train_setmdlm_gsm8k.sh).
+- Once models have been trained, the provided evaluation scripts can be used to reproduce
+tables and figures from our work.
+For example, to evaluate models trained on the GSM8K dataset, use the
+following shell script: [`run_gsm8k_eval.sh`](bash_scripts/run_gsm8k_eval.sh).
+In that file, and similar ones for other evaluations, specify the path to the saved
+checkpoints, and uncomment the relevant section for a given denoiser class.
+We also provide scripts that will produce the generation throughput numbers we report.
+These files contain a `_tput` at the end of the script name.
+
+Below are the evaluation scripts provided for various tasks:
+- Text summarization: [`run_seq2seq_eval_cnndm.sh`](bash_scripts/run_seq2seq_eval_cnndm.sh),[`run_seq2seq_eval_cnndm_tput.sh`](bash_scripts/run_seq2seq_eval_cnndm_tput.sh), [`run_likelihood_eval_cnndm.sh`](bash_scripts/run_likelihood_eval_cnndm.sh)
+- Mathematical reasoning: [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh), [`run_lm_eval_harness_tput.sh`](bash_scripts/run_lm_eval_harness_tput.sh), [`run_likelihood_eval_gsm8k.sh`](bash_scripts/run_likelihood_eval_gsm8k.sh)
+- Likelihood estimation [`run_likelihood_eval_owt.sh`](bash_scripts/run_likelihood_eval_owt.sh), [`run_likelihood_eval_lm1b.sh`](bash_scripts/run_likelihood_eval_lm1b.sh)
+- Infilling (trained on OpenWebText): [`run_seq2seq_eval_infill_nlp.sh`](bash_scripts/run_seq2seq_eval_infill_nlp.sh)
+- Unconditional generation (trained on OpenWebText): [`run_uncond_gen_ppl.sh`](bash_scripts/run_uncond_gen_ppl.sh)
+
+## 3. HuggingFace Integration
+We release the following SetDLMs (s ≤ 8, 16, 32) on HuggingFace:
+- 1.7B SetDLMs for text summarization (distilled on GSM8K from Qwen3 1.7B):
+[`kuleshov-group/..`](..)
+- 80M SetDLMs for text summarization (trained on CNN/DM from scratch):
+[`kuleshov-group/..`](..)
+- 110M SetDLMs for likelihood estimation / infilling (trained on OWT from scratch):
+[`kuleshov-group/..`](..)
+
+## Citation
+```
+@inproceedings{
+arriola2026setdiffusion,
+title={Set Diffusion: Interpolating Token Orderings between Autoregression and Diffusion for Fast and Flexible Decoding},
+author={Marianne Arriola and Volodymyr Kuleshov},
+booktitle={arXiv},
+year={2026},
+url={..}
+}
+```
