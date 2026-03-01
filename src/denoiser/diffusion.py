@@ -1817,7 +1817,7 @@ class SetDLM(BD3LM):
                     and_masks(*dec_masks),
                     B=input_ids.shape[0],
                     H=None,
-                    Q_LEN=input_ids.shape[1],
+                    Q_LEN=input_ids.shape[1] * 2,
                     KV_LEN=input_ids.shape[1] * 2,
                 )
             else:
