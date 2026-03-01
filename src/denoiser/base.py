@@ -321,7 +321,7 @@ class Denoiser(ABC, PreTrainedModel):
                         past_key_values=None,
                     )
         # HACK FOR LEGACY MDLM HF MODEL
-        if "attention_mask" not in inspect.signature(self.backbone.forward).parameters and (hasattr(self.backbone, "_orig_mod") and "attention_mask" not in inspect.signature(self.backbone._orig_mod.forward).parameters):
+        if "attention_mask" not in inspect.signature(self.backbone.forward).parameters or (hasattr(self.backbone, "_orig_mod") and "attention_mask" not in inspect.signature(self.backbone._orig_mod.forward).parameters):
             with torch.cuda.amp.autocast(dtype=torch.float32):
                 backbone_output = self.backbone(denoiser_inputs.xt, sigma=torch.zeros_like(denoiser_inputs.xt[:, 0]))
                 return CausalLMOutputWithPast(
