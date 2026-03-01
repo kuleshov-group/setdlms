@@ -303,7 +303,7 @@ class Denoiser(ABC, PreTrainedModel):
         Returns:
             Backbone output (ModelOutput instance).
         """
-        # HACK FOR MDLM
+        # HACK FOR LEGACY MODELS
         if "timesteps" in inspect.signature(self.backbone.forward).parameters or isinstance(self.backbone, DITLegacy):
             with torch.cuda.amp.autocast(dtype=torch.float32):
                 backbone_output = self.backbone(
@@ -320,6 +320,14 @@ class Denoiser(ABC, PreTrainedModel):
                         logits=backbone_output[0],
                         past_key_values=None,
                     )
+        # HACK FOR LEGACY MDLM HF MODEL
+        if "attention_mask" not in inspect.signature(self.backbone.forward).parameters:
+            with torch.cuda.amp.autocast(dtype=torch.float32):
+                backbone_output = self.backbone(denoiser_inputs.xt, sigma=torch.zeros_like(denoiser_inputs.xt[:, 0]))
+                return CausalLMOutputWithPast(
+                    logits=backbone_output[0],
+                    past_key_values=None,
+                )
         return self.backbone(
             denoiser_inputs.xt,
             attention_mask=denoiser_inputs.attention_mask,

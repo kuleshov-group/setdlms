@@ -71,6 +71,13 @@ def main(cfg: DictConfig) -> None:
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
+
+    # Load model
+    model_config_overrides = getattr(cfg, "model_config_overrides", None) or {}
+    # Convert to plain dict if it's a DictConfig to ensure proper merging
+    if isinstance(model_config_overrides, DictConfig):
+        model_config_overrides = OmegaConf.to_container(model_config_overrides, resolve=True)
+
     # Load the dataset
     dataset = hydra.utils.instantiate(
         cfg.task.dataset,

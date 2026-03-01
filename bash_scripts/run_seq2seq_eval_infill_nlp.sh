@@ -3,7 +3,12 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-# TODO: Uncomment a model and run
+
+MODEL_PATH="kuleshov-group/mdlm-owt"
+BLOCK_SIZE=1024
+KV_CACHING=false
+ALIGN_INPUTS_TO_BLOCKS=true
+AR_CACHING=true
 
 # MODEL_PATH="kuleshov-group/bd3lm-owt-block_size16"
 # BLOCK_SIZE=16
@@ -17,16 +22,17 @@ source setup_env.sh
 # BLOCK_SIZE=1024
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
+# AR_CACHING=true
 
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_ft_v5"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-CKPT_FILE="best-rank0.pt"
-MAX_WINDOW_SIZE=32
-BLOCK_SIZE=1024
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=false
-AR_CACHING=true
+# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_ft_v5"
+# # CKPT_FILE="ep17-ba300000-rank0.pt"
+# CKPT_FILE="best-rank0.pt"
+# MAX_WINDOW_SIZE=32
+# BLOCK_SIZE=1024
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+# AR_CACHING=false
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 
@@ -43,11 +49,11 @@ CONFIDENCE_BASED_NOISING=false
 MAX_LENGTH=1024
 USE_EMA=true
 
-# NUM_TARGET_SENTENCES=1
-# REPEAT_PENALTY=1.1
+NUM_TARGET_SENTENCES=1
+REPEAT_PENALTY=1.1
 
-NUM_TARGET_SENTENCES=3
-REPEAT_PENALTY=1.5
+# NUM_TARGET_SENTENCES=3
+# REPEAT_PENALTY=1.5
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-T${T}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}"
 PORT=$((RANDOM % 10000 + 29500))
