@@ -123,14 +123,14 @@ class LMEvalHarnessModel(LM):
                     pretrained_model_name_or_path,
                     trust_remote_code=True,
                     revision=pretrained_model_revision,
-                    **model_config_overrides,
+                    token="HF_TOKEN_REMOVED",
                 )
             except:  # Model not compatible with CausalLM
                 model = AutoModelForMaskedLM.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=True,
                     revision=pretrained_model_revision,
-                    **model_config_overrides,
+                    token="HF_TOKEN_REMOVED",
                 )
         self.model = model.to(self.device)
         self.model.eval()
@@ -214,14 +214,14 @@ class LMEvalHarnessModel(LM):
         ds = Dataset.from_list(ds)
         # from src.datasets.preprocessed_dataset import load_preprocessed_dataset
         # ds = load_preprocessed_dataset(
-        #     dataset_path="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_train",
+        #     dataset_path="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_eval",
         #     inject_context_mask=True,
         #     tokenizer=self.tokenizer,
         #     token_to_split="<|im_start|>",
         #     split_offset=2
         # )
 
-        # target_text = " Jennie is helping at her mom's offi" 
+        # target_text = "Every day, Wendi feeds " 
         # for i,elem in enumerate(ds):
         #     text = self.tokenizer.decode(elem["input_ids"])
         #     if target_text in text:
@@ -271,7 +271,7 @@ class LMEvalHarnessModel(LM):
             start_event.record()
             generation_outputs = self.model.generate(
                 inputs=elem["prefix"][None, ...].to(self.device),
-                # tokenizer=self.tokenizer,  # Uncomment for debugging
+                tokenizer=self.tokenizer,  # Uncomment for debugging
                 **self.gen_kwargs,
             )
             if isinstance(generation_outputs, ModelOutput):

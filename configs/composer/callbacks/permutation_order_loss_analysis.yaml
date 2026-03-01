@@ -1,4 +1,0 @@
-permutation_order_loss_analysis:
-  _target_: src.custom_composer.callbacks.PermutationOrderLossAnalysis
-  show_error_bars: false
-  output_dir: ${output_path}

@@ -60,6 +60,4 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   composer.callbacks.save_best_checkpointing.save_local=false \
-  eval_dataloader.batch_size=4 \
-  composer.callbacks.log_gradient_variance.accumulation_steps=2 \
-
+  eval_dataloader.batch_size=4

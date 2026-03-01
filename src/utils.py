@@ -12,6 +12,7 @@ from types import MethodType
 import fsspec
 from huggingface_hub import HfApi, file_exists, repo_exists
 from transformers import PreTrainedModel, PreTrainedTokenizer
+import fnmatch
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,29 @@ def fsspec_mkdirs(dirname, exist_ok=True):
     fs, _ = fsspec.core.url_to_fs(dirname)
     fs.makedirs(dirname, exist_ok=exist_ok)
 
+import fnmatch
+
+def _should_ignore(src_path: Path, ignore: list[str]) -> bool:
+    s = str(src_path)
+    name = src_path.name
+
+    for pat in ignore:
+        pat = pat.strip()
+        if not pat or pat.startswith("#"):
+            continue
+
+        # treat directory patterns like "__pycache__/" as "contains that path segment"
+        if pat.endswith("/"):
+            seg = pat[:-1]
+            if f"/{seg}/" in s or s.endswith(f"/{seg}"):
+                return True
+            continue
+
+        # glob match against full path or basename
+        if fnmatch.fnmatch(s, pat) or fnmatch.fnmatch(name, pat):
+            return True
+
+    return False
 
 def snapshot_repo_to_tmp_dir(
     run_id: str | None = None,
@@ -52,7 +76,7 @@ def snapshot_repo_to_tmp_dir(
         """Helper method that recursively copies files from src_path to dest_path.
         Ignores files matching the patterns in ignore (list).
         """
-        if any([re.search(ignore_file, str(src_path)) for ignore_file in ignore]):
+        if _should_ignore(src_path, ignore):
             return
         if os.path.isdir(src_path):
             dest_path.mkdir(parents=True, exist_ok=True)
@@ -158,7 +182,7 @@ def _flatten_and_copy(src_path: Path, dest_path: Path, ignore: list[str]) -> Non
         ) as f:
             f.writelines(modified_lines)
 
-    if any([re.search(ignore_file, str(src_path)) for ignore_file in ignore]):
+    if _should_ignore(src_path, ignore):
         log.debug("Skipping:", src_path)
         return
     if os.path.isdir(src_path):

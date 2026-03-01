@@ -1,3 +1,0 @@
-defaults:
-  - wmt_train
-split: "test"

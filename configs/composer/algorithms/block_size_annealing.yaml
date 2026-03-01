@@ -1,6 +1,0 @@
-block_size_annealing:
-  _target_: src.custom_composer.algorithms.BlockSizeAnnealing
-  max_block_size: ${block_size}
-  schedule: '5000ba'
-  factor: 2
-  increase_via_add_or_multiply: 'add'

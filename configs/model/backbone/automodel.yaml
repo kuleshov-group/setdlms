@@ -7,3 +7,4 @@ num_layers: -1
 keep_top_layers: false
 reinit_model: false
 attn_implementation: ${model.config.attn_backend}
+use_causal_mask: false

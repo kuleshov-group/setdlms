@@ -4,7 +4,9 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # setdlm s <= 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_ft_v5"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_vscratch"
+CKPT_FILE="ep17-ba300000-rank0.pt"
+BLOCK_SIZE=1024
 
 # setdlm s <= 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_ft_v3"
@@ -12,29 +14,39 @@ source setup_env.sh
 # CKPT_FILE="best-rank0.pt"
 
 # setdlm s <= 32
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_ft_v5"
-
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
+# CKPT_FILE="ep17-ba300000-rank0.pt"
+# BLOCK_SIZE=1024
 
 # setdlm s = 1024
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block1024_vscratch"
 # CKPT_FILE="ep17-ba300000-rank0.pt"
+# BLOCK_SIZE=1024
 
 # ar
-# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1/20-300000.ckpt"
+# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1"
 # CKPT_FILE="20-300000.ckpt"
 # MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
+# BLOCK_SIZE=1
 
 # mdlm
-MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4"
+# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4"
 # CKPT_FILE="18-300000.ckpt"
-CKPT_FILE="best.ckpt"
-MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
+# # CKPT_FILE="best.ckpt"
+# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
+# # MODEL_PATH="kuleshov-group/mdlm-owt"
+# BLOCK_SIZE=1024
+
+# sedd
+# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-sedd-noeos-v4"
+# CKPT_FILE="18-300000.ckpt"
+# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
+# BLOCK_SIZE=1024
 
 REVISION=null
 
-for EVAL_DATASET in "owt_eval_gpt2"; do #"ptb_eval" "wikitext2_eval" "lm1b_eval" "lambada_eval" "ag_news_eval" "scientific_papers_pubmed_eval" "scientific_papers_arxiv_eval"; do
-  BLOCK_SIZE=1024  # TODO: Change as needed
-  BATCH_SIZE=32
+for EVAL_DATASET in "owt_eval_gpt2" "ptb_eval" "wikitext2_eval" "lm1b_eval_gpt2" "lambada_eval" "ag_news_eval" "scientific_papers_pubmed_eval" "scientific_papers_arxiv_eval"; do
+  BATCH_SIZE=16
   PRETRAINED_MODEL_NAME_OR_PATH="gpt2"  # TODO: Change as needed
   USE_EMA=true
   echo "Evaluating ${EVAL_DATASET} with model ${MODEL_PATH}"
@@ -51,7 +63,7 @@ for EVAL_DATASET in "owt_eval_gpt2"; do #"ptb_eval" "wikitext2_eval" "lm1b_eval"
     seed=1 \
     batch_size=${BATCH_SIZE} \
     block_size=${BLOCK_SIZE} \
-    task.eval_dataloader.batch_size=8 \
+    task.eval_dataloader.batch_size=${BATCH_SIZE} \
     pretrained_model_name_or_path=${MODEL_PATH} \
     pretrained_model_revision=${REVISION} \
     tokenizer.pretrained_model_name_or_path=${PRETRAINED_MODEL_NAME_OR_PATH} \
@@ -61,7 +73,7 @@ for EVAL_DATASET in "owt_eval_gpt2"; do #"ptb_eval" "wikitext2_eval" "lm1b_eval"
     task.collator.max_length=null \
     task.collator.restricted_t_range=null \
     task.collator.sampling_eps=1e-3 \
-    task.collator.antithetic_sampling=false \
+    task.collator.antithetic_sampling=true \
     +metrics@task.metrics='[loss,nll,bpd,perplexity]' \
     +composer/trainer@task.trainer=eval_trainer \
     ~generation@generation_config \
@@ -69,7 +81,6 @@ for EVAL_DATASET in "owt_eval_gpt2"; do #"ptb_eval" "wikitext2_eval" "lm1b_eval"
     ~generation/stopping_criteria@stopping_criteria_list \
     gen_kwargs=null \
     +compile_backbone=true \
-    +model_config_overrides.attn_backend=sdpa \
-    +model_config_overrides.backbone_config.attn_backend=sdpa \
-    +task.eval_dataset.limit_size=100
+    +model_config_overrides.mdlm_loss_scale=false \
+    +model_config_overrides.keep_clean_bos=true
 done

@@ -13,6 +13,7 @@ import torch
 from src.noise_schedule.noise_schedules import LinearNoise
 from src.denoiser.diffusion import BD3LM, BD3LMConfig
 from src.denoiser.ar import AR, ARConfig
+from src.denoiser.diffusion import SetDLM, SEDD
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
@@ -75,6 +76,7 @@ def main(cfg: DictConfig) -> None:
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
+                token="HF_TOKEN_REMOVED",
             )
         except:  # Model not compatible with CausalLM
             try:
@@ -82,9 +84,11 @@ def main(cfg: DictConfig) -> None:
                     cfg.pretrained_model_name_or_path,
                     trust_remote_code=True,
                     revision=getattr(cfg, "pretrained_model_revision", None),
+                    token="HF_TOKEN_REMOVED",
                 )
             except:
                 model = None
+
     # HACK for legacy codebase compatibility
     if model is None or not hasattr(model, "generate"):
         
@@ -92,7 +96,7 @@ def main(cfg: DictConfig) -> None:
         # Load the dit config template and update with actual values
         dit_config_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "configs", "model", "backbone", "dit.yaml"
+            "configs", "model", "backbone", "dit_legacy.yaml"
         )
         backbone_config = OmegaConf.load(dit_config_path)
         
@@ -110,6 +114,9 @@ def main(cfg: DictConfig) -> None:
             backbone_config.adaln = False
             backbone_config.causal_attention = True
             backbone_config.attn_backend = "flash_attn"
+        elif "mdlm-" in backbone_config.pretrained_model_name_or_path:
+            # backbone_config.attn_backend = "flash_attn"
+            backbone_config.adaln = True
         else:
             backbone_config.adaln = True
     
@@ -124,7 +131,21 @@ def main(cfg: DictConfig) -> None:
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
+            for k, v in model_config_overrides.items():
+                setattr(model_config, k, v)
             denoiser = MDLM(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        elif "sedd-" in backbone_config.pretrained_model_name_or_path:
+            model_config = MDLMConfig(
+                length=length,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = SEDD(
                 model_config,
                 tokenizer=tokenizer,
             )
@@ -133,6 +154,10 @@ def main(cfg: DictConfig) -> None:
                 length=length,
                 backbone_config=backbone_config,
             )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
             denoiser = AR(
                 model_config,
                 tokenizer=tokenizer,
@@ -143,30 +168,46 @@ def main(cfg: DictConfig) -> None:
                 backbone_config=backbone_config,
                 block_size=cfg.block_size,
             )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
             denoiser = BD3LM(
                 model_config,
                 tokenizer=tokenizer,
             )
         if model is not None:
-            state_dict = model.state_dict()
+            denoiser.backbone = model.backbone
         else:
-            state_dict = torch.load(cfg.pretrained_model_name_or_path, weights_only=False)
-            state_dict = state_dict["state_dict"]
-        new_state_dict = {}
-        for key in state_dict.keys():
-            new_key = key
-            if "backbone." in key:
-                new_key = key.replace("backbone.", "")
-            if "_orig_mod." in new_key:
-                new_key = new_key.replace("_orig_mod.", "")
-            new_state_dict[new_key] = state_dict[key]
-        if "sampling_eps_min" in new_state_dict:
-            new_state_dict.pop("sampling_eps_min")
-        if "sampling_eps_max" in new_state_dict:
-            new_state_dict.pop("sampling_eps_max")
-        denoiser.backbone.load_state_dict(new_state_dict)
+            state_dict = torch.load(
+                cfg.pretrained_model_name_or_path,
+                map_location="cpu",
+                weights_only=False,
+            )["state_dict"]
+
+            for key in list(state_dict.keys()):
+                new_key = key
+                if "backbone." in new_key:
+                    new_key = new_key.replace("backbone.", "")
+                if "_orig_mod." in new_key:
+                    new_key = new_key.replace("_orig_mod.", "")
+
+                if new_key != key:
+                    state_dict[new_key] = state_dict.pop(key)
+
+            state_dict.pop("sampling_eps_min", None)
+            state_dict.pop("sampling_eps_max", None)
+
+            denoiser.backbone.load_state_dict(state_dict)
+
         model = denoiser.to(device)
         model.noise_schedule = LinearNoise()
+
+    if getattr(cfg, "compile_backbone", False):
+        log.info("Compiling model backbone")
+        model.backbone = torch.compile(
+            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
+        )
     model = HuggingFaceModel(
         model=model,
         tokenizer=tokenizer,

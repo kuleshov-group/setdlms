@@ -14,7 +14,7 @@ from transformers import GenerationConfig, PreTrainedTokenizerFast
 from transformers.cache_utils import Cache, DynamicCache
 
 from scripts.utils import maybe_add_missing_special_tokens
-from src.denoiser.diffusion import AnyOrderBD3LM, BD3LMConfig, DiffusionGenerationConfig, SetDiffusionGenerationConfig
+from src.denoiser.diffusion import SetDLM, BD3LMConfig, DiffusionGenerationConfig, SetDiffusionGenerationConfig
 from src.noise_schedule.noise_schedules import EaseOutPowerNoise
 
 
@@ -88,7 +88,7 @@ def _generate_inf_budgets_worker(
             k=1.0 if desired_block_size in {1, L} else None,
         )
 
-        model = AnyOrderBD3LM(config=config)
+        model = SetDLM(config=config)
         model.bos_token_id = tokenizer.pad_token_id
         model.mask_token_id = tokenizer.mask_token_id
         model.noise_schedule = noise
@@ -150,7 +150,7 @@ def run_for_block_size(
         k=1.0 if desired_block_size in {1, L} else None,
     )
 
-    model = AnyOrderBD3LM(config=config)
+    model = SetDLM(config=config)
     model.bos_token_id = tokenizer.pad_token_id
     model.mask_token_id = tokenizer.mask_token_id
     model.noise_schedule = noise

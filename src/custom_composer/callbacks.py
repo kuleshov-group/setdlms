@@ -778,10 +778,10 @@ class MaskingPatternLossAnalysis(Callback):
             return
         
         # Check if model is BD3LM or similar that concatenates x0 and xt
-        from src.denoiser.diffusion import BD3LM, E2D2, AnyOrderBD3LM
+        from src.denoiser.diffusion import BD3LM, E2D2, SetDLM
         
         is_bd3lm = isinstance(model, (BD3LM, E2D2))
-        if isinstance(model, AnyOrderBD3LM):
+        if isinstance(model, SetDLM):
             is_bd3lm = False
         
         if is_bd3lm:
@@ -1337,7 +1337,7 @@ class MaskingPatternLossAnalysis(Callback):
 
 
 class PermutationOrderLossAnalysis(Callback):
-    """Callback to analyze loss by permutation order within blocks for AnyOrderBD3LM.
+    """Callback to analyze loss by permutation order within blocks for SetDLM.
     
     For each datapoint, records the loss for every single permutation order
     (within each block). At the end of validation, reports the average loss
@@ -1373,11 +1373,11 @@ class PermutationOrderLossAnalysis(Callback):
         # Get model
         model = self._get_model(state)
         
-        # Check if model is AnyOrderBD3LM
-        from src.denoiser.diffusion import AnyOrderBD3LM
+        # Check if model is SetDLM
+        from src.denoiser.diffusion import SetDLM
         
-        if not isinstance(model, AnyOrderBD3LM):
-            return  # Silently skip if not AnyOrderBD3LM
+        if not isinstance(model, SetDLM):
+            return  # Silently skip if not SetDLM
         
         block_size = getattr(
             model.config, "eval_block_size", getattr(model.config, "block_size", None)
@@ -1412,7 +1412,7 @@ class PermutationOrderLossAnalysis(Callback):
             log.warning("Could not find permutation_order in outputs. Skipping this batch.")
             return
         
-        # For AnyOrderBD3LM, nlls has shape (B, L) where L is sequence length
+        # For SetDLM, nlls has shape (B, L) where L is sequence length
         seq_len = nlls.shape[1]
         batch_size = nlls.shape[0]
         n_blocks = seq_len // block_size
@@ -1960,7 +1960,7 @@ class PermutationOrderLossAnalysis(Callback):
 class PermutationToMaskingPatternAnalysis(Callback):
     """Callback to analyze loss by masking pattern derived from permutation orders.
     
-    For AnyOrderBD3LM, each permutation order (e.g., 1234) corresponds to a sequence
+    For SetDLM, each permutation order (e.g., 1234) corresponds to a sequence
     of masking patterns. This callback maps per-token NLLs to their corresponding
     masking patterns based on the permutation order, then reports aggregated statistics.
     
@@ -2032,11 +2032,11 @@ class PermutationToMaskingPatternAnalysis(Callback):
         # Get model
         model = self._get_model(state)
         
-        # Check if model is AnyOrderBD3LM
-        from src.denoiser.diffusion import AnyOrderBD3LM
+        # Check if model is SetDLM
+        from src.denoiser.diffusion import SetDLM
         
-        if not isinstance(model, AnyOrderBD3LM):
-            return  # Silently skip if not AnyOrderBD3LM
+        if not isinstance(model, SetDLM):
+            return  # Silently skip if not SetDLM
         
         block_size = getattr(
             model.config, "eval_block_size", getattr(model.config, "block_size", None)
@@ -2075,7 +2075,7 @@ class PermutationToMaskingPatternAnalysis(Callback):
             log.warning("Could not find permutation_order in outputs. Skipping this batch.")
             return
         
-        # For AnyOrderBD3LM, nlls has shape (B, L) where L is sequence length
+        # For SetDLM, nlls has shape (B, L) where L is sequence length
         seq_len = nlls.shape[1]
         batch_size = nlls.shape[0]
         n_blocks = seq_len // block_size

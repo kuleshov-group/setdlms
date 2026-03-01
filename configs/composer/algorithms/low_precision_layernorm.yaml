@@ -1,2 +1,0 @@
-low_precision_layernorm:
-  _target_: composer.algorithms.LowPrecisionLayerNorm

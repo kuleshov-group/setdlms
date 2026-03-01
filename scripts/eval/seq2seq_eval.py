@@ -12,12 +12,15 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
+from src.denoiser.diffusion import MDLM, MDLMConfig
+import torch
+from src.noise_schedule.noise_schedules import LinearNoise
+from src.denoiser.diffusion import BD3LM, BD3LMConfig
+from src.denoiser.ar import AR, ARConfig
+from src.denoiser.diffusion import SetDLM, SEDD
 from transformers.generation import StopStringCriteria
 from transformers.modeling_outputs import ModelOutput
 from collections import OrderedDict
-from src.denoiser.diffusion import BD3LM, BD3LMConfig
-from src.denoiser.ar import AR, ARConfig
-from src.noise_schedule.noise_schedules import LinearNoise
 from scripts.utils import (
     count_parameters,
     format_number,
@@ -105,16 +108,16 @@ def main(cfg: DictConfig) -> None:
                 )
             except:
                 model = None
-    # HACK FOR MDLM
+   
+   
+    # HACK for legacy codebase compatibility
     if model is None or not hasattr(model, "generate"):
-        # from src.denoiser.diffusion import MDLM, MDLMConfig
-        from src.noise_schedule.noise_schedules import LinearNoise
         
         # Create dit backbone config
         # Load the dit config template and update with actual values
         dit_config_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "configs", "model", "backbone", "dit.yaml"
+            "configs", "model", "backbone", "dit_legacy.yaml"
         )
         backbone_config = OmegaConf.load(dit_config_path)
         
@@ -128,64 +131,105 @@ def main(cfg: DictConfig) -> None:
         backbone_config.n_heads = 12
         backbone_config.hidden_size = 768
 
-        # for ar
-        # backbone_config.adaln = False
-        # backbone_config.causal_attention = True
-        # backbone_config.attn_backend = "flash_attn"
-
-        backbone_config.adaln = True
+        if "-ar-" in backbone_config.pretrained_model_name_or_path:
+            backbone_config.adaln = False
+            backbone_config.causal_attention = True
+            backbone_config.attn_backend = "flash_attn"
+        elif "mdlm-" in backbone_config.pretrained_model_name_or_path:
+            # backbone_config.attn_backend = "flash_attn"
+            backbone_config.adaln = True
+        else:
+            backbone_config.adaln = True
     
         # Ensure it's a DictConfig
         if not isinstance(backbone_config, DictConfig):
             backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
-        
-        # mdlm_config = MDLMConfig(
-        #     length=length,
-        #     backbone_config=backbone_config,
-        # )
-        mdlm_config = BD3LMConfig(
-            length=length,
-            backbone_config=backbone_config,
-            block_size=cfg.block_size,
-        )
-        # mdlm_config = ARConfig(
-        #     length=length,
-        #     backbone_config=backbone_config,
-        # )
-        mdlm_config.mask_token_id = tokenizer.mask_token_id
-        mdlm_config.vocab_size = len(tokenizer)
-        # model_ = MDLM(
-        #     mdlm_config,
-        #     tokenizer=tokenizer,
-        # )
-        model_ = BD3LM(
-            mdlm_config,
-            tokenizer=tokenizer,
-        )
-        # model_ = AR(
-        #     mdlm_config,
-        #     tokenizer=tokenizer,
-        # )
-        if model is not None:
-            state_dict = model.state_dict()
+        if "mdlm-" in backbone_config.pretrained_model_name_or_path:
+            model_config = MDLMConfig(
+                length=length,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            for k, v in model_config_overrides.items():
+                setattr(model_config, k, v)
+            denoiser = MDLM(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        elif "sedd-" in backbone_config.pretrained_model_name_or_path:
+            model_config = MDLMConfig(
+                length=length,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = SEDD(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        elif "ar-" in backbone_config.pretrained_model_name_or_path:
+            model_config = ARConfig(
+                length=length,
+                backbone_config=backbone_config,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = AR(
+                model_config,
+                tokenizer=tokenizer,
+            )
         else:
-            state_dict = torch.load(cfg.pretrained_model_name_or_path, weights_only=False)
-            state_dict = state_dict["state_dict"]
-        new_state_dict = {}
-        for key in state_dict.keys():
-            new_key = key
-            if "backbone." in key:
-                new_key = key.replace("backbone.", "")
-            if "_orig_mod." in new_key:
-                new_key = new_key.replace("_orig_mod.", "")
-            new_state_dict[new_key] = state_dict[key]
-        if "sampling_eps_min" in new_state_dict:
-            new_state_dict.pop("sampling_eps_min")
-        if "sampling_eps_max" in new_state_dict:
-            new_state_dict.pop("sampling_eps_max")
-        model_.backbone.load_state_dict(new_state_dict)
-        model = model_.to(device)
+            model_config = BD3LMConfig(
+                length=length,
+                backbone_config=backbone_config,
+                block_size=cfg.block_size,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = BD3LM(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        if model is not None:
+            denoiser.backbone = model.backbone
+        else:
+            state_dict = torch.load(
+                cfg.pretrained_model_name_or_path,
+                map_location="cpu",
+                weights_only=False,
+            )["state_dict"]
+
+            for key in list(state_dict.keys()):
+                new_key = key
+                if "backbone." in new_key:
+                    new_key = new_key.replace("backbone.", "")
+                if "_orig_mod." in new_key:
+                    new_key = new_key.replace("_orig_mod.", "")
+
+                if new_key != key:
+                    state_dict[new_key] = state_dict.pop(key)
+
+            state_dict.pop("sampling_eps_min", None)
+            state_dict.pop("sampling_eps_max", None)
+
+            denoiser.backbone.load_state_dict(state_dict)
+
+        model = denoiser.to(device)
         model.noise_schedule = LinearNoise()
+
+    if getattr(cfg, "compile_backbone", False):
+        print("Compiling model backbone")
+        model.backbone = torch.compile(
+            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
+        )
+
     model = model.to(device)
     if local_rank == 0:
         print(f"Num. params: {format_number(count_parameters(model, trainable=False))}")

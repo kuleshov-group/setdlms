@@ -1,4 +1,0 @@
-noise_level_annealing:
-  _target_: src.custom_composer.algorithms.NoiseLevelAnnealing
-  anneal_duration: "0ba"
-  final_scale: 1.0

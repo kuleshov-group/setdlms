@@ -25,6 +25,7 @@ class DenoisingCollator:
         antithetic_sampling: bool = False,
         block_size: int | None = None,
         base_collator: Callable | None = None,
+        legacy_antithetic_sampling: bool = False,
     ):
         """
         Parameters:
@@ -69,6 +70,7 @@ class DenoisingCollator:
         self.global_batch_size = global_batch_size
         self.max_length = max_length
         self.block_size = block_size
+        self.legacy_antithetic_sampling = legacy_antithetic_sampling
         # TODO: Confirm that this works on multi-node
         self._rank = rank
         self._world_size = world_size
@@ -114,9 +116,9 @@ class DenoisingCollator:
             min((self._rank + 1) * batch_size, global_batch_size),
         )
         t = self._sample_t(
-            global_batch_size=global_batch_size,
+            global_batch_size=global_batch_size if not self.legacy_antithetic_sampling else batch_size,
             batch_size=batch_size,
-            t_index=t_index,
+            t_index=t_index if not self.legacy_antithetic_sampling else (0, batch_size),
             device=batch["input_ids"].device,
         )
         if all([c is not None for c in context_mask]):

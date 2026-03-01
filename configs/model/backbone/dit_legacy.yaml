@@ -1,0 +1,15 @@
+_target_: src.backbone.dit_legacy.DITLegacy
+length: ${model.config.length}
+causal_attention: false
+adaln: false
+hidden_size: -1
+cond_dim: 128
+n_heads: -1
+num_layers: -1
+dropout: 0.1
+tie_word_embeddings: true
+attn_backend: sdpa
+vocab_size: -1
+block_size: ${block_size}
+norm_type: layernorm  # Options: 'layernorm' or 'rmsnorm'
+pretrained_model_name_or_path: ${pretrained_model_name_or_path}

@@ -21,7 +21,7 @@ from transformers import (
 )
 from transformers.cache_utils import Cache
 from transformers.generation.utils import GenerateOutput
-from transformers.modeling_outputs import ModelOutput
+from transformers.modeling_outputs import ModelOutput, CausalLMOutputWithPast
 
 # Local imports not used, but added here so that HF push_to_hub adds them to model repo
 # noinspection PyUnresolvedReferences
@@ -33,6 +33,7 @@ from src.noise_schedule.noise_schedules import (  # noqa: F401
     LogarithmicNoise,
     StaggeredNoise,
 )
+from src.backbone.dit_legacy import DITLegacy
 
 
 @dataclass
@@ -282,7 +283,8 @@ class Denoiser(ABC, PreTrainedModel):
         Returns:
             Model outputs (FloatTensor).
         """
-        return torch.log_softmax(backbone_output, dim=-1)  # type: ignore
+        backbone_output = backbone_output.log_softmax(-1)
+        return backbone_output  # type: ignore
 
     def _backbone_forward(
         self,
@@ -302,11 +304,22 @@ class Denoiser(ABC, PreTrainedModel):
             Backbone output (ModelOutput instance).
         """
         # HACK FOR MDLM
-        if "timesteps" in inspect.signature(self.backbone.forward).parameters:
-            return self.backbone(
-                denoiser_inputs.xt,
-                timesteps=torch.zeros_like(denoiser_inputs.xt[:, 0]),
-            )
+        if "timesteps" in inspect.signature(self.backbone.forward).parameters or isinstance(self.backbone, DITLegacy):
+            with torch.cuda.amp.autocast(dtype=torch.float32):
+                backbone_output = self.backbone(
+                    denoiser_inputs.xt,
+                    timesteps=torch.zeros_like(denoiser_inputs.xt[:, 0]),
+                    past_key_values=denoiser_inputs.past_key_values,
+                    **denoiser_inputs.backbone_kwargs,
+                    **backbone_kwargs,
+                )
+                if isinstance(backbone_output, CausalLMOutputWithPast):
+                    return backbone_output
+                else:
+                    return CausalLMOutputWithPast(
+                        logits=backbone_output[0],
+                        past_key_values=None,
+                    )
         return self.backbone(
             denoiser_inputs.xt,
             attention_mask=denoiser_inputs.attention_mask,
@@ -350,12 +363,20 @@ class Denoiser(ABC, PreTrainedModel):
         backbone_output = self._backbone_forward(denoiser_inputs, **kwargs)
         new_past_key_values = getattr(backbone_output, "past_key_values", None)
         backbone_output = getattr(backbone_output, "logits", backbone_output[0])
-        with torch.amp.autocast(input_ids.device.type, dtype=torch.float32):
+        # from legacy codebase
+        if "timesteps" in inspect.signature(self.backbone.forward).parameters or isinstance(self.backbone, DITLegacy):
             denoiser_output = self._forward(
                 backbone_output,
                 denoiser_inputs,
                 **kwargs,
             )
+        else:
+            with torch.amp.autocast(input_ids.device.type, dtype=torch.float32):
+                denoiser_output = self._forward(
+                    backbone_output,
+                    denoiser_inputs,
+                    **kwargs,
+                )
 
         if compute_loss:
             loss_and_nll = self._compute_loss(

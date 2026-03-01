@@ -29,7 +29,7 @@ MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=null
 
-TAG="bd3lm_norm${NORM_TYPE}_adaln${ADALN}_vscratch"
+TAG="bd3lm_norm${NORM_TYPE}_adaln${ADALN}_vscratch2"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=owt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -58,7 +58,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=bd3lm \
   model.config.attn_backend=${ATTN_BACKEND} \
-  training.compile_backbone=true \
+  training.compile_backbone=false \
   composer.optimizer.betas=[0.9,0.999] \
   composer.optimizer.weight_decay=0 \
   model.config.keep_clean_bos=true \

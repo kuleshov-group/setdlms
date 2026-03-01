@@ -114,6 +114,19 @@ def format_number(num):
         return f"{num / 1_000:.1f}k"
     return str(num)
 
+def replace_strings(obj, old: str, new: str):
+    if isinstance(obj, dict):
+        return {
+            (k.replace(old, new) if isinstance(k, str) else k):
+            replace_strings(v, old, new)
+            for k, v in obj.items()
+        }
+    elif isinstance(obj, list):
+        return [replace_strings(v, old, new) for v in obj]
+    elif isinstance(obj, str):
+        return obj.replace(old, new)
+    else:
+        return obj
 
 def print_and_save_config(
     cfg: DictConfig,
@@ -244,6 +257,7 @@ def load_model_from_ckpt_dir_path(
         # This is important because nested DictConfigs don't pass isinstance(..., dict) checks
         overrides_dict = OmegaConf.to_container(model_config_overrides, resolve=True) if isinstance(model_config_overrides, DictConfig) else model_config_overrides
         _deep_update(config["model"]["config"], overrides_dict)
+    config = replace_strings(config, "AnyOrderBD3LM", "SetDLM")
     config = OmegaConf.create(config)
 
     model = hydra.utils.instantiate(
@@ -290,13 +304,9 @@ def load_model_from_ckpt_dir_path(
             raise ValueError("EMA weights not found in checkpoint.")
     else:
         state_dict = ckpt["state"]["model"]
-    compiled_model_flag = "_orig_mod." in "".join(state_dict.keys())
     _replace_in_state_dict_if_present(state_dict, "_orig_mod.")  # for compiled models
     torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(state_dict, "model.")
     model.load_state_dict(state_dict, strict=False)
-    # if compiled_model_flag:
-    #     print("Compiling model backbone")
-    #     model.backbone = torch.compile(model.backbone)
     return model
 
 
