@@ -159,8 +159,6 @@ def main(cfg: DictConfig) -> None:
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
-            for k, v in model_config_overrides.items():
-                setattr(model_config, k, v)
             denoiser = MDLM(
                 model_config,
                 tokenizer=tokenizer,
@@ -225,7 +223,6 @@ def main(cfg: DictConfig) -> None:
 
             state_dict.pop("sampling_eps_min", None)
             state_dict.pop("sampling_eps_max", None)
-
             denoiser.backbone.load_state_dict(state_dict)
 
         model = denoiser.to(device)
@@ -296,12 +293,20 @@ def main(cfg: DictConfig) -> None:
                 start_event.record()
             else:
                 start_event, end_event = None, None
+            if 'logits_processor' in gen_kwargs:
+                for lp in gen_kwargs['logits_processor']:
+                    if hasattr(lp, 'regulation_start'):
+                        lp.regulation_start += input_ids.shape[-1]
             generation_outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=True,
                 tokenizer=tokenizer,
                 **gen_kwargs,
             )
+            if 'logits_processor' in gen_kwargs:
+                for lp in gen_kwargs['logits_processor']:
+                    if hasattr(lp, 'regulation_start'):
+                        lp.regulation_start -= input_ids.shape[-1]
             if local_rank == 0:
                 end_event.record()
                 torch.cuda.synchronize()

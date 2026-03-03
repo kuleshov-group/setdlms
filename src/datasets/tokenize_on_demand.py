@@ -847,11 +847,11 @@ class ROCStoriesDataset(Dataset):
         story = self.dataset[idx]
         if self.num_target_sentences == 1:
             prompt = story[0] + " " + story[1]
-            suffix = story[3] + " " + story[4]
+            suffix = " " + story[3] + " " + story[4]
             middle = story[2]
         else:
             prompt = story[0]
-            suffix = story[4]
+            suffix = " " + story[4]
             middle = story[1] + " " + story[2] + " " + story[3]
 
         prefix_ids = self.tokenizer(prompt).input_ids

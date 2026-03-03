@@ -5,23 +5,23 @@ source setup_env.sh
 # TODO: Uncomment a model and run
 
 # setdlm s <= 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
-# BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=4
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
+BLOCK_SIZE=1024
+MAX_WINDOW_SIZE=4
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=false
 
 # setdlm s <= 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_v3"
 # BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=4
+# MAX_WINDOW_SIZE=8
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
 # setdlm s <= 32
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
 # BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=4
+# MAX_WINDOW_SIZE=16
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
@@ -30,18 +30,20 @@ source setup_env.sh
 # BLOCK_SIZE=1
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=true
+# MAX_WINDOW_SIZE=1
 
 # mdlm
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
 # BLOCK_SIZE=32
 # KV_CACHING=false
-# ALIGN_INPUTS_TO_BLOCKS=false
+# ALIGN_INPUTS_TO_BLOCKS=true
 
 # bd3lm s = 4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
 # BLOCK_SIZE=4
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=true
+# MAX_WINDOW_SIZE=4
 
 # bd3lm s = 8
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block8_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
@@ -55,7 +57,7 @@ source setup_env.sh
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=true
 
-OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail"
+OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail_t1"
 REVISION=null
 mkdir -p ${OUTPUT_DIR}
 
@@ -67,13 +69,13 @@ FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
 CONF_THRESHOLD=1e6
-MAX_LENGTH=4096
+MAX_LENGTH=1024
 MAX_NEW_TOKENS=1024
 CKPT="best"
 USE_EMA=true
 LEN_PENALTY=1.1
 REGULATION_START=80
-REPETITION_PENALTY=1.5
+REPETITION_PENALTY=1.2
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 echo "BLOCK_SIZE: ${BLOCK_SIZE}"
@@ -110,6 +112,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   max_length=${MAX_LENGTH} \
   max_new_tokens=${MAX_NEW_TOKENS} \
   block_size=${BLOCK_SIZE} \
+  generation@generation_config=set_diffusion_generation_config \
   generation_config.num_steps=${T} \
   generation_config.do_sample=${DO_SAMPLE} \
   generation_config.sampling_strategy=${SAMPLING_STRATEGY} \
@@ -124,4 +127,4 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation/logits_processor@logits_processor_list='[exponential_decay_length_penalty,repetition_penalty_logits_processor]' \
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY} \
   logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]" \
-  +generation_config.ar_caching=true
+  generation_config.ar_caching=true

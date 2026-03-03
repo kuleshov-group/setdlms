@@ -3,12 +3,18 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_mdlm_adaln_cleanbos_antithetic_hparam_v2"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
+# setdlm s <= 8
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired4_max128_v5"
+
+# setdlm s <= 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired8_max128_v5"
+
+# setdlm s <= 32
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
+
 REVISION=null
 
-BLOCK_SIZE=16  # TODO: Change as needed
+BLOCK_SIZE=128
 BATCH_SIZE=16
 PRETRAINED_MODEL_NAME_OR_PATH=null  # TODO: Change as needed
 CKPT_FILE="best-rank0.pt"

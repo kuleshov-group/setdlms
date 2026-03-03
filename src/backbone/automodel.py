@@ -104,7 +104,7 @@ class AutoModelFromPreTrained(nn.Module):
             **kwargs,
         )
         if return_updated_cache:
-            return BaseModelOutputWithPast(past_key_values=model_output.past_key_values)
+            return model_output
         if (
             prev_cache_len is not None
             and model_output.get("past_key_values", None) is not None

@@ -4,9 +4,10 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # setdlm s <= 8
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_vscratch"
-CKPT_FILE="ep17-ba300000-rank0.pt"
-BLOCK_SIZE=1024
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_vscratch"
+# CKPT_FILE="ep17-ba300000-rank0.pt"
+# BLOCK_SIZE=1024
+# COMPILE_BACKBONE=true
 
 # setdlm s <= 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_ft_v3"
@@ -17,6 +18,7 @@ BLOCK_SIZE=1024
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
 # CKPT_FILE="ep17-ba300000-rank0.pt"
 # BLOCK_SIZE=1024
+# COMPILE_BACKBONE=true
 
 # setdlm s = 1024
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block1024_vscratch"
@@ -28,20 +30,21 @@ BLOCK_SIZE=1024
 # CKPT_FILE="20-300000.ckpt"
 # MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
 # BLOCK_SIZE=1
+# COMPILE_BACKBONE=true
 
 # mdlm
 # MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4"
 # CKPT_FILE="18-300000.ckpt"
-# # CKPT_FILE="best.ckpt"
 # MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
-# # MODEL_PATH="kuleshov-group/mdlm-owt"
 # BLOCK_SIZE=1024
+# COMPILE_BACKBONE=true
 
 # sedd
 # MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-sedd-noeos-v4"
 # CKPT_FILE="18-300000.ckpt"
 # MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
 # BLOCK_SIZE=1024
+# COMPILE_BACKBONE=true
 
 REVISION=null
 
@@ -80,7 +83,7 @@ for EVAL_DATASET in "owt_eval_gpt2" "ptb_eval" "wikitext2_eval" "lm1b_eval_gpt2"
     ~generation/logits_processor@logits_processor_list \
     ~generation/stopping_criteria@stopping_criteria_list \
     gen_kwargs=null \
-    +compile_backbone=true \
+    +compile_backbone=${COMPILE_BACKBONE} \
     +model_config_overrides.mdlm_loss_scale=false \
     +model_config_overrides.keep_clean_bos=true
 done

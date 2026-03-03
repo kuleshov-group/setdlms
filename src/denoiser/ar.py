@@ -163,9 +163,11 @@ class AR(Denoiser):
         log_x_theta: torch.FloatTensor,
         logits_processor: Optional[LogitsProcessorList] = None,
     ) -> torch.LongTensor:
-        if logits_processor is not None:
+        if logits_processor is not None and len(logits_processor) > 0:
             log_x_theta = logits_processor(input_ids=x, scores=log_x_theta)
             log_x_theta = log_x_theta.log_softmax(dim=-1)
+        else:
+            log_x_theta = self._forward(log_x_theta, denoiser_inputs=None)
         log_x_theta = self._nucleus_sample(log_x_theta.exp(), p=getattr(generation_config, "nucleus_p", 1.0)).log()
         y = self._sample_categorical(log_x_theta.exp(), do_sample=getattr(generation_config, "do_sample", False))
         return y
@@ -251,8 +253,7 @@ class AR(Denoiser):
             else:
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
-            log_x_theta = self._forward(logits, cache_inputs, **kwargs)
-            x[:, input_len] = self._generate_unconditional(generation_config, x[:, :input_len], log_x_theta[:, -1], logits_processor)
+            x[:, input_len] = self._generate_unconditional(generation_config, x[:, :input_len], logits[:, -1], logits_processor)
             cache["past_key_values"] = backbone_output["past_key_values"]
         
         for i in range(input_len, x.shape[-1] - 1):
@@ -266,8 +267,7 @@ class AR(Denoiser):
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
             cache["past_key_values"] = backbone_output["past_key_values"]
-            log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
-            x[:, i + 1] = self._generate_unconditional(generation_config, x[:, input_len:i+1], log_x_theta[:, -1], logits_processor)
+            x[:, i + 1] = self._generate_unconditional(generation_config, x[:, input_len:i+1], logits[:, -1], logits_processor)
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
                     input_ids=x[:, :i+2],

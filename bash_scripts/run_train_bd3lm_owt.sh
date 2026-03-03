@@ -37,7 +37,7 @@ GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
     MICRO_BATCH_SIZE=16
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=4
+    MICRO_BATCH_SIZE=8
 else
     MICRO_BATCH_SIZE=4
 fi
@@ -58,7 +58,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=bd3lm \
   model.config.attn_backend=${ATTN_BACKEND} \
-  training.compile_backbone=false \
+  training.compile_backbone=true \
   composer.optimizer.betas=[0.9,0.999] \
   composer.optimizer.weight_decay=0 \
   model.config.keep_clean_bos=true \

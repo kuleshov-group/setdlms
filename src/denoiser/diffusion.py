@@ -663,39 +663,33 @@ class MDLM(Denoiser):
             logits = logits[:, sample_indices - sample_indices[0], :]
             denoiser_inputs.xt = denoiser_inputs.xt[..., sample_indices - sample_indices[0]] # truncate any extra padding tokens
 
-        log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
-        if logits_processor is not None:
+        if logits_processor is not None and len(logits_processor) > 0:
+            log_x_theta = logits
             sample_idx = sample_indices[0] if sample_indices.ndim == 2 else sample_indices
 
-            xs_temp = log_x_theta.argmax(dim=-1)
             seq0 = running_generation[0]
-            mask = running_generation[0] == self.mask_token_id
-            mask1 = denoiser_inputs.xt[0] == self.mask_token_id
-            if mask.any():
-                idx = mask.nonzero(as_tuple=True)[0]
-                old = seq0.index_select(0, idx)
 
-                vals = xs_temp[0, mask1]
-                seq0.index_copy_(0, idx, vals)
             sequence_to_process = seq0.unsqueeze(0)
-
             for lp in logits_processor:
                 for j in range(log_x_theta.shape[1]):
                     if isinstance(lp, ExponentialDecayLengthPenalty):
                         log_x_theta[:, j] = lp(
-                            input_ids=sequence_to_process[..., :sample_idx[j] - inputs_offset],
+                            input_ids=sequence_to_process[..., :sample_idx[j]],
                             scores=log_x_theta[:, j],
                         )
                     else:
                         log_x_theta[:, j] = lp(
-                            input_ids=sequence_to_process,
+                            input_ids=sequence_to_process[..., inputs_offset:],
                             scores=log_x_theta[:, j],
                         )
 
-            if mask.any():
-                seq0.index_copy_(0, idx, old)
+            log_x_theta[..., self.mask_token_id] = self.neg_infinity
+            log_x_theta = log_x_theta - torch.logsumexp(
+                log_x_theta, dim=-1, keepdim=True
+            )
+        else:
+            log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
 
-            log_x_theta = torch.log_softmax(log_x_theta, dim=-1)  # re-normalize
         x_theta = log_x_theta.exp()
 
         # nucleus sampling
@@ -935,14 +929,12 @@ class MDLM(Denoiser):
             for i,t in enumerate(step_pbar):
                 # Used for logit processing
                 if mdlm_inference:
-                    running_generation = accumulated_samples[:, inputs_offset:sample_indices[-1] + 1]
+                    running_generation = accumulated_samples
                 else:
                     running_generation = accumulated_samples[
                         :,
-                        inputs_offset: min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
+                        : min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
                     ]
-                if is_infill_task:
-                    running_generation = accumulated_samples[:, first_mask_token_idx:min(last_mask_token_idx, sample_indices[-1]+1)]
                 block_NFEs += 1
                 total_NFEs += 1
                 denoiser_inputs, cache = self._prepare_inputs_inference(
@@ -2174,10 +2166,6 @@ class SetDLM(BD3LM):
                 first_hitting_times=masked_first_hitting_times,
                 return_updated_cache=return_updated_cache,
             )
-            if logits_processor is not None:
-                running_generation_for_processor = accumulated_samples[:, first_mask_token_idx:(min(last_mask_token_idx + 1, (window_start + window_size)))]
-            else:
-                running_generation_for_processor = None
             generation_output = self._generate_unconditional(
                 generation_config=generation_config,
                 t=t[0][0],
@@ -2185,7 +2173,7 @@ class SetDLM(BD3LM):
                 denoiser_inputs=denoiser_inputs,
                 cache=cache,
                 xt=xt,
-                running_generation=running_generation_for_processor,
+                running_generation=accumulated_samples if logits_processor is not None else None,
                 inputs_offset=inputs_offset,
                 logits_processor=logits_processor,
                 return_updated_cache=return_updated_cache,
@@ -2227,7 +2215,6 @@ class SetDLM(BD3LM):
                 )
             window_start = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[:, None]
             masked_positions |= (xt == self.mask_token_id) & (xt_position_ids < (window_start + window_size))
-
             # for infilling, cache positions based on current unmasking time
             if is_infill_task and not generation_config.ar_caching and (accumulated_samples == self.mask_token_id).any():
                 just_unmasked_idx = (masked_positions) & (xt != self.mask_token_id) & ~cache_flag
