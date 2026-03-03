@@ -5,11 +5,11 @@ source setup_env.sh
 # TODO: Uncomment a model and run
 
 # setdlm s <= 8
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
-BLOCK_SIZE=1024
-MAX_WINDOW_SIZE=4
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=false
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=4
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
 
 # setdlm s <= 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_v3"
@@ -33,10 +33,10 @@ ALIGN_INPUTS_TO_BLOCKS=false
 # MAX_WINDOW_SIZE=1
 
 # mdlm
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
-# BLOCK_SIZE=32
-# KV_CACHING=false
-# ALIGN_INPUTS_TO_BLOCKS=true
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
+BLOCK_SIZE=32
+KV_CACHING=false
+ALIGN_INPUTS_TO_BLOCKS=false
 
 # bd3lm s = 4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
@@ -124,7 +124,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
   generation/stopping_criteria@stopping_criteria_list='[cnndm_stop_string_criteria]' \
-  generation/logits_processor@logits_processor_list='[exponential_decay_length_penalty,repetition_penalty_logits_processor]' \
+  generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor,exponential_decay_length_penalty]' \
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY} \
   logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]" \
   generation_config.ar_caching=true

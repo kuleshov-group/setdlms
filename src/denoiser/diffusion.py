@@ -666,23 +666,18 @@ class MDLM(Denoiser):
         if logits_processor is not None and len(logits_processor) > 0:
             log_x_theta = logits
             sample_idx = sample_indices[0] if sample_indices.ndim == 2 else sample_indices
-
-            seq0 = running_generation[0]
-
-            sequence_to_process = seq0.unsqueeze(0)
             for lp in logits_processor:
                 for j in range(log_x_theta.shape[1]):
                     if isinstance(lp, ExponentialDecayLengthPenalty):
                         log_x_theta[:, j] = lp(
-                            input_ids=sequence_to_process[..., :sample_idx[j]],
+                            input_ids=running_generation[..., :sample_idx[j]],
                             scores=log_x_theta[:, j],
                         )
                     else:
                         log_x_theta[:, j] = lp(
-                            input_ids=sequence_to_process[..., inputs_offset:],
+                            input_ids=running_generation[..., inputs_offset:],
                             scores=log_x_theta[:, j],
                         )
-
             log_x_theta[..., self.mask_token_id] = self.neg_infinity
             log_x_theta = log_x_theta - torch.logsumexp(
                 log_x_theta, dim=-1, keepdim=True
