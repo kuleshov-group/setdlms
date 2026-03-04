@@ -21,7 +21,7 @@ BATCH_SIZE=128
 MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
-TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_len1k_v2"
+TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_len768_v1"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -49,7 +49,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model=aoarm_efficient \
   model.config.attn_backend="sdpa" \
   training.compile_backbone=true \
-  model.config.length=1024 \
+  model.config.length=768 \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=true \
   model.config.backbone_config.num_layers=${N_LAYERS} \
@@ -69,5 +69,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   noise@model.config.noise_config=power \
   model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
   model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
-  model.config.noise_config.length=1024 \
+  model.config.noise_config.length=768 \
   model.config.noise_config.plot_schedule=false

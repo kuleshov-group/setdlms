@@ -462,7 +462,8 @@ class CNNDailyMailDataset(Dataset):
         self,
         tokenizer: PreTrainedTokenizer,
         split: Literal["train", "validation", "test"],
-        max_length: int,
+        max_source_length: int,
+        max_target_length: int,
         dataset_path: str = "abisee/cnn_dailymail",
         config_name: Literal["1.0.0", "2.0.0", "3.0.0"] = "3.0.0",
         padding: bool = False,
@@ -492,32 +493,8 @@ class CNNDailyMailDataset(Dataset):
                     return "\n".join(map(str, x))
                 return x
 
-            def length_filter(batch):
-                articles = [_to_text(x) for x in batch[source_key]]
-                targets  = [_to_text(x) for x in batch[target_key]]
-
-                if source_prompt_text is not None:
-                    articles = [source_prompt_text + a for a in articles]
-                if target_prompt_text is not None:
-                    targets = [target_prompt_text + t for t in targets]
-
-                art_ids = self.tokenizer(articles, add_special_tokens=False)["input_ids"]
-                tgt_ids = self.tokenizer(targets,  add_special_tokens=False)["input_ids"]
-
-                # IMPORTANT: return a list[bool], not a single bool
-                return [(len(a) + len(t) + 3) <= max_length for a, t in zip(art_ids, tgt_ids)]
-            if cache_path != "":
-                ds_filtered = self.dataset.filter(
-                    length_filter,
-                    batched=True,
-                    batch_size=1024,
-                    num_proc=8,
-                )
-                print(f"Filtered {len(ds_filtered)} examples out of {len(self.dataset)}")
-                ds_filtered.save_to_disk(self.cache_path)
-                self.dataset = ds_filtered
-
-        self.max_length = max_length
+        self.max_source_length = max_source_length
+        self.max_target_length = max_target_length
         self.padding = padding
         self.add_special_tokens = add_special_tokens
         self.source_prompt_text = source_prompt_text
@@ -598,20 +575,18 @@ class CNNDailyMailDataset(Dataset):
             if self.add_special_tokens:
                 source = self.tokenizer.bos_token + source + self.tokenizer.eos_token
                 target = target + self.tokenizer.eos_token
-
-        seq2seq_tokenized = self.tokenizer.batch_encode_plus(
-            [source, target],
-            max_length=self.max_length,
-            padding=self.padding,
-            add_special_tokens=False,  # (potentially) added manually, above
-            truncation=self.truncate,
-        )
-
+        source_ids = self.tokenizer(source, add_special_tokens=self.add_special_tokens, max_length=self.max_source_length, truncation=self.truncate)
+        target_ids = self.tokenizer(target, add_special_tokens=self.add_special_tokens, max_length=self.max_target_length, truncation=self.truncate)
+        # inject eos token if it was cut off
+        if (source_ids["input_ids"][-1] != self.tokenizer.eos_token_id):
+            source_ids["input_ids"][-1] = self.tokenizer.eos_token_id
+        if (target_ids["input_ids"][-1] != self.tokenizer.eos_token_id):
+            target_ids["input_ids"][-1] = self.tokenizer.eos_token_id
         if self.separate_input_output:
-            input_ids = torch.LongTensor(seq2seq_tokenized["input_ids"][0])
-            attention_mask = torch.LongTensor(seq2seq_tokenized["attention_mask"][0])
-            context_mask = torch.LongTensor(seq2seq_tokenized["attention_mask"][0])
-            output_ids = torch.LongTensor(seq2seq_tokenized["input_ids"][1])
+            input_ids = torch.LongTensor(source_ids["input_ids"])
+            attention_mask = torch.LongTensor(source_ids["attention_mask"])
+            context_mask = torch.LongTensor(source_ids["attention_mask"])
+            output_ids = torch.LongTensor(target_ids["input_ids"])
             return {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
@@ -620,17 +595,17 @@ class CNNDailyMailDataset(Dataset):
             }
         else:
             input_ids = torch.cat(
-                [torch.LongTensor(t) for t in seq2seq_tokenized["input_ids"]], dim=-1
+                [torch.LongTensor(source_ids["input_ids"]), torch.LongTensor(target_ids["input_ids"])], dim=-1
             )
             attention_mask = torch.cat(
-                [torch.LongTensor(a) for a in seq2seq_tokenized["attention_mask"]],
+                [torch.LongTensor(source_ids["attention_mask"]), torch.LongTensor(target_ids["attention_mask"])],
                 dim=-1,
             )
             context_mask = torch.cat(
                 (
-                    torch.LongTensor(seq2seq_tokenized["attention_mask"][0]),
+                    torch.LongTensor(source_ids["attention_mask"]),
                     torch.zeros_like(
-                        torch.LongTensor(seq2seq_tokenized["input_ids"][1])
+                        torch.LongTensor(target_ids["input_ids"])
                     ),
                 ),
                 dim=-1,

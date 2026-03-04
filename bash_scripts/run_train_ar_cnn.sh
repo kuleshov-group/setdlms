@@ -18,7 +18,7 @@ MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 
-TAG="ar_len1k_v1"
+TAG="ar_len768_v1"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -26,7 +26,7 @@ GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
     MICRO_BATCH_SIZE=16
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=4
+    MICRO_BATCH_SIZE=8
 else
     MICRO_BATCH_SIZE=4
 fi
@@ -45,7 +45,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   model=ar \
   training.compile_backbone=true \
-  model.config.length=1024 \
+  model.config.length=768 \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=true \
   model.config.backbone_config.num_layers=${N_LAYERS} \
