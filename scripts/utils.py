@@ -37,6 +37,22 @@ def _get_tokenizer_eos_token_id(tokenizer_cfg: DictConfig) -> int:
     return tokenizer.eos_token_id
 
 
+def _get_tokenizer_pad_token_id(tokenizer_cfg: DictConfig) -> int:
+    tokenizer = hydra.utils.instantiate(tokenizer_cfg)
+    tokenizer = maybe_add_missing_special_tokens(tokenizer)
+    if not hasattr(tokenizer, "pad_token_id") or tokenizer.pad_token_id is None:
+        raise ValueError("Tokenizer must have 'pad_token_id'.")
+    return tokenizer.pad_token_id
+
+
+def _get_tokenizer_mask_token_id(tokenizer_cfg: DictConfig) -> int:
+    tokenizer = hydra.utils.instantiate(tokenizer_cfg)
+    tokenizer = maybe_add_missing_special_tokens(tokenizer)
+    if not hasattr(tokenizer, "mask_token_id") or tokenizer.mask_token_id is None:
+        raise ValueError("Tokenizer must have 'mask_token_id'.")
+    return tokenizer.mask_token_id
+
+
 def _get_world_size() -> int:
     # Setup distributed
     if not dist.is_initialized():
@@ -96,6 +112,14 @@ def register_useful_resolvers() -> None:
     OmegaConf.register_new_resolver(
         "get_tokenizer_eos_token_id",
         lambda tokenizer_cfg: _get_tokenizer_eos_token_id(tokenizer_cfg),
+    )
+    OmegaConf.register_new_resolver(
+        "get_tokenizer_pad_token_id",
+        lambda tokenizer_cfg: _get_tokenizer_pad_token_id(tokenizer_cfg),
+    )
+    OmegaConf.register_new_resolver(
+        "get_tokenizer_mask_token_id",
+        lambda tokenizer_cfg: _get_tokenizer_mask_token_id(tokenizer_cfg),
     )
 
 
@@ -274,7 +298,11 @@ def load_model_from_ckpt_dir_path(
         print("Checkpoint not found; reinitializing model from scratch")
         return model
     if verbose:
-        if (
+        if "timestamp" in ckpt["state"]:
+            timestamp = ckpt["state"]["timestamp"]
+            print(f"Loaded ckpt from ep: {timestamp['Timestamp']['epoch']}; "
+                f"batch: {timestamp['Timestamp']['batch']}.")
+        elif (
             "callbacks" in ckpt["state"]
             and "SaveBestCheckpointing" in ckpt["state"]["callbacks"]
         ):

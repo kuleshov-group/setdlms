@@ -3,59 +3,43 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
-# BLOCK_SIZE=4
-# MAX_WINDOW_SIZE=4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_mdlm_adaln_cleanbos_antithetic_hparam_v2"
-# KV_CACHING=false
-# ALIGN_INPUTS_TO_BLOCKS=false
-
-MAX_LENGTH=1024
-L=$((MAX_LENGTH - 1)) # for block diffusion / aoarm, we can override the length here for the correct attn masks. mdlm will use sliding window.
-
-### BDL3M
+# bd3lm
+# MODEL_PATH="kuleshov-group/bd3lm-owt-block_size16"
 # BLOCK_SIZE=16
-# MAX_WINDOW_SIZE=${BLOCK_SIZE}
-# MODEL_PATH="kuleshov-group/bd3lm-owt-block_size${BLOCK_SIZE}"
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_dropout0.1_normlayernorm_hparam_v3"
-# # MODEL_PATH="/home/ubuntu/mar/runs/ablation_bs16_loglinear_final/last-v1.ckpt"
-# # MODEL_PATH="/home/ubuntu/mar/runs/ablation_bs4_loglinear_final/last-v1.ckpt"
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=true
-# T=${BLOCK_SIZE}
+# COMPILE_BACKBONE=false
 
-# mdlm
-# BLOCK_SIZE=32
-# MAX_WINDOW_SIZE=${BLOCK_SIZE}
-# MODEL_PATH="kuleshov-group/mdlm-owt"
-# KV_CACHING=false
-# ALIGN_INPUTS_TO_BLOCKS=true
-# T=${BLOCK_SIZE}
+# setdlm
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
+# CKPT_FILE="ep17-ba300000-rank0.pt"
+# MAX_WINDOW_SIZE=16
+# BLOCK_SIZE=1024
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+# AR_CACHING=true
+# COMPILE_BACKBONE=true
 
 # ar
-BLOCK_SIZE=1
-MAX_WINDOW_SIZE=${BLOCK_SIZE}
-# MODEL_PATH=/share/kuleshov/ssahoo/textdiffusion/text-diffusion-exp-v4-AgBZrc-small-ar-param-ar_data-openwebtext-split_seqlen-1024_maxs-1300001_bs-512/checkpoints/last.ckpt
-MODEL_PATH="kuleshov-group/ar-noeos-owt"
-KV_CACHING=true
+MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1"
+CKPT_FILE="20-300000.ckpt"
+MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
 ALIGN_INPUTS_TO_BLOCKS=true
-T=${BLOCK_SIZE}
+AR_CACHING=true
+BLOCK_SIZE=1
+COMPILE_BACKBONE=true
 
 
-
-#### SBD
-# PROMPT_TEXT=null
-# BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=16
-# # MODEL_PATH="/home/ubuntu/mar/runs/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired4_max128_v5"
-# # MODEL_PATH="/home/ubuntu/mar/runs/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired8_max128_v5"
-# # MODEL_PATH="/home/ubuntu/mar/runs/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
-# KV_CACHING=true
+# mdlm
+# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4"
+# CKPT_FILE="18-300000.ckpt"
+# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
 # ALIGN_INPUTS_TO_BLOCKS=false
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_ft_v5"
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_ft_v3"
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_ft_v5"
-# T=${MAX_LENGTH}
+# AR_CACHING=true
+# BLOCK_SIZE=32
+# COMPILE_BACKBONE=true
 
+T=${BLOCK_SIZE}
 
 OUTPUT_DIR="output/"
 REVISION=null
@@ -65,11 +49,11 @@ FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
 CONFIDENCE_THRESHOLD=1e6
-CKPT="best"
 USE_EMA=true
 
-REPETITION_PENALTY=1.0
-NUCLEUS_P=0.8
+REPETITION_PENALTY=1.1 # for each model, try 1.1, 1.2
+NUCLEUS_P=1.0 # for each model, try 0.95, 1.0
+MAX_LENGTH=1024
 
 echo "MODEL_PATH: ${MODEL_PATH} BLOCK_SIZE: ${BLOCK_SIZE} MAX_WINDOW_SIZE: ${MAX_WINDOW_SIZE} NUCLEUS_P: ${NUCLEUS_P} REPETITION_PENALTY: ${REPETITION_PENALTY}"
 
@@ -85,14 +69,15 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   hydra/hydra_logging=disabled \
   pretrained_model_name_or_path=${MODEL_PATH} \
   pretrained_model_revision=${REVISION} \
-  +ckpt_file="${CKPT}-rank0.pt" \
+  +ckpt_file="${CKPT_FILE}" \
   +load_ema_weights=${USE_EMA} \
   tokenizer.pretrained_model_name_or_path=${TOKENIZER_PATH} \
   output_path=${OUTPUT_PATH} \
   generated_samples_output_path=${OUTPUT_PATH} \
   max_length=${MAX_LENGTH} \
-  max_new_tokens=${L} \
+  max_new_tokens=$((${MAX_LENGTH} - 1)) \
   block_size=${BLOCK_SIZE} \
+  generation@generation_config=set_diffusion_generation_config \
   generation_config.num_steps=${T} \
   generation_config.do_sample=${DO_SAMPLE} \
   generation_config.first_hitting=${FIRST_HITTING} \
@@ -102,6 +87,9 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
+  generation_config.ar_caching=true \
+  generation_config.linear_unmasking=true \
+  generation_config.nucleus_p=${NUCLEUS_P} \
   generation/stopping_criteria@stopping_criteria_list='[entropy_eos_stopping_criteria]' \
   batch_size=1 \
   +throughput_run=true \
@@ -113,4 +101,4 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor]' \
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY} \
   +eval_model_name="gpt2-large" \
-  +generation_config.nucleus_p=${NUCLEUS_P}
+  +compile_backbone=${COMPILE_BACKBONE}

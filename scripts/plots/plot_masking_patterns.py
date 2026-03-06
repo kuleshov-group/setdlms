@@ -213,7 +213,7 @@ def plot_pattern_probabilities_multi_schedule(
         cols=ncols,
         shared_yaxes=True,
         horizontal_spacing=horizontal_spacing,
-        vertical_spacing=0.16,
+        vertical_spacing=0.22,
         subplot_titles=[""] * (nrows * ncols),
     )
 
@@ -364,10 +364,10 @@ def plot_pattern_probabilities_multi_schedule(
         if ns.b <= 1 / L:
             title = f'<b>AR</b><br>C̄ = {expected_active:.1f} token(s)'
         elif ns.b == 1.0:
-            title = f'<b>Masked Diffusion</b><br>C̄ = {expected_active:.1f} token(s)'
+            title = f'<b>MDLM</b><br>C̄ = {expected_active:.1f} token(s)'
         else:
             text_color = "green"
-            title = f'<b><span style="color:{text_color};"><i>Set Masked Diffusion</i></span></b><br>C̄ = {expected_active:.1f} token(s)'
+            title = f'<b><span style="color:{text_color};"><i>SetDLM</i></span></b><br>C̄ = {expected_active:.1f} token(s)'
         titles.append(title)
         print(row_idx, col_idx)
         plot_pattern_probabilities(
@@ -426,6 +426,7 @@ def plot_pattern_probabilities_multi_schedule(
         for c in range(1, ncols + 1):
             fig.update_yaxes(showticklabels=True, tickfont=dict(size=TICK_FONT_SIZE), row=r, col=c)
 
+    # Caption under bottom row
     fig.add_annotation(
         text=r"$\text{Masked sequence } \mathbf{z}_t$",
         xref="paper",
@@ -436,6 +437,22 @@ def plot_pattern_probabilities_multi_schedule(
         showarrow=False,
         xanchor="center",
         yanchor="top",
+        font=dict(size=XLABEL_FONT_SIZE),
+    )
+
+    # Caption under first row (in the gap between rows)
+    y1_bottom = fig.layout.yaxis.domain[0]
+    y2_top = fig.layout.yaxis3.domain[1]
+    gap_center_y = 0.5 * (y1_bottom + y2_top)
+    fig.add_annotation(
+        text=r"$\text{Masked sequence } \mathbf{z}_t$",
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=gap_center_y,
+        showarrow=False,
+        xanchor="center",
+        yanchor="middle",
         font=dict(size=XLABEL_FONT_SIZE),
     )
     fig.update_layout(

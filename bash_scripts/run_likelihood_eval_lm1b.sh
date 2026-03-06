@@ -4,21 +4,23 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # setdlm s <= 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired4_max128_v5"
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired4_max128_v5"
+CKPT_FILE=ep72-ba1000000-rank0.pt
 
 # setdlm s <= 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired8_max128_v5"
+# CKPT_FILE="best-rank0.pt"
 
 # setdlm s <= 32
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/lm1b_block128_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_dropout0.1_normlayernorm_hparam_desired16_vlambda"
+# CKPT_FILE="best-rank0.pt"
 
 REVISION=null
 
 BLOCK_SIZE=128
 BATCH_SIZE=16
 PRETRAINED_MODEL_NAME_OR_PATH=null  # TODO: Change as needed
-CKPT_FILE="best-rank0.pt"
-USE_EMA=true
+USE_EMA=false
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \

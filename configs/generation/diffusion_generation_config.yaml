@@ -14,3 +14,4 @@ align_inputs_to_blocks: false
 linear_unmasking: true
 compute_inf_budget: false
 nucleus_p: 1.0
+pad_token_id: ${get_tokenizer_mask_token_id:${tokenizer}}

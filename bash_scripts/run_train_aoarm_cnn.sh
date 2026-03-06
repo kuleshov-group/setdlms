@@ -5,14 +5,14 @@ cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
 # Model arch
-BLOCK_SIZE=1024
-EVAL_BLOCK_SIZE=1024
+BLOCK_SIZE=768
+EVAL_BLOCK_SIZE=768
 HIDDEN_SIZE=256
 INTERMEDIATE_SIZE=768
 N_LAYERS=28
 
-DESIRED_BLOCK_SIZE=8
-MAX_BLOCK_SIZE=1024
+DESIRED_BLOCK_SIZE=4
+MAX_BLOCK_SIZE=768
 
 # Hyperparameters
 LR=3e-4
@@ -27,11 +27,11 @@ RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
-    MICRO_BATCH_SIZE=4
+    MICRO_BATCH_SIZE=8
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=2
+    MICRO_BATCH_SIZE=4
 else
-    MICRO_BATCH_SIZE=1
+    MICRO_BATCH_SIZE=2
 fi
 NUM_WORKERS=0
 

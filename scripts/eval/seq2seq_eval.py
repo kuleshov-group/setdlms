@@ -240,6 +240,7 @@ def main(cfg: DictConfig) -> None:
         print(f"Num. trainable params: {format_number(count_parameters(model))}")
     model.eval()
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
+    gen_kwargs["generation_config"].pad_token_id = tokenizer.pad_token_id
     stop_tokens = ["<|endoftext|>"]
 
     # Iterate through the dataset and sample
@@ -339,6 +340,7 @@ def main(cfg: DictConfig) -> None:
         if local_rank == 0 and (elem_id % 100 == 0): # and world_size > 1:
             print("Input:", tokenizer.decode(elem["input_ids"][0]))
             print("Output:", decoded_samples)
+            print("Output length:", len(tokenizer(decoded_samples)["input_ids"]))
             print("Ground truth:", dataset.target_references[ex_id])
             print(
                 f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"

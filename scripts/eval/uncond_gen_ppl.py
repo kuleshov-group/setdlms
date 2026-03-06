@@ -15,6 +15,7 @@ from streaming import StreamingDataset
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM, AutoTokenizer
 from transformers.generation import StopStringCriteria
+from src.noise_schedule.noise_schedules import LinearNoise
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 from transformers.modeling_outputs import ModelOutput
@@ -27,6 +28,9 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import math
 from src.denoiser.ar import AR, ARConfig
+from src.denoiser.diffusion import BD3LM, BD3LMConfig
+from src.denoiser.diffusion import SetDLM, SEDD
+from src.denoiser.diffusion import MDLM, MDLMConfig
 log = logging.getLogger(__name__)
 
 
@@ -108,85 +112,122 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
                 except:
                     model = None
 
-    # HACK FOR MDLM/BD3LM HF MODELS
+    # HACK for legacy codebase compatibility
     if model is None or not hasattr(model, "generate"):
-        from src.denoiser.diffusion import MDLM, MDLMConfig
-        from src.denoiser.diffusion import BD3LM, BD3LMConfig
-        from src.denoiser.ar import AR, ARConfig
-        from src.noise_schedule.noise_schedules import LinearNoise
         
         # Create dit backbone config
         # Load the dit config template and update with actual values
         dit_config_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "configs", "model", "backbone", "dit.yaml"
+            "configs", "model", "backbone", "dit_legacy.yaml"
         )
         backbone_config = OmegaConf.load(dit_config_path)
         
         # Update backbone config with necessary parameters (resolving the template values)
-        backbone_config.length = 128 if getattr(cfg, "eval_model_name", "gpt2-large") == "bert-base-uncased" else 1024
-        print("hardcoding length to", backbone_config.length)
+        length = getattr(cfg, "length", 1024)
+        backbone_config.length = length
         backbone_config.vocab_size = len(tokenizer)
         backbone_config.block_size = getattr(cfg, "block_size", None)
         backbone_config.pretrained_model_name_or_path = getattr(cfg, "pretrained_model_name_or_path", None)
         backbone_config.num_layers = 12
         backbone_config.n_heads = 12
         backbone_config.hidden_size = 768
-        backbone_config.adaln = True
-        
-        # backbone_config.adaln = False
-        
+
+        if "-ar-" in backbone_config.pretrained_model_name_or_path:
+            backbone_config.adaln = False
+            backbone_config.causal_attention = True
+            backbone_config.attn_backend = "flash_attn"
+        elif "mdlm-" in backbone_config.pretrained_model_name_or_path:
+            # backbone_config.attn_backend = "flash_attn"
+            backbone_config.adaln = True
+        else:
+            backbone_config.adaln = True
+    
         # Ensure it's a DictConfig
         if not isinstance(backbone_config, DictConfig):
             backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
-        # mdlm_config = ARConfig(
-        #     length=backbone_config.length,
-        #     backbone_config=backbone_config,
-        # )
-        
-        # mdlm_config = MDLMConfig(
-        #     length=backbone_config.length,
-        #     backbone_config=backbone_config,
-        # )
-        mdlm_config = BD3LMConfig(
-            length=backbone_config.length,
-            backbone_config=backbone_config,
-            block_size=cfg.block_size,
-        )
-        mdlm_config.mask_token_id = tokenizer.mask_token_id
-        mdlm_config.vocab_size = len(tokenizer)
-        # model_ = MDLM(
-        #     mdlm_config,
-        #     tokenizer=tokenizer,
-        # )
-        model_ = BD3LM(
-            mdlm_config,
-            tokenizer=tokenizer,
-        )
-        # model_ = AR(
-        #     mdlm_config,
-        #     tokenizer=tokenizer,
-        # )
-        if model is not None:
-            state_dict = model.state_dict()
+        if "mdlm-" in backbone_config.pretrained_model_name_or_path:
+            model_config = MDLMConfig(
+                length=length,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = MDLM(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        elif "sedd-" in backbone_config.pretrained_model_name_or_path:
+            model_config = MDLMConfig(
+                length=length,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = SEDD(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        elif "ar-" in backbone_config.pretrained_model_name_or_path:
+            model_config = ARConfig(
+                length=length,
+                backbone_config=backbone_config,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = AR(
+                model_config,
+                tokenizer=tokenizer,
+            )
         else:
-            state_dict = torch.load(cfg.pretrained_model_name_or_path, weights_only=False)
-            state_dict = state_dict["state_dict"]
-        new_state_dict = {}
-        for key in state_dict.keys():
-            new_key = key
-            if "backbone." in key:
-                new_key = key.replace("backbone.", "")
-            if "_orig_mod." in new_key:
-                new_key = new_key.replace("_orig_mod.", "")
-            new_state_dict[new_key] = state_dict[key]
-        if "sampling_eps_min" in new_state_dict:
-            new_state_dict.pop("sampling_eps_min")
-        if "sampling_eps_max" in new_state_dict:
-            new_state_dict.pop("sampling_eps_max")
-        model_.backbone.load_state_dict(new_state_dict)
-        model = model_.to(device)
+            model_config = BD3LMConfig(
+                length=length,
+                backbone_config=backbone_config,
+                block_size=cfg.block_size,
+            )
+            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.keep_clean_bos = True
+            model_config.mask_token_id = tokenizer.mask_token_id
+            model_config.vocab_size = len(tokenizer)
+            denoiser = BD3LM(
+                model_config,
+                tokenizer=tokenizer,
+            )
+        if model is not None:
+            denoiser.backbone = model.backbone
+        else:
+            state_dict = torch.load(
+                cfg.pretrained_model_name_or_path,
+                map_location="cpu",
+                weights_only=False,
+            )["state_dict"]
+
+            for key in list(state_dict.keys()):
+                new_key = key
+                if "backbone." in new_key:
+                    new_key = new_key.replace("backbone.", "")
+                if "_orig_mod." in new_key:
+                    new_key = new_key.replace("_orig_mod.", "")
+
+                if new_key != key:
+                    state_dict[new_key] = state_dict.pop(key)
+
+            state_dict.pop("sampling_eps_min", None)
+            state_dict.pop("sampling_eps_max", None)
+            denoiser.backbone.load_state_dict(state_dict)
+
+        model = denoiser.to(device)
         model.noise_schedule = LinearNoise()
+
+    if getattr(cfg, "compile_backbone", False):
+        print("Compiling model backbone")
+        model.backbone = torch.compile(
+            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
+        )
 
     model = model.to(device)
     if local_rank == 0:
@@ -259,7 +300,7 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
             print(f"Length: {length}")
             print("final length:", outputs.shape[1])
 
-            if ind % 100 == 0:
+            if ind % 1 == 0:
                 print(tokenizer.decode(outputs[0]))
 
             if i >= THROUGHPUT_WARMUP:
@@ -318,7 +359,6 @@ def _compute_entropy(x: torch.LongTensor, mask_token_id: int, pad_token_id: int)
 
     return entropies
 
- 
 
 @torch.no_grad()
 def _accumulate_nll_sliding_window(

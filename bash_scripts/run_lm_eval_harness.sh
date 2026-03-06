@@ -6,7 +6,7 @@ source setup_env.sh
 # TODO: Uncomment a model and run
 
 # base model
-MODEL_PATH="Qwen/Qwen3-1.7B-Base"
+# MODEL_PATH="Qwen/Qwen3-1.7B-Base"
 
 # setdlm s <= 8
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_again_v2"
@@ -33,15 +33,15 @@ MODEL_PATH="Qwen/Qwen3-1.7B-Base"
 # ALIGN_INPUTS_TO_BLOCKS=false
 
 # ar
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_distill_v6"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_distill_v5"
 # KV_CACHING=true
 
 # mdlm
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v6"
-# KV_CACHING=false
-# BLOCK_SIZE=32
-# MAX_WINDOW_SIZE=${BLOCK_SIZE}
-# ALIGN_INPUTS_TO_BLOCKS=true
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v5"
+KV_CACHING=false
+BLOCK_SIZE=32
+MAX_WINDOW_SIZE=${BLOCK_SIZE}
+ALIGN_INPUTS_TO_BLOCKS=true
 
 # bd3lm s = 4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"
@@ -92,6 +92,7 @@ echo "CONFIDENCE_MARGIN_BASED_NOISING: ${CONFIDENCE_MARGIN_BASED_NOISING}"
 echo "ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS}"
 
 OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_L${L}_block${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hit${FIRST_HITTING}-conf_noise${CONFIDENCE_BASED_NOISING}-conf_margin_noise${CONFIDENCE_MARGIN_BASED_NOISING}-conf_thold${CONFIDENCE_THRESHOLD}-align_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-max_window_size${MAX_WINDOW_SIZE}"
+OUTPUT_PATH="${OUTPUT_PATH}_test"
 mkdir -p ${OUTPUT_PATH}
 
 PORT=$((RANDOM % 10000 + 29500))

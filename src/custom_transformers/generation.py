@@ -110,7 +110,7 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         self,
         tokenizer,
         entropy_threshold: float = 4.0,
-        block_size: int = 256,
+        block_size: int = 128,
         var_length: bool = False,
     ):
         super().__init__()
@@ -150,7 +150,7 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         bsz, seq_len = input_ids.shape
         self._ensure_state(bsz)
         if self.var_length:
-            # Criterion: stop at second EOS *only if no mask tokens appear before it*
+            # Stop at second EOS if no mask tokens appear before it
             eos_mask = (input_ids == self.eos_token_id)  # (B, L)
             eos_counts = eos_mask.sum(dim=1)
 
@@ -163,8 +163,6 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
 
                         second_eos_pos = int(eos_positions[1].item())
 
-                        # NEW CONDITION:
-                        # no mask tokens before the second EOS
                         has_mask_before = (
                             input_ids[i, :second_eos_pos] == self.mask_token_id
                         ).any()
@@ -177,13 +175,10 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
             return False
 
 
-        # Compute entropy on the last `block_size` tokens (or all if shorter)
         last_block = input_ids[:, -self.block_size:]
-        entropy = self._compute_entropy(last_block)  # should return float or tensor scalar
+        entropy = self._compute_entropy(last_block)
 
-        # Make it a python float for comparisons
         if torch.is_tensor(entropy):
-            # If returns (batch,) you can adapt, but your original looks scalar.
             entropy_val = float(entropy.detach().mean().cpu())
         else:
             entropy_val = float(entropy)
@@ -198,7 +193,4 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
                 for i in range(bsz):
                     self.truncate_idx[i] = max(seq_len - self.block_size, 0)
                     self.stop_reason[i] = "low_entropy"
-
-    
-        # Note: Hugging Face expects a single bool: stop generation for the whole batch.
         return stop_any

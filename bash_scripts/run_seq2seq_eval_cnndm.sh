@@ -26,17 +26,17 @@ source setup_env.sh
 # ALIGN_INPUTS_TO_BLOCKS=false
 
 # ar
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_len1k_v1"
-# BLOCK_SIZE=1
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=true
-# MAX_WINDOW_SIZE=1
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_len768_v1"
+BLOCK_SIZE=1
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=true
+MAX_WINDOW_SIZE=1
 
 # mdlm
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len1k_v1"
-BLOCK_SIZE=32
-KV_CACHING=false
-ALIGN_INPUTS_TO_BLOCKS=false
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len768_v1"
+# BLOCK_SIZE=32
+# KV_CACHING=false
+# ALIGN_INPUTS_TO_BLOCKS=false
 
 # bd3lm s = 4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
@@ -69,8 +69,8 @@ FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
 CONF_THRESHOLD=1e6
-MAX_LENGTH=1024
-MAX_NEW_TOKENS=1024
+MAX_LENGTH=768
+MAX_NEW_TOKENS=180
 CKPT="best"
 USE_EMA=true
 LEN_PENALTY=1.1

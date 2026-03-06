@@ -23,11 +23,11 @@ RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_
 
 GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -E 's/.*(A[0-9]+|H100|A6000).*/\1/' | head -n 1)
 if [[ "$GPU_TYPE" == "A100" || "$GPU_TYPE" == "H100" ]]; then
-    MICRO_BATCH_SIZE=8
+    MICRO_BATCH_SIZE=16
 elif [[ "$GPU_TYPE" == "A6000" ]]; then
-    MICRO_BATCH_SIZE=4
+    MICRO_BATCH_SIZE=8
 else
-    MICRO_BATCH_SIZE=2
+    MICRO_BATCH_SIZE=4
 fi
 NUM_WORKERS=0
 

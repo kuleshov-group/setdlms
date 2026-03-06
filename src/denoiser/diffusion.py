@@ -523,7 +523,7 @@ class MDLM(Denoiser):
                 pad_length = inputs.shape[-1] % block_size
                 if pad_length > 0:
                     pad_length = block_size - pad_length
-            inputs = F.pad(inputs, (0, pad_length), value=self.mask_token_id)
+            inputs = F.pad(inputs, (0, pad_length), value=generation_config.pad_token_id)
             mask_tokens = (inputs == self.mask_token_id)
             if pad_length > 0:
                 mask_tokens[:, -pad_length:] = False
@@ -545,7 +545,7 @@ class MDLM(Denoiser):
                 masked_tensor = F.pad(
                     masked_tensor,
                     (0, self.config.length - masked_tensor.shape[-1]),
-                    value=self.tokenizer.pad_token_id)
+                    value=generation_config.pad_token_id)
         return masked_tensor
 
     def _compute_posterior(
