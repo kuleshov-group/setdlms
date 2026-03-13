@@ -4,3 +4,4 @@ entropy_eos_stopping_criteria:
   entropy_threshold: 4.0
   block_size: 128
   var_length: true
+  num_matches: 2

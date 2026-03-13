@@ -10,9 +10,10 @@ source setup_env.sh
 # COMPILE_BACKBONE=true
 
 # setdlm s <= 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_ft_v3"
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_vscratch"
-# CKPT_FILE="best-rank0.pt"
+# CKPT_FILE="ep17-ba300000-rank0.pt"
+# BLOCK_SIZE=1024
+# COMPILE_BACKBONE=true
 
 # setdlm s <= 32
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
@@ -51,7 +52,7 @@ REVISION=null
 for EVAL_DATASET in "owt_eval_gpt2" "ptb_eval" "wikitext2_eval" "lm1b_eval_gpt2" "lambada_eval" "ag_news_eval" "scientific_papers_pubmed_eval" "scientific_papers_arxiv_eval"; do
   BATCH_SIZE=16
   PRETRAINED_MODEL_NAME_OR_PATH="gpt2"  # TODO: Change as needed
-  USE_EMA=true
+  USE_EMA=false
   echo "Evaluating ${EVAL_DATASET} with model ${MODEL_PATH}"
 
   composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \

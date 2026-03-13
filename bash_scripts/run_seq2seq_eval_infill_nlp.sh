@@ -11,23 +11,23 @@ source setup_env.sh
 # COMPILE_BACKBONE=false
 
 # setdlm
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_ft_v5"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# # CKPT_FILE="best-rank0.pt"
-# MAX_WINDOW_SIZE=32
-# BLOCK_SIZE=1024
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
-# AR_CACHING=true
-# COMPILE_BACKBONE=false
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
+CKPT_FILE="ep17-ba300000-rank0.pt"
+MAX_WINDOW_SIZE=32
+BLOCK_SIZE=1024
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=false
+AR_CACHING=true
+COMPILE_BACKBONE=false
+USE_EMA=false
 
 # ar
-MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1"
-CKPT_FILE="20-300000.ckpt"
-MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
-BLOCK_SIZE=1
-COMPILE_BACKBONE=false
+# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1"
+# CKPT_FILE="20-300000.ckpt"
+# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
+# BLOCK_SIZE=1
+# COMPILE_BACKBONE=false
+# USE_EMA=true
 
 # mdlm
 # MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4"
@@ -38,6 +38,7 @@ COMPILE_BACKBONE=false
 # AR_CACHING=false
 # BLOCK_SIZE=1024
 # COMPILE_BACKBONE=true
+# USE_EMA=true
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 
@@ -53,7 +54,6 @@ FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONF_THRESHOLD=1e6
 MAX_LENGTH=1024
-USE_EMA=true
 
 # NUM_TARGET_SENTENCES=3
 # REPEAT_PENALTY=1.5

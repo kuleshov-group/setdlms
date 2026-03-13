@@ -112,6 +112,7 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         entropy_threshold: float = 4.0,
         block_size: int = 128,
         var_length: bool = False,
+        num_matches: int = 1,
     ):
         super().__init__()
         self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
@@ -122,7 +123,8 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         self.entropy_threshold = entropy_threshold
         self.block_size = block_size
         self.var_length = var_length
-
+        self.num_matches = num_matches
+        
         # For optional post-processing:
         # one entry per batch item, filled with either None or an int truncate index.
         self.truncate_idx = None
@@ -150,27 +152,28 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         bsz, seq_len = input_ids.shape
         self._ensure_state(bsz)
         if self.var_length:
-            # Stop at second EOS if no mask tokens appear before it
             eos_mask = (input_ids == self.eos_token_id)  # (B, L)
             eos_counts = eos_mask.sum(dim=1)
 
-            if torch.any(eos_counts > 1):
+            if torch.any(eos_counts >= self.num_matches):
                 for i in range(bsz):
-                    if eos_counts[i].item() > 1:
+                    if eos_counts[i].item() >= self.num_matches:
                         eos_positions = torch.nonzero(
                             eos_mask[i], as_tuple=False
                         ).squeeze(-1)
 
-                        second_eos_pos = int(eos_positions[1].item())
+                        last_eos_pos = int(eos_positions[self.num_matches - 1].item())
 
                         has_mask_before = (
-                            input_ids[i, :second_eos_pos] == self.mask_token_id
+                            input_ids[i, :last_eos_pos] == self.mask_token_id
                         ).any()
 
                         if not has_mask_before:
                             stop_any = True
-                            self.truncate_idx[i] = min(second_eos_pos + 1, seq_len)
-                            self.stop_reason[i] = "second_eos"
+                            self.truncate_idx[i] = min(last_eos_pos + 1, seq_len)
+                            self.stop_reason[i] = "last_eos"
+                            return True
+    
         if seq_len < self.block_size:
             return False
 

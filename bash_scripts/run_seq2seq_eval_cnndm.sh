@@ -5,32 +5,32 @@ source setup_env.sh
 # TODO: Uncomment a model and run
 
 # setdlm s <= 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_vlambda"
-# BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=4
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block768_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_len768_v1"
+BLOCK_SIZE=768
+MAX_WINDOW_SIZE=4
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=false
 
 # setdlm s <= 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_v3"
-# BLOCK_SIZE=1024
+# BLOCK_SIZE=768
 # MAX_WINDOW_SIZE=8
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
 # setdlm s <= 32
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
-# BLOCK_SIZE=1024
+# BLOCK_SIZE=768
 # MAX_WINDOW_SIZE=16
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
 # ar
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_len768_v1"
-BLOCK_SIZE=1
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=true
-MAX_WINDOW_SIZE=1
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_ar_len768_v1"
+# BLOCK_SIZE=1
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
+# MAX_WINDOW_SIZE=1
 
 # mdlm
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len768_v1"
@@ -39,7 +39,7 @@ MAX_WINDOW_SIZE=1
 # ALIGN_INPUTS_TO_BLOCKS=false
 
 # bd3lm s = 4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len768_v1"
 # BLOCK_SIZE=4
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=true

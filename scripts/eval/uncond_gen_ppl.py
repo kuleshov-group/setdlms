@@ -1,4 +1,5 @@
 import datetime
+import itertools
 import json
 import os
 import sys
@@ -45,7 +46,6 @@ from scripts.utils import (
 from src.utils import fsspec_exists, fsspec_mkdirs
 
 THROUGHPUT_WARMUP = 0
-MAX_SAMPLES = 100
 
 
 def gather_results(results, world_size):
@@ -252,6 +252,7 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
     tputs = []
     parallelism_factors = []
     lengths = []
+    local_scored_tokens = 0
     # divide MAX_SAMPLES by world size, if rank is 0, use the remainder
     MAX_SAMPLES = 5000
     if dist.is_available() and dist.is_initialized():
@@ -260,8 +261,36 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
         if dist.get_rank() == 0:
             new_max_samples += int(MAX_SAMPLES % world_size)
         MAX_SAMPLES = new_max_samples
-    pbar = tqdm(range(MAX_SAMPLES), desc="Generating")
-    for ind, i in enumerate(pbar):
+
+    if dist.is_available() and dist.is_initialized():
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+    else:
+        rank = 0
+        world_size = 1
+
+    target_gen_ppl_tokens = getattr(cfg, "gen_ppl_num_tokens", None)
+    budget_tokenizer = None
+    local_token_budget = None
+    if target_gen_ppl_tokens is not None:
+        budget_tokenizer = _build_eval_tokenizer_for_budget(cfg)
+        local_token_budget = _get_rank_local_token_budget(
+            int(target_gen_ppl_tokens), rank, world_size
+        )
+        pbar = tqdm(
+            total=local_token_budget,
+            desc="Generating (scored eval tokens)",
+            unit="tok",
+        )
+        iterator = itertools.count()
+    else:
+        pbar = tqdm(range(MAX_SAMPLES), desc="Generating")
+        iterator = range(MAX_SAMPLES)
+
+    for ind, i in enumerate(iterator):
+        if local_token_budget is not None and local_scored_tokens >= local_token_budget:
+            break
+
         input_ids = torch.tensor([model.tokenizer.bos_token_id])[None, :].to(model.device)
         # Generate samples
         with torch.no_grad():
@@ -270,7 +299,7 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
                 end_event = torch.cuda.Event(enable_timing=True)
                 start_event.record()
                 generation_output = model.generate(
-                    inputs=input_ids,
+                    inputs=None,
                     disable_pbar=True,
                     tokenizer=tokenizer,
                     **gen_kwargs,
@@ -294,13 +323,13 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
                         outputs = outputs[:, :min(truncate_idx, outputs.shape[1])]
                 if outputs.shape[1] <= 4: # too short samples
                     continue
-                if entropy < 3: # degenereate samples
+                if entropy < 4: # degenerate samples
                     continue
                 break
-            print(f"Length: {length}")
+            # print(f"Length: {length}")
             print("final length:", outputs.shape[1])
 
-            if ind % 1 == 0:
+            if ind % 100 == 0:
                 print(tokenizer.decode(outputs[0]))
 
             if i >= THROUGHPUT_WARMUP:
@@ -314,12 +343,43 @@ def generate_samples(cfg: DictConfig, device: str, local_rank: int) -> None:
             # output_text = model.tokenizer.bos_token + "".join(output_text.split(model.tokenizer.bos_token)[1:2])
             # if length > 1024:
             generated_samples.append(output_text)
-        pbar.set_postfix(tput=f"{np.mean(tputs):.2f} +/- {np.std(tputs):.2f}", parallel=f"{np.mean(parallelism_factors):.2f} +/- {np.std(parallelism_factors):.2f}")
+
+            if budget_tokenizer is not None:
+                sample_scored_tokens = _count_scored_tokens_from_text(output_text, budget_tokenizer)
+                local_scored_tokens += sample_scored_tokens
+                pbar.update(sample_scored_tokens)
+                pbar.set_postfix(
+                    tput=f"{np.mean(tputs):.2f} +/- {np.std(tputs):.2f}",
+                    parallel=f"{np.mean(parallelism_factors):.2f} +/- {np.std(parallelism_factors):.2f}",
+                    scored_tokens=f"{local_scored_tokens}/{local_token_budget}",
+                )
+            else:
+                pbar.update(1)
+                pbar.set_postfix(tput=f"{np.mean(tputs):.2f} +/- {np.std(tputs):.2f}", parallel=f"{np.mean(parallelism_factors):.2f} +/- {np.std(parallelism_factors):.2f}")
+
     # gather samples across devices
     generated_samples = gather_results(generated_samples, dist.get_world_size())
     tputs = gather_results(tputs, dist.get_world_size())
     parallelism_factors = gather_results(parallelism_factors, dist.get_world_size())
     lengths = gather_results(lengths, dist.get_world_size())
+
+    # If a gen-PPL token budget was requested, trim the gathered corpus so that
+    # compute_metrics() will score exactly that many tokens globally.
+    target_gen_ppl_tokens = getattr(cfg, "gen_ppl_num_tokens", None)
+    if target_gen_ppl_tokens is not None:
+        trim_tokenizer = _build_eval_tokenizer_for_budget(cfg)
+        generated_samples, kept_tokens = _trim_samples_to_exact_token_budget(
+            samples=generated_samples,
+            tokenizer=trim_tokenizer,
+            target_total_scored_tokens=int(target_gen_ppl_tokens),
+        )
+        if local_rank == 0:
+            print(
+                f"Trimmed generated corpus to exactly {kept_tokens} "
+                f"eval-scored tokens for gen PPL."
+            )
+        assert kept_tokens == int(target_gen_ppl_tokens), (kept_tokens, target_gen_ppl_tokens)
+
     if local_rank == 0:
         print(f"TPUT (tok/s) over {len(tputs)} samples: {np.mean(tputs)} +/- {np.std(tputs)}")
         print(f"Parallelism factor over {len(parallelism_factors)} samples: {np.mean(parallelism_factors)} +/- {np.std(parallelism_factors)}")
@@ -358,6 +418,114 @@ def _compute_entropy(x: torch.LongTensor, mask_token_id: int, pad_token_id: int)
         entropies[i] = torch.special.entr(p).sum()
 
     return entropies
+
+
+def _count_scored_tokens_from_ids(
+    input_ids: list[int],
+    eos_token_id: int | None,
+) -> int:
+    """
+    Count the number of tokens that contribute to gen-PPL for one sequence,
+    matching _accumulate_nll_sliding_window():
+      - first token is never scored
+      - EOS tokens are excluded from the average
+    """
+    if len(input_ids) <= 1:
+        return 0
+    labels = input_ids[1:]
+    if eos_token_id is None:
+        return len(labels)
+    return sum(tok != eos_token_id for tok in labels)
+
+
+def _count_scored_tokens_from_text(
+    text: str,
+    tokenizer,
+) -> int:
+    ids = tokenizer(text, add_special_tokens=True)["input_ids"]
+    return _count_scored_tokens_from_ids(ids, tokenizer.eos_token_id)
+
+
+def _truncate_ids_to_scored_tokens(
+    input_ids: list[int],
+    target_scored_tokens: int,
+    eos_token_id: int | None,
+) -> list[int]:
+    """
+    Return the shortest prefix whose scored-token count is exactly target_scored_tokens.
+    The first token is retained whenever present.
+    EOS tokens may be retained in the prefix, but they do not count toward the target.
+    """
+    if target_scored_tokens < 0:
+        raise ValueError(f"target_scored_tokens must be >= 0, got {target_scored_tokens}")
+
+    if len(input_ids) == 0:
+        return []
+
+    if target_scored_tokens == 0:
+        return input_ids[:1]
+
+    kept = [input_ids[0]]
+    scored = 0
+    for tok in input_ids[1:]:
+        kept.append(tok)
+        if eos_token_id is None or tok != eos_token_id:
+            scored += 1
+        if scored == target_scored_tokens:
+            break
+
+    if _count_scored_tokens_from_ids(kept, eos_token_id) != target_scored_tokens:
+        raise ValueError(
+            f"Could not truncate sequence to exactly {target_scored_tokens} scored tokens; "
+            f"got {_count_scored_tokens_from_ids(kept, eos_token_id)}"
+        )
+    return kept
+
+
+def _truncate_text_to_scored_tokens(
+    text: str,
+    tokenizer,
+    target_scored_tokens: int,
+) -> str:
+    ids = tokenizer(text, add_special_tokens=True)["input_ids"]
+    kept_ids = _truncate_ids_to_scored_tokens(
+        ids,
+        target_scored_tokens=target_scored_tokens,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    return tokenizer.decode(
+        kept_ids,
+        skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+    )
+
+
+def _trim_samples_to_exact_token_budget(
+    samples: list[str],
+    tokenizer,
+    target_total_scored_tokens: int,
+) -> tuple[list[str], int]:
+    """
+    Keep samples in order until exactly target_total_scored_tokens eval-scored tokens
+    are retained. The final kept sample is truncated if necessary.
+    """
+    kept_samples: list[str] = []
+    kept_tokens = 0
+
+    for text in samples:
+        n = _count_scored_tokens_from_text(text, tokenizer)
+        remaining = target_total_scored_tokens - kept_tokens
+        if remaining <= 0:
+            break
+        if n <= remaining:
+            kept_samples.append(text)
+            kept_tokens += n
+        else:
+            kept_samples.append(_truncate_text_to_scored_tokens(text, tokenizer, remaining))
+            kept_tokens += remaining
+            break
+
+    return kept_samples, kept_tokens
 
 
 @torch.no_grad()
@@ -439,6 +607,28 @@ def _accumulate_nll_sliding_window(
     return nll_accum[torch.where(valid > 0)]
 
 
+def _get_rank_local_token_budget(global_budget: int, rank: int, world_size: int) -> int:
+    """
+    Split a global token budget deterministically across ranks so that the local
+    budgets sum exactly to global_budget.
+    """
+    base = global_budget // world_size
+    rem = global_budget % world_size
+    return base + (1 if rank < rem else 0)
+
+
+def _build_eval_tokenizer_for_budget(cfg):
+    eval_model_name = getattr(cfg, "eval_model_name", None)
+    if eval_model_name is None:
+        raise ValueError(
+            "cfg.gen_ppl_num_tokens was set, but cfg.eval_model_name is missing. "
+            "The token budget must be defined in the eval-model tokenization space."
+        )
+    tok = AutoTokenizer.from_pretrained(eval_model_name)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    return tok
+
 
 def compute_metrics(cfg, samples, device="cuda") -> float:
     eval_model_name = getattr(cfg, "eval_model_name", "gpt2-large")
@@ -454,6 +644,18 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
     eval_tokenizer = AutoTokenizer.from_pretrained(eval_model_name)
     if eval_tokenizer.pad_token is None:
         eval_tokenizer.pad_token = eval_tokenizer.eos_token
+
+    # Optional exact token-budget trim. This is applied here as a safety net so that:
+    #   - eval_only mode remains exact
+    #   - gen PPL is guaranteed to average over exactly cfg.gen_ppl_num_tokens tokens
+    target_gen_ppl_tokens = getattr(cfg, "gen_ppl_num_tokens", None)
+    if target_gen_ppl_tokens is not None:
+        samples, kept_tokens = _trim_samples_to_exact_token_budget(
+            samples=samples,
+            tokenizer=eval_tokenizer,
+            target_total_scored_tokens=int(target_gen_ppl_tokens),
+        )
+        assert kept_tokens == int(target_gen_ppl_tokens), (kept_tokens, target_gen_ppl_tokens)
 
     # Sliding-window likelihood settings (defaults mirror your snippet)
     stride = int(getattr(cfg, "eval_stride", 512))
@@ -539,7 +741,7 @@ def compute_metrics(cfg, samples, device="cuda") -> float:
         "entropy_mean": ent_mean,
         "entropy_std": ent_std,
         "num_samples_local": len(local_samples),
-        "num_samples_global": len(nlls),
+        "num_samples_global": len(samples),
         "num_tokens_global": len(nlls),
         "eval_context_size": int(context_size),
         "eval_stride": int(stride),
@@ -568,7 +770,7 @@ def main(cfg: DictConfig) -> None:
                   f"samples={stats['num_samples_global']} tokens={stats['num_tokens_global']}")
             print(f"Avg gen NLL under {cfg.eval_model_name}: {stats['nll_mean']} +/- {stats['nll_std']}")
             print(f"Avg gen PPL under {cfg.eval_model_name}: {stats['ppl']}")
-            print(f"Avg gen entropy under {cfg.eval_model_name}: {stats['entropy_mean']} +/- {stats['entropy_std']}")
+            print(f"Avg entropy: {stats['entropy_mean']} +/- {stats['entropy_std']}")
     if dist.is_initialized():
         dist.destroy_process_group()
 

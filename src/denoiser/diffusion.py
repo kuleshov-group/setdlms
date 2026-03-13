@@ -603,24 +603,35 @@ class MDLM(Denoiser):
         )[:-1]
 
     def _nucleus_sample(self, p_x0: torch.FloatTensor, p: float):
-        if p == 1.0:
+        if p >= 1.0:
             return p_x0
+
         if getattr(self.config, "block_size", None) is not None:
             p_x0_ = p_x0[:, -self.config.block_size:].clone()
         else:
-            p_x0_ = p_x0
+            p_x0_ = p_x0.clone()
+
         sorted_probs, sorted_indices = p_x0_.sort(dim=-1, descending=True)
         cum_probs = sorted_probs.cumsum(dim=-1)
-        nucleus_mask = cum_probs <= p
-        nucleus_mask[..., 0] = 1
-        sorted_probs = sorted_probs * nucleus_mask
-        p_x0_.scatter_(-1, sorted_indices, sorted_probs * nucleus_mask)
-        p_x0_ /= p_x0_.sum(-1, keepdim=True)
+
+        # remove tokens after the first one that pushes cumulative prob above p
+        sorted_mask = cum_probs >= p
+        sorted_mask[..., 1:] = sorted_mask[..., :-1].clone()
+        sorted_mask[..., 0] = False
+
+        filtered_sorted_probs = sorted_probs.masked_fill(sorted_mask, 0.0)
+
+        filtered = torch.zeros_like(p_x0_)
+        filtered.scatter_(-1, sorted_indices, filtered_sorted_probs)
+
+        filtered = filtered / filtered.sum(dim=-1, keepdim=True)
+
         if getattr(self.config, "block_size", None) is not None:
-            p_x0[:, -self.config.block_size:] = p_x0_
+            out = p_x0.clone()
+            out[:, -self.config.block_size:] = filtered
+            return out
         else:
-            p_x0 = p_x0_
-        return p_x0
+            return filtered
 
     def _generate_unconditional(
         self,
@@ -738,7 +749,8 @@ class MDLM(Denoiser):
                     conf,
                     torch.inf,
                 )
-                noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
+                num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum(-1) + num_to_decode
+                noise_indices = conf.argsort(dim=-1)[..., :-num_clean_indices[0]]
             else:
                 # Always decode the most confident token
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
