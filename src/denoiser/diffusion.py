@@ -137,7 +137,6 @@ class DiffusionGenerationConfig(GenerationConfig):
 class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
     def __init__(self,
         max_window_size: int = 0,
-        ar_caching: bool = False,
         **kwargs,
     ):
         """Generation config with additional parameters for set diffusion sampling.
@@ -145,12 +144,9 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
         Args:
             max_window_size (int): Maximum window size to use for set diffusion.
                 Defaults to 0.
-            ar_caching (bool): Whether to cache using a left-to-right attention pattern.
-                Defaults to False.
         """
         super().__init__(**kwargs)
         self.max_window_size = max_window_size
-        self.ar_caching = ar_caching
 
 @dataclass
 class DiffusionGenerationOutput(ModelOutput):
@@ -203,8 +199,6 @@ class DiffusionGenerationOutput(ModelOutput):
     parallelism_factor: Optional[float] = None
     inf_budget: Optional[float] = None
     inf_budgets: Optional[list[float]] = None
-    intermediate_samples: Optional[list[torch.LongTensor]] = None
-    intermediate_window_offsets: Optional[list[int]] = None
     
 class MDLMConfig(DenoiserConfig):
     """Configuration class for MDLM models."""
@@ -686,9 +680,10 @@ class MDLM(Denoiser):
                         )
                     else:
                         log_x_theta[:, j] = lp(
-                            input_ids=running_generation[..., inputs_offset:],
+                            input_ids=running_generation,
                             scores=log_x_theta[:, j],
                         )
+            # renormalize
             log_x_theta[..., self.mask_token_id] = self.neg_infinity
             log_x_theta = log_x_theta - torch.logsumexp(
                 log_x_theta, dim=-1, keepdim=True
@@ -728,7 +723,6 @@ class MDLM(Denoiser):
             output = xs.clone()
 
             # Noise
-            # TODO: fix later
             est_noise_indices_next = (next_t * block_size).round().to(torch.int)
             est_noise_indices_curr = (t * block_size).round().to(torch.int)
             num_to_decode = est_noise_indices_curr - est_noise_indices_next
@@ -818,10 +812,6 @@ class MDLM(Denoiser):
             device=device,
         )
 
-        if is_infill_task:
-            first_mask_token_idx = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[0]
-            last_mask_token_idx = (accumulated_samples != self.mask_token_id)[:, first_mask_token_idx:].float().argmax(dim=-1)[0] + first_mask_token_idx
-
         cache = None
         blocks_to_cache_flag = (generation_config.align_inputs_to_blocks and input_length >= block_size) or not generation_config.align_inputs_to_blocks
         precomputed_cache_flag = generation_config.use_cache and input_length > 0 and blocks_to_cache_flag
@@ -835,8 +825,12 @@ class MDLM(Denoiser):
 
         if is_infill_task:
             inputs_offset = (accumulated_samples == self.mask_token_id)[0].nonzero().min()
+            first_mask_token_idx = inputs_offset
+            last_mask_token_idx = (accumulated_samples != self.mask_token_id).float()[:, first_mask_token_idx:].argmax(dim=-1)[0] + first_mask_token_idx
         else:
             inputs_offset = input_length
+            first_mask_token_idx = input_length
+            last_mask_token_idx = input_length + max_new_tokens - 1
         if generation_config.align_inputs_to_blocks:
             inputs_offset = (
                 block_size * (inputs_offset // block_size)
@@ -864,8 +858,6 @@ class MDLM(Denoiser):
         )
         num_tokens_generated_per_step = []
         inf_budget_per_step = []
-        intermediate_samples = []
-        intermediate_window_offsets = []
         sample_indices = None
         input_indices = None
         if mdlm_inference:
@@ -906,7 +898,7 @@ class MDLM(Denoiser):
                 if pad_length is not None and pad_length > 0:
                     end_sample_idx = min(end_sample_idx, accumulated_samples.shape[-1] - pad_length)
                 sample_indices = torch.arange(inputs_offset + (block_id * block_size), end_sample_idx).to(device)
-                input_indices = None
+                input_indices = sample_indices
             else:
                 xt = accumulated_samples[
                     :, : inputs_offset + ((block_id + 1) * block_size)]
@@ -935,13 +927,6 @@ class MDLM(Denoiser):
             )
             for i,t in enumerate(step_pbar):
                 # Used for logit processing
-                if mdlm_inference:
-                    running_generation = accumulated_samples
-                else:
-                    running_generation = accumulated_samples[
-                        :,
-                        : min(inputs_offset + ((block_id + 1) * block_size), accumulated_samples.shape[-1]),
-                    ]
                 block_NFEs += 1
                 total_NFEs += 1
                 denoiser_inputs, cache = self._prepare_inputs_inference(
@@ -950,7 +935,6 @@ class MDLM(Denoiser):
                     cache=cache if generation_config.use_cache else None,
                 )
                 next_t = timesteps[i+1] if i < timesteps.shape[-1] - 1 else timesteps[-1] * 0
-
                 generation_output = self._generate_unconditional(
                     generation_config=generation_config,
                     block_size=block_size,
@@ -958,7 +942,7 @@ class MDLM(Denoiser):
                     next_t=next_t,
                     denoiser_inputs=denoiser_inputs,
                     cache=cache,
-                    running_generation=running_generation,  # type: ignore
+                    running_generation=accumulated_samples[:, first_mask_token_idx:last_mask_token_idx] if not is_infill_task else accumulated_samples[:, :input_indices[-1] + 1],  # type: ignore
                     inputs_offset=inputs_offset,
                     logits_processor=logits_processor,
                     tokenizer=tokenizer,
@@ -988,11 +972,6 @@ class MDLM(Denoiser):
                     accumulated_samples.scatter_(dim=-1, index=sample_indices[None, :], src=xt[..., sample_indices - input_indices[0]])
                 else:
                     accumulated_samples.scatter_(dim=-1, index=sample_indices[None, :], src=xt[:, -block_size:])
-                if getattr(generation_config, "save_intermediate_samples", False):
-                    block_start_idx = block_id * block_size
-                    block_end_idx = block_start_idx + block_size
-                    intermediate_samples.append(accumulated_samples[:, len(inputs[0]):][:, :block_end_idx][0].clone())
-                    intermediate_window_offsets.append(torch.arange(block_start_idx, block_end_idx))
                 if ((xt == self.mask_token_id).sum().item() == 0) or (pad_length is not None and pad_length > 0 and mdlm_inference and (xt[:, :-pad_length] == self.mask_token_id).sum().item() == 0):
                     if generation_config.compute_inf_budget:
                         remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
@@ -1011,10 +990,6 @@ class MDLM(Denoiser):
                         :,
                         : sample_indices[-1] + 1,
                     ]
-                    accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
-                    # if getattr(generation_config, "save_intermediate_samples", False):
-                    #     intermediate_samples.pop()
-                    #     intermediate_window_offsets.pop()
                     break
             if generation_config.use_cache and getattr(self.config, "block_size", self.config.length) < self.config.length:
                 cache = self.update_cache(
@@ -1027,14 +1002,13 @@ class MDLM(Denoiser):
         inf_budget = None
         if generation_config.compute_inf_budget:
             inf_budget = sum(inf_budget_per_step) / len(inf_budget_per_step)
+        accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
         if return_dict_in_generate:
             return DiffusionGenerationOutput(
                 sequences=accumulated_samples,
                 parallelism_factor=parallelism_factor,
                 inf_budget=inf_budget,
                 inf_budgets=inf_budget_per_step,
-                intermediate_samples=intermediate_samples,
-                intermediate_window_offsets=intermediate_window_offsets,
             )
         return accumulated_samples  # type: ignore
 
@@ -1931,13 +1905,13 @@ class SetDLM(BD3LM):
             assert cache_len + seq_len <= self.config.length, "full seq length must be less than or equal to length"
 
         perm_indices = None
-        # permute indices based on expected unmasking order
         if first_hitting_times is not None:
             # mask tokens at the end
             fhs = torch.where(input_ids == self.mask_token_id, -1e6, first_hitting_times)
             perm_indices = fhs.argsort(dim=-1, stable=True, descending=True)
         else:
-            perm_indices = torch.arange(seq_len, device=device)[None, :].repeat(batch_size, 1)
+            cache_flag = (input_ids != self.mask_token_id).float()
+            perm_indices = cache_flag.argsort(dim=-1, stable=True, descending=True)
         if return_updated_cache:
             # create a view of attention mask to prevent rematerialization
             base = self.static_attention_mask[
@@ -2074,10 +2048,7 @@ class SetDLM(BD3LM):
             num_mask_tokens = (inputs == self.mask_token_id).sum()
             first_mask_token_idx = (inputs == self.mask_token_id).float().argmax(dim=-1)[0]
             last_mask_token_idx = (inputs != self.mask_token_id).float()[:, first_mask_token_idx:].argmax(dim=-1)[0] + first_mask_token_idx
-            if generation_config.ar_caching:
-                inputs_offset = first_mask_token_idx
-            else:
-                inputs_offset = 0
+            inputs_offset = 0
         else:
             num_mask_tokens = max_new_tokens
             first_mask_token_idx = input_length
@@ -2092,10 +2063,9 @@ class SetDLM(BD3LM):
             is_infill_task=is_infill_task,
             device=device,
         )
-        # if ar caching, only consider first hitting times of the masked tokens
         first_hitting_times = self.noise_schedule.compute_first_hitting_times(
             batch_size=batch_size,
-            length=num_mask_tokens if generation_config.ar_caching else accumulated_samples.shape[-1],
+            length=accumulated_samples.shape[-1] if not is_infill_task else accumulated_samples[:, first_mask_token_idx:].shape[-1],
             device=device,
         )
         xt = accumulated_samples[:, inputs_offset:]
@@ -2103,7 +2073,7 @@ class SetDLM(BD3LM):
             generation_config,
             max_length=num_mask_tokens,
             device=device,
-            first_hitting_times=first_hitting_times if generation_config.ar_caching else first_hitting_times[accumulated_samples == self.mask_token_id]
+            first_hitting_times=first_hitting_times,
         )
         timesteps = timesteps[None, :].repeat(batch_size, 1)
         xt_position_ids = all_position_ids[:, inputs_offset:]
@@ -2112,26 +2082,14 @@ class SetDLM(BD3LM):
         window_size = min(self.noise_schedule.compute_window_size(), generation_config.max_window_size)
         masked_positions = masked_positions & (xt_position_ids < (window_start + window_size))
         if input_length > 0:
-            # for infilling, cache positions based on the unmasking time of the first masked token
-            if is_infill_task and not generation_config.ar_caching:
-                first_masked_token_idx = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[0]
-                unmasking_time_first_masked_token = first_hitting_times[accumulated_samples == self.mask_token_id].max()
-                cache_flag = (
-                    (first_hitting_times >= unmasking_time_first_masked_token) & (accumulated_samples != self.mask_token_id) | (xt_position_ids < first_masked_token_idx)
-                )
-                inputs_indices = cache_flag.nonzero()[:, 1].sort().values
-                inputs_indices = inputs_indices[-self.config.length:]
-            elif is_infill_task and generation_config.ar_caching:
-                cache_flag = (accumulated_samples != self.mask_token_id)
-                inputs_indices = cache_flag.nonzero()[:, 1].sort().values
-            else:
-                cache_flag = (accumulated_samples != self.mask_token_id)
-                inputs_indices = torch.arange(input_length, device=device)[-self.config.length:]
+            # cache positions that could be decoded before the response tokens are generated
+            cache_flag = torch.zeros_like(accumulated_samples, dtype=torch.bool)
+            cache_flag[:, :first_mask_token_idx] = True
+            inputs_indices = torch.arange(first_mask_token_idx)
             cache = self.update_cache(
                 inputs=inputs[:, inputs_indices],
                 position_ids=all_position_ids[:, inputs_indices],
                 cache={},
-                first_hitting_times=first_hitting_times[:, inputs_indices] if not generation_config.ar_caching else None
             )
         else:
             cache = {
@@ -2145,8 +2103,6 @@ class SetDLM(BD3LM):
         inf_budget_per_step = []
         block_NFEs = 0
         clean_len = 0
-        intermediate_samples = []
-        intermediate_window_offsets = []
         for i in range(timesteps.shape[-1]):
             block_NFEs += 1
             total_NFEs += 1
@@ -2161,8 +2117,6 @@ class SetDLM(BD3LM):
             masked_positions_indices = masked_positions.nonzero(as_tuple=False)[:, -1].view(batch_size, -1)
             masked_xt = torch.gather(xt, dim=-1, index=masked_positions_indices)
             masked_position_ids = torch.gather(xt_position_ids, dim=-1, index=masked_positions_indices)
-            masked_first_hitting_times = torch.gather(first_hitting_times, dim=-1, index=masked_positions_indices)
-
             # Only decode masked tokens
             cache_len = cache["past_key_values"].get_seq_length()
             return_updated_cache = (i > 0)
@@ -2170,9 +2124,12 @@ class SetDLM(BD3LM):
                 input_ids=masked_xt,
                 cache=cache,
                 position_ids=masked_position_ids,
-                first_hitting_times=masked_first_hitting_times,
                 return_updated_cache=return_updated_cache,
             )
+            if not is_infill_task:
+                running_generation = accumulated_samples[:, first_mask_token_idx:last_mask_token_idx]
+            else:
+                running_generation = accumulated_samples[cache_flag].unsqueeze(0)
             generation_output = self._generate_unconditional(
                 generation_config=generation_config,
                 t=t[0][0],
@@ -2180,7 +2137,7 @@ class SetDLM(BD3LM):
                 denoiser_inputs=denoiser_inputs,
                 cache=cache,
                 xt=xt,
-                running_generation=accumulated_samples if logits_processor is not None else None,
+                running_generation=running_generation,
                 inputs_offset=inputs_offset,
                 logits_processor=logits_processor,
                 return_updated_cache=return_updated_cache,
@@ -2201,7 +2158,6 @@ class SetDLM(BD3LM):
                 unmasked_position_ids = position_ids[:, clean_len:]
                 clean_len = (torch.gather(xt, dim=-1, index=(unmasked_position_ids - inputs_offset)) != xs).sum(dim=-1).min()
                 accumulated_samples.scatter_(1, unmasked_position_ids, xs)
-                masked_positions.scatter_(1, cached_position_ids - inputs_offset, False)
                 if is_infill_task:
                     cache_flag.scatter_(1, cached_position_ids, True)
                 xt.scatter_(1, unmasked_position_ids - inputs_offset, xs)
@@ -2210,29 +2166,27 @@ class SetDLM(BD3LM):
                 clean_len = (xs != self.mask_token_id).sum(dim=-1).min()
                 accumulated_samples.scatter_(1, masked_position_ids, xs)
 
-            if getattr(generation_config, "save_intermediate_samples", False):
-                intermediate_samples.append(accumulated_samples[:, inputs_offset:][0].clone())
-                # get ids of the newly decoded tokens
-                if return_updated_cache:
-                    new_decoded_tokens = ((accumulated_samples[:, inputs_offset:] != self.mask_token_id) & masked_positions).nonzero(as_tuple=False)[:, -1]
-                else:
-                    new_decoded_tokens = (accumulated_samples[:, inputs_offset:] != self.mask_token_id).nonzero(as_tuple=False)[:, -1]
-                intermediate_window_offsets.append(
-                    new_decoded_tokens
+            # for infilling, cache tokens that would be decoded before the response tokens are generated
+            if is_infill_task and (accumulated_samples == self.mask_token_id).any():
+                just_unmasked_idx = (masked_positions) & (xt != self.mask_token_id)
+                first_masked_position_id = 0
+                last_potential_position_id = accumulated_samples.shape[-1]
+                first_hitting_times = self.noise_schedule.compute_first_hitting_times(
+                    batch_size=batch_size,
+                    length=accumulated_samples.shape[-1] if not is_infill_task else accumulated_samples[:, first_masked_position_id:last_potential_position_id].shape[-1],
+                    device=device,
                 )
-            window_start = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[:, None]
-            masked_positions |= (xt == self.mask_token_id) & (xt_position_ids < (window_start + window_size))
-            # for infilling, cache positions based on current unmasking time
-            if is_infill_task and not generation_config.ar_caching and (accumulated_samples == self.mask_token_id).any():
-                just_unmasked_idx = (masked_positions) & (xt != self.mask_token_id) & ~cache_flag
-                target_unmasking_time = first_hitting_times[just_unmasked_idx].min()
+                target_unmasking_time = first_hitting_times[just_unmasked_idx[:, first_masked_position_id:last_potential_position_id]].min()
                 new_cache_positions = (
-                    (first_hitting_times >= target_unmasking_time) & (accumulated_samples != self.mask_token_id) & ~cache_flag & ~masked_positions
+                    (first_hitting_times >= target_unmasking_time) & (accumulated_samples[:, first_masked_position_id:last_potential_position_id] != self.mask_token_id) & ~cache_flag[:, first_masked_position_id:last_potential_position_id] & ~masked_positions[:, first_masked_position_id:last_potential_position_id]
                 )
                 clean_len += new_cache_positions.sum()
-                masked_positions |= new_cache_positions
-                cache_flag |= new_cache_positions
-
+                masked_positions[:, first_masked_position_id:last_potential_position_id] |= new_cache_positions
+                cache_flag[:, first_masked_position_id:last_potential_position_id] |= new_cache_positions
+            if return_updated_cache:
+                masked_positions.scatter_(1, cached_position_ids - inputs_offset, False)
+            window_start = (accumulated_samples == self.mask_token_id).float().argmax(dim=-1)[:, None]
+            masked_positions |= (xt == self.mask_token_id) & (xt_position_ids < (window_start + window_size))
             num_tokens_generated_per_step.append(
                 (xs != self.mask_token_id).sum().item()
             )
@@ -2249,8 +2203,6 @@ class SetDLM(BD3LM):
                     inf_budget_per_step.extend([0] * remaining_steps)
                 break
             check_stopping_criteria = (i % window_size == 0) and (i > 0)
-            if getattr(generation_config, "save_intermediate_samples", False):
-                check_stopping_criteria = True
             if check_stopping_criteria and (not generation_config.compute_inf_budget) and stopping_criteria is not None:
                 is_done = stopping_criteria(
                     input_ids=accumulated_samples[  # type: ignore
@@ -2260,11 +2212,11 @@ class SetDLM(BD3LM):
                     scores=None,  # type: ignore
                 )
                 if torch.any(is_done):
-                    accumulated_samples = accumulated_samples[
-                        :,
-                        : window_start[0] + window_size,
-                    ]
-                    accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
+                    if not is_infill_task:
+                        accumulated_samples = accumulated_samples[
+                            :,
+                            : window_start[0] + window_size,
+                        ]
                     break
         if pad_length is not None:
             accumulated_samples = accumulated_samples[:, : -pad_length]
@@ -2274,14 +2226,13 @@ class SetDLM(BD3LM):
         inf_budget = None
         if generation_config.compute_inf_budget:
             inf_budget = sum(inf_budget_per_step) / len(inf_budget_per_step)
+        accumulated_samples = accumulated_samples[accumulated_samples != self.mask_token_id].unsqueeze(0)
         if return_dict_in_generate:
             return DiffusionGenerationOutput(
                 sequences=accumulated_samples,
                 parallelism_factor=parallelism_factor,
                 inf_budget=inf_budget,
                 inf_budgets=inf_budget_per_step,
-                intermediate_samples=intermediate_samples,
-                intermediate_window_offsets=intermediate_window_offsets,
             )
         return accumulated_samples  # type: ignore
 

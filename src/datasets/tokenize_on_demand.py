@@ -384,6 +384,7 @@ class ROCStoriesDataset(Dataset):
         padding: bool = False,
         num_target_sentences: int = 1,
         max_samples: int | None = None,
+        insert_special_tokens: bool = True,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -393,6 +394,7 @@ class ROCStoriesDataset(Dataset):
         assert self.num_target_sentences in [1, 3], "Only 1 or 3 target sentences are supported"
         self.max_length = max_length
         self.padding = padding
+        self.insert_special_tokens = insert_special_tokens
         self.dataset = []
         with open(dataset_path) as f:
             reader = csv.reader(f)
@@ -431,9 +433,9 @@ class ROCStoriesDataset(Dataset):
         suffix_ids = self.tokenizer(suffix).input_ids
         middle_ids = self.tokenizer(middle).input_ids
 
-        input_ids = [self.tokenizer.bos_token_id] +\
-            prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) +\
-            suffix_ids + [self.tokenizer.eos_token_id]
+        input_ids = prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) + suffix_ids
+        if self.insert_special_tokens:
+            input_ids = [self.tokenizer.bos_token_id] + input_ids + [self.tokenizer.eos_token_id]
         input_ids = torch.LongTensor(input_ids)
         attention_mask = torch.ones_like(input_ids)
 

@@ -168,7 +168,8 @@ class AR(Denoiser):
             log_x_theta = log_x_theta.log_softmax(dim=-1)
         else:
             log_x_theta = self._forward(log_x_theta, denoiser_inputs=None)
-        log_x_theta = self._nucleus_sample(log_x_theta.exp(), p=getattr(generation_config, "nucleus_p", 1.0)).log()
+        if getattr(generation_config, "nucleus_p", 1.0) < 1.0:
+            log_x_theta = self._nucleus_sample(log_x_theta.exp(), p=getattr(generation_config, "nucleus_p", 1.0)).log()
         y = self._sample_categorical(log_x_theta.exp(), do_sample=getattr(generation_config, "do_sample", False))
         return y
 
@@ -235,14 +236,15 @@ class AR(Denoiser):
         all_position_ids = torch.arange(input_len + num_pred_tokens).to(device).unsqueeze(0)
 
         if input_len == 0:
-            x = torch.zeros(
+            x = torch.full(
                 (batch_size, num_pred_tokens + 1),
+                fill_value=tokenizer.mask_token_id,
                 dtype=torch.long,
                 device=device)
             x[:, 0] = tokenizer.bos_token_id
             input_len = 0
         else:
-            x = torch.cat((inputs, torch.zeros((batch_size, num_pred_tokens), dtype=torch.long, device=device)), dim=-1)
+            x = torch.cat((inputs, torch.full((batch_size, num_pred_tokens), fill_value=tokenizer.mask_token_id, dtype=torch.long, device=device)), dim=-1)
             # cache
             cache_inputs = self._prepare_inputs_inference(inputs, None, None, None, cache, position_ids=all_position_ids[:, :input_len])
             backbone_output = self._backbone_forward(
@@ -253,7 +255,7 @@ class AR(Denoiser):
             else:
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
-            x[:, input_len] = self._generate_unconditional(generation_config, x[:, :input_len], logits[:, -1], logits_processor)
+            x[:, input_len] = self._generate_unconditional(generation_config, x, logits[:, -1], logits_processor)
             cache["past_key_values"] = backbone_output["past_key_values"]
         
         for i in range(input_len, x.shape[-1] - 1):
@@ -267,7 +269,7 @@ class AR(Denoiser):
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
             cache["past_key_values"] = backbone_output["past_key_values"]
-            x[:, i + 1] = self._generate_unconditional(generation_config, x[:, input_len:i+1], logits[:, -1], logits_processor)
+            x[:, i + 1] = self._generate_unconditional(generation_config, x, logits[:, -1], logits_processor)
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
                     input_ids=x[:, :i+2],

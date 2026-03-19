@@ -116,7 +116,6 @@ def main(cfg: DictConfig) -> None:
             except:
                 model = None
    
-   
     # HACK for legacy codebase compatibility
     if model is None or not hasattr(model, "generate"):
         
@@ -294,20 +293,12 @@ def main(cfg: DictConfig) -> None:
                 start_event.record()
             else:
                 start_event, end_event = None, None
-            if 'logits_processor' in gen_kwargs:
-                for lp in gen_kwargs['logits_processor']:
-                    if hasattr(lp, 'regulation_start'):
-                        lp.regulation_start += input_ids.shape[-1]
             generation_outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=True,
                 tokenizer=tokenizer,
                 **gen_kwargs,
             )
-            if 'logits_processor' in gen_kwargs:
-                for lp in gen_kwargs['logits_processor']:
-                    if hasattr(lp, 'regulation_start'):
-                        lp.regulation_start -= input_ids.shape[-1]
             if local_rank == 0:
                 end_event.record()
                 torch.cuda.synchronize()
@@ -321,7 +312,10 @@ def main(cfg: DictConfig) -> None:
                 outputs = generation_outputs
                 parallelism_factor = -1.0
             if tokenizer.mask_token_id is not None and tokenizer.mask_token_id in elem["input_ids"]:
-                outputs = outputs[0, (elem["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][0]:(elem["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][-1]+1]
+                if isinstance(model, AR):
+                    outputs = outputs[0][first_mask_index:]
+                else:
+                    outputs = outputs[0][elem['input_ids'][0] == tokenizer.mask_token_id]
             else:
                 outputs = outputs[:, input_ids.shape[-1] :].squeeze(0)
             parallelism_factors.append(parallelism_factor)
@@ -337,7 +331,7 @@ def main(cfg: DictConfig) -> None:
         for st in stop_tokens:
             outputs = outputs.split(st)[0]
         decoded_samples = outputs.strip()
-        if local_rank == 0 and (elem_id % 100 == 0): # and world_size > 1:
+        if elem_id % 100 == 0:
             print("Input:", tokenizer.decode(elem["input_ids"][0]))
             print("Output:", decoded_samples)
             print("Output length:", len(tokenizer(decoded_samples)["input_ids"]))
