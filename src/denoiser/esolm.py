@@ -905,10 +905,10 @@ class EsoLM(SetDLM):
 
         losses = []
         nll_chunks = []
+        tokens_mask_chunks = []
         other_loss_terms: dict[str, Any] = {}
         denoiser_output = None
         backbone_output = None
-        output_tokens_mask = None
 
         if do_diffusion:
             diffusion_inputs = self._prepare_diffusion_inputs(
@@ -926,11 +926,11 @@ class EsoLM(SetDLM):
             )
             losses.append(diffusion_loss)
             nll_chunks.append(diffusion_nlls)
+            tokens_mask_chunks.append(diffusion_inputs.tokens_mask)
             other_loss_terms["diffusion_tokens_mask"] = diffusion_inputs.tokens_mask
             other_loss_terms["diffusion_valid_tokens"] = diffusion_inputs.valid_tokens
             denoiser_output = diffusion_output
             backbone_output = diffusion_logits
-            output_tokens_mask = diffusion_inputs.tokens_mask
 
         if do_sequential:
             sequential_inputs = self._prepare_sequential_inputs(
@@ -953,12 +953,12 @@ class EsoLM(SetDLM):
             )
             losses.append(sequential_loss)
             nll_chunks.append(sequential_nlls)
+            tokens_mask_chunks.append(sequential_inputs.tokens_mask)
             other_loss_terms["sequential_tokens_mask"] = sequential_inputs.tokens_mask
             other_loss_terms["sequential_valid_tokens"] = sequential_inputs.valid_tokens
             other_loss_terms["reconstruction_loss"] = sequential_loss
             denoiser_output = sequential_output
             backbone_output = sequential_logits
-            output_tokens_mask = sequential_inputs.tokens_mask
 
         if not losses:
             raise ValueError(
@@ -967,10 +967,11 @@ class EsoLM(SetDLM):
 
         loss = torch.stack(losses).sum()
         nlls = torch.cat(nll_chunks, dim=0)
+        tokens_mask = torch.cat(tokens_mask_chunks, dim=0)
         return DenoiserOutput(
             denoiser_output=denoiser_output,
             logits=backbone_output,
-            tokens_mask=output_tokens_mask,
+            tokens_mask=tokens_mask,
             loss=loss,
             nlls=nlls,
             other_loss_terms=other_loss_terms,

@@ -7,7 +7,7 @@ source setup_env.sh
 # Model arch
 BLOCK_SIZE=1024
 EVAL_BLOCK_SIZE=1024
-N_LAYERS=1
+N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=false
 
@@ -33,7 +33,7 @@ PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
 # PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 NUM_SHOT=0
 
-TAG="setdlm_tgt${DESIRED_BLOCK_SIZE}_distill_k${K}_maxblock${MAX_BLOCK_SIZE}_sweep"
+TAG="setdlm_tgt${DESIRED_BLOCK_SIZE}_distill_k${K}_maxblock${MAX_BLOCK_SIZE}_sweep_v1"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
