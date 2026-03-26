@@ -10,11 +10,11 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 from tqdm import tqdm
-from transformers import GenerationConfig, PreTrainedTokenizerFast
-from transformers.cache_utils import Cache, DynamicCache
+from transformers import PreTrainedTokenizerFast
+from transformers.cache_utils import DynamicCache
 
 from scripts.utils import maybe_add_missing_special_tokens
-from src.denoiser.diffusion import SetDLM, BD3LMConfig, DiffusionGenerationConfig, SetDiffusionGenerationConfig
+from src.denoiser.diffusion import BD3LMConfig, SetDiffusionGenerationConfig, SetDLM
 from src.noise_schedule.noise_schedules import EaseOutPowerNoise
 
 
@@ -24,7 +24,10 @@ class DummyBackbone(torch.nn.Module):
         self._logits = torch.randn(vocab_size, device=device)[None, None, :]
 
     def forward(self, x, **kwargs):
-        return {"logits": self._logits.repeat(x.shape[0], x.shape[1], 1), "past_key_values": DynamicCache()}
+        return {
+            "logits": self._logits.repeat(x.shape[0], x.shape[1], 1),
+            "past_key_values": DynamicCache(),
+        }
 
 
 def build_tiny_tokenizer() -> PreTrainedTokenizerFast:
@@ -72,7 +75,9 @@ def _generate_inf_budgets_worker(
         device = f"cuda:{device_idx}"
 
         tokenizer = build_tiny_tokenizer()
-        backbone = DummyBackbone(vocab_size=int(tokenizer.mask_token_id) + 1, device=device)
+        backbone = DummyBackbone(
+            vocab_size=int(tokenizer.mask_token_id) + 1, device=device
+        )
 
         config = BD3LMConfig(
             block_size=L,
@@ -111,7 +116,11 @@ def _generate_inf_budgets_worker(
         inf_budgets: list[float] = []
         it = range(num_trials)
         if device_idx == 0:
-            it = tqdm(it, total=num_trials, desc=f"Generating (dbs={desired_block_size}) [rank0]")
+            it = tqdm(
+                it,
+                total=num_trials,
+                desc=f"Generating (dbs={desired_block_size}) [rank0]",
+            )
 
         for _ in it:
             generation_outputs = model.generate(
@@ -120,7 +129,10 @@ def _generate_inf_budgets_worker(
             )
             inf_budgets.append(float(generation_outputs.inf_budget))
             if device_idx == 0:
-                it.set_postfix(inf_budget=float(generation_outputs.inf_budget), mean=float(np.mean(inf_budgets)))
+                it.set_postfix(
+                    inf_budget=float(generation_outputs.inf_budget),
+                    mean=float(np.mean(inf_budgets)),
+                )
 
         queue.put(("ok", device_idx, inf_budgets))
     except Exception as e:
@@ -199,7 +211,9 @@ def run_for_block_size_multi_gpu(
         raise RuntimeError("Multi-GPU path requested but CUDA is not available.")
     n_devices = torch.cuda.device_count()
     if n_devices <= 1:
-        raise RuntimeError(f"Multi-GPU path requested but only {n_devices} CUDA device(s) found.")
+        raise RuntimeError(
+            f"Multi-GPU path requested but only {n_devices} CUDA device(s) found."
+        )
 
     # Theoretical budget depends only on the schedule parameters.
     noise = EaseOutPowerNoise(
@@ -269,7 +283,8 @@ def main() -> None:
 
     use_multi_gpu = torch.cuda.is_available() and torch.cuda.device_count() > 1
     if use_multi_gpu:
-        print(f"Using multi-GPU generation across {torch.cuda.device_count()} CUDA devices.")
+        n = torch.cuda.device_count()
+        print(f"Using multi-GPU generation across {n} CUDA devices.")
 
     for desired_block_size in desired_block_sizes:
         if use_multi_gpu:
@@ -291,7 +306,10 @@ def main() -> None:
         theoretical_inf_budgets.append(theoretical)
         empirical_inf_budgets_mean.append(mean)
         empirical_inf_budgets_std.append(std)
-        print(f"dbs={desired_block_size:>4} | empirical: {mean:.4f} +/- {std:.4f} | theoretical: {theoretical:.4f}")
+        print(
+            f"dbs={desired_block_size:>4} | empirical: {mean:.4f} +/- {std:.4f} | "
+            f"theoretical: {theoretical:.4f}"
+        )
 
     x_labels = [str(b) for b in desired_block_sizes]
     fig = go.Figure()

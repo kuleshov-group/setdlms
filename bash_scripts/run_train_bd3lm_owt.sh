@@ -14,7 +14,6 @@ N_LAYERS=12
 N_HEADS=12
 VOCAB_SIZE=50258
 DROPOUT=0.1
-NORM_TYPE=layernorm
 ATTN_BACKEND=flex_attention
 ADALN=false
 SCALE=1024
@@ -29,7 +28,7 @@ MAX_DURATION="1000000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=null
 
-TAG="bd3lm_norm${NORM_TYPE}_adaln${ADALN}_vscratch2"
+TAG="bd3lm_adaln${ADALN}_vscratch2"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=owt_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -70,7 +69,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.vocab_size=${VOCAB_SIZE} \
   model.config.backbone_config.attn_backend=${ATTN_BACKEND} \
   model.config.backbone_config.dropout=${DROPOUT} \
-  model.config.backbone_config.norm_type=${NORM_TYPE} \
   model.config.backbone_config.adaln=${ADALN} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \

@@ -1,16 +1,16 @@
+import csv
 import random
 import re
 from typing import Any, Dict, Literal
 
 import torch
 from torch.utils.data.dataset import Dataset
-from src.datasets.preprocessed_dataset import load_preprocessed_dataset
 from transformers import PreTrainedTokenizer
-from src.utils import fsspec_exists
-import csv
 
 from datasets import load_dataset
 from scripts.utils import maybe_add_missing_special_tokens
+from src.datasets.preprocessed_dataset import load_preprocessed_dataset
+from src.utils import fsspec_exists
 
 _QUESTION_PREFIX = (
     "Please reason step by step, and put your final answer within $\\boxed{}$. "
@@ -100,7 +100,8 @@ class GSM8KDataset(Dataset):
                 self.source_prompt_text if self.source_prompt_text else ""
             ) + example[self.source_key]  # type: ignore
             messages.append({"role": "user", "content": user_content})
-            # Format source with chat template (up to user message, with generation prompt)
+            # Format source with chat template (up to user message, with
+            # generation prompt)
             source = self.tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
@@ -131,7 +132,8 @@ class GSM8KDataset(Dataset):
                 target = full_formatted[len(source) :]
             else:
                 # Fallback: if templates don't align, just use assistant content
-                # Some templates might add extra tokens, so we tokenize to get the difference
+                # Some templates might add extra tokens, so we tokenize to get
+                # the difference
                 source_tokens = self.tokenizer.encode(source, add_special_tokens=False)
                 full_tokens = self.tokenizer.encode(
                     full_formatted, add_special_tokens=False
@@ -213,6 +215,7 @@ class GSM8KDataset(Dataset):
             "index": idx,
         }
 
+
 class CNNDailyMailDataset(Dataset):
     def __init__(
         self,
@@ -243,7 +246,7 @@ class CNNDailyMailDataset(Dataset):
             self.dataset = load_dataset(
                 dataset_path, config_name, split=split, trust_remote_code=True
             )
-            
+
             def _to_text(x):
                 if isinstance(x, list):
                     return "\n".join(map(str, x))
@@ -331,12 +334,22 @@ class CNNDailyMailDataset(Dataset):
             if self.add_special_tokens:
                 source = self.tokenizer.bos_token + source + self.tokenizer.eos_token
                 target = target + self.tokenizer.eos_token
-        source_ids = self.tokenizer(source, add_special_tokens=self.add_special_tokens, max_length=self.max_source_length, truncation=self.truncate)
-        target_ids = self.tokenizer(target, add_special_tokens=self.add_special_tokens, max_length=self.max_target_length, truncation=self.truncate)
+        source_ids = self.tokenizer(
+            source,
+            add_special_tokens=self.add_special_tokens,
+            max_length=self.max_source_length,
+            truncation=self.truncate,
+        )
+        target_ids = self.tokenizer(
+            target,
+            add_special_tokens=self.add_special_tokens,
+            max_length=self.max_target_length,
+            truncation=self.truncate,
+        )
         # inject eos token if it was cut off
-        if (source_ids["input_ids"][-1] != self.tokenizer.eos_token_id):
+        if source_ids["input_ids"][-1] != self.tokenizer.eos_token_id:
             source_ids["input_ids"][-1] = self.tokenizer.eos_token_id
-        if (target_ids["input_ids"][-1] != self.tokenizer.eos_token_id):
+        if target_ids["input_ids"][-1] != self.tokenizer.eos_token_id:
             target_ids["input_ids"][-1] = self.tokenizer.eos_token_id
         if self.separate_input_output:
             input_ids = torch.LongTensor(source_ids["input_ids"])
@@ -351,18 +364,23 @@ class CNNDailyMailDataset(Dataset):
             }
         else:
             input_ids = torch.cat(
-                [torch.LongTensor(source_ids["input_ids"]), torch.LongTensor(target_ids["input_ids"])], dim=-1
+                [
+                    torch.LongTensor(source_ids["input_ids"]),
+                    torch.LongTensor(target_ids["input_ids"]),
+                ],
+                dim=-1,
             )
             attention_mask = torch.cat(
-                [torch.LongTensor(source_ids["attention_mask"]), torch.LongTensor(target_ids["attention_mask"])],
+                [
+                    torch.LongTensor(source_ids["attention_mask"]),
+                    torch.LongTensor(target_ids["attention_mask"]),
+                ],
                 dim=-1,
             )
             context_mask = torch.cat(
                 (
                     torch.LongTensor(source_ids["attention_mask"]),
-                    torch.zeros_like(
-                        torch.LongTensor(target_ids["input_ids"])
-                    ),
+                    torch.zeros_like(torch.LongTensor(target_ids["input_ids"])),
                 ),
                 dim=-1,
             )
@@ -374,7 +392,6 @@ class CNNDailyMailDataset(Dataset):
 
 
 class ROCStoriesDataset(Dataset):
-
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -391,7 +408,10 @@ class ROCStoriesDataset(Dataset):
         tokenizer = maybe_add_missing_special_tokens(tokenizer)
         self.tokenizer = tokenizer
         self.num_target_sentences = num_target_sentences
-        assert self.num_target_sentences in [1, 3], "Only 1 or 3 target sentences are supported"
+        assert self.num_target_sentences in [
+            1,
+            3,
+        ], "Only 1 or 3 target sentences are supported"
         self.max_length = max_length
         self.padding = padding
         self.insert_special_tokens = insert_special_tokens
@@ -411,9 +431,13 @@ class ROCStoriesDataset(Dataset):
         if self.num_target_sentences == 1:
             return [story[2] for story in self.dataset]
         elif self.num_target_sentences == 3:
-            return [story[1] + " " + story[2] + " " + story[3] for story in self.dataset]
+            return [
+                story[1] + " " + story[2] + " " + story[3] for story in self.dataset
+            ]
         else:
-            raise ValueError(f"Invalid number of target sentences: {self.num_target_sentences}")
+            raise ValueError(
+                f"Invalid number of target sentences: {self.num_target_sentences}"
+            )
 
     def __len__(self):
         return len(self.dataset)
@@ -433,15 +457,27 @@ class ROCStoriesDataset(Dataset):
         suffix_ids = self.tokenizer(suffix).input_ids
         middle_ids = self.tokenizer(middle).input_ids
 
-        input_ids = prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) + suffix_ids
+        input_ids = (
+            prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) + suffix_ids
+        )
         if self.insert_special_tokens:
-            input_ids = [self.tokenizer.bos_token_id] + input_ids + [self.tokenizer.eos_token_id]
+            input_ids = (
+                [self.tokenizer.bos_token_id]
+                + input_ids
+                + [self.tokenizer.eos_token_id]
+            )
         input_ids = torch.LongTensor(input_ids)
         attention_mask = torch.ones_like(input_ids)
 
         if self.padding:
-            input_ids = torch.nn.functional.pad(input_ids, (0, self.max_length - len(input_ids)), value=self.tokenizer.pad_token_id)
-            attention_mask = torch.nn.functional.pad(attention_mask, (0, self.max_length - len(attention_mask)), value=0)
+            input_ids = torch.nn.functional.pad(
+                input_ids,
+                (0, self.max_length - len(input_ids)),
+                value=self.tokenizer.pad_token_id,
+            )
+            attention_mask = torch.nn.functional.pad(
+                attention_mask, (0, self.max_length - len(attention_mask)), value=0
+            )
 
         return {
             "input_ids": input_ids,

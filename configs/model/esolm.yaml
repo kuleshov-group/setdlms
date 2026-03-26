@@ -1,0 +1,15 @@
+defaults:
+  - base@_here_
+  - _self_
+
+_target_: src.denoiser.diffusion.EsoLM
+config:
+  _target_: src.denoiser.diffusion.EsoLMConfig
+  alpha_0: 1.0
+  batch_split: 1.0
+  diffusion_shuffle: true
+  diffusion_attn_mode: "causal"
+  sequential_shuffle: false
+  sequential_attn_mode: "causal"
+  loss_type: "low_var"
+  num_iw_orders: 0

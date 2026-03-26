@@ -23,6 +23,14 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "W", "Q", "I"]
 
+[tool.ruff.lint.per-file-ignores]
+"notebooks/**/*.ipynb" = ["E501"]
+"scripts/eval/harness_eval_record_intm.py" = ["E501"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
 [tool.black]
 line-length = 88
 target-version = ['py312']

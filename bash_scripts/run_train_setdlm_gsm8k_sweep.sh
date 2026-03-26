@@ -11,9 +11,11 @@ N_LAYERS=1
 TOP_LAYERS=false
 REINIT_MODEL=false
 
-DESIRED_BLOCK_SIZE=1
-MAX_BLOCK_SIZE=1024
+DESIRED_BLOCK_SIZE=16
+MAX_BLOCK_SIZE=48 # 16, 24, 32, 48, 64
 ANNEAL_STEPS="0ba"
+
+K=null # null, 0.1, 0.3, 0.5
 
 # Hyperparameters
 LR=1e-5
@@ -28,9 +30,10 @@ MAX_TRAIN_SAMPLES=null  # Set to null or remove this line to use full dataset
 MAX_EVAL_SAMPLES=null  # Set to null or remove this line to use full dataset
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
+# PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 NUM_SHOT=0
 
-TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_max${MAX_BLOCK_SIZE}_distill_eso_v4"
+TAG="setdlm_tgt${DESIRED_BLOCK_SIZE}_distill_k${K}_maxblock${MAX_BLOCK_SIZE}_sweep"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
 else
@@ -60,7 +63,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
   composer.lr_scheduler.alpha_f=${ALPHA_F} \
   training.compile_backbone=false \
-  model=aoarm_efficient \
+  model=setdlm \
   model.config.length=1024 \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=${REINIT_MODEL} \
@@ -77,18 +80,11 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   eval_dataloader.batch_size=4 \
-  noise@model.config.noise_config=power \
+  noise@model.config.noise_config=staggered \
   model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
-  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
   model.config.noise_config.length=1024 \
-  model.config.noise_config.plot_schedule=false \
+  +composer/callbacks=log_gradient_variance \
   composer.callbacks.log_gradient_variance.accumulation_steps=2 \
   eval_dataloader.batch_size=1 \
-  +model.config.inefficient_training=true
-  #  \
-  # +composer/algorithms=noise_level_annealing \
-  # composer.algorithms.noise_level_annealing.anneal_duration=${ANNEAL_STEPS} \
-  # composer.algorithms.noise_level_annealing.final_scale=1.0 \
-  # +composer/callbacks=log_noise_level_annealing \
-  # composer.callbacks.save_best_checkpointing.start=${ANNEAL_STEPS}
-
+  +model.config.noise_config.k=${K} \
+  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE}

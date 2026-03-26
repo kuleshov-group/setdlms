@@ -10,7 +10,11 @@ simple_version = True
 simple_s = 4  # which block size for simple version: 4 (S≤8) or 16 (S≤32)
 xaxis_key = "speed_x"
 
-filename = f"line_plot_block{avg_block_size}_{xaxis_key}_simple{simple_version}" + (f"_s{simple_s}" if simple_version else "") + ".png"
+filename = (
+    f"line_plot_block{avg_block_size}_{xaxis_key}_simple{simple_version}"
+    + (f"_s{simple_s}" if simple_version else "")
+    + ".png"
+)
 show_xerr = False
 
 save_pdf = True
@@ -23,7 +27,7 @@ else:
     xaxis_min = 30
     xaxis_max = 170
 if simple_version and xaxis_key == "speed_x":
-    xaxis_min = 50 if simple_s == 4 else 65   # after dropping lowest speed point
+    xaxis_min = 50 if simple_s == 4 else 65  # after dropping lowest speed point
     xaxis_max = 130 if simple_s == 4 else 165  # S=4 ~122, S=16 ~160
 AR_COLOR = "#636EFA"
 FONT_FAMILY = "DM Sans"
@@ -102,7 +106,15 @@ def _legend_grouping(name: str, *, simple: bool = False) -> tuple[str | None, st
     if _is_block_diff(name):
         return (lg, "Block Diffusion" if simple else f"Block Diffusion (S={int(s)})", 0)
     if _is_soft_block_diff(name):
-        return (lg, "Set Diffusion (Ours)" if simple else f"Ours: Set Diffusion (S ≤ {int(s * 2)})", 1)
+        return (
+            lg,
+            (
+                "Set Diffusion (Ours)"
+                if simple
+                else f"Ours: Set Diffusion (S ≤ {int(s * 2)})"
+            ),
+            1,
+        )
     return (lg, name, 2)
 
 
@@ -114,7 +126,9 @@ def _add_custom_grouped_legend(
     soft_color_by_s: dict[int, str],
     simple: bool = False,
 ):
-    s_present = sorted({s for s in (_extract_s(g["name"]) for g in groups_) if s is not None})
+    s_present = sorted(
+        {s for s in (_extract_s(g["name"]) for g in groups_) if s is not None}
+    )
     has_ar = any(g.get("name") == "AR" for g in groups_)
 
     if not s_present and not has_ar:
@@ -138,7 +152,10 @@ def _add_custom_grouped_legend(
 
     def _diamond_path(cx, cy, rx, ry, aspect):
         ry_adj = ry / max(aspect, 1e-9)
-        return f"M {cx},{cy+ry_adj} L {cx+rx},{cy} L {cx},{cy-ry_adj} L {cx-rx},{cy} Z"
+        return (
+            f"M {cx},{cy + ry_adj} L {cx + rx},{cy} L {cx},{cy - ry_adj} "
+            f"L {cx - rx},{cy} Z"
+        )
 
     aspect = _paper_aspect(fig)
 
@@ -162,18 +179,19 @@ def _add_custom_grouped_legend(
     x_cursor = pad_x + legend_shift_x
 
     # Simple: center legend items w.r.t. the *entire figure* (including margins).
-    # Plotly "paper" coords are relative to the plot area, so we convert figure-center (px)
-    # into paper units, and estimate legend width in paper units.
+    # Plotly "paper" coords are relative to the plot area, so we convert
+    # figure-center (px) into paper units, and estimate legend width in paper
+    # units.
     if simple and s_present:
         inner_pad = 0.018
-        icon_len  = 0.05
-        icon_gap  = 0.015
+        icon_len = 0.05
+        icon_gap = 0.015
         # horizontal gap between the two legend items (keep small)
-        side_gap  = 0.25
+        side_gap = 0.25
 
         # Labels in simple mode (must match what you actually draw below)
         block_label = "Block Diffusion"
-        soft_label  = "Set Diffusion"
+        soft_label = "Set Diffusion"
 
         # Convert estimated text widths (px) -> paper units
         m = fig.layout.margin
@@ -189,39 +207,57 @@ def _add_custom_grouped_legend(
             return est_px * paper_per_px
 
         block_text_w = _text_w_paper(block_label, legend_text_size)
-        soft_text_w  = _text_w_paper(soft_label,  legend_text_size)
+        soft_text_w = _text_w_paper(soft_label, legend_text_size)
 
         # Total legend width for the simple layout (single row, side-by-side items)
         total_width = (
-            inner_pad + icon_len + icon_gap + block_text_w
+            inner_pad
+            + icon_len
+            + icon_gap
+            + block_text_w
             + side_gap
-            + icon_len + icon_gap + soft_text_w
+            + icon_len
+            + icon_gap
+            + soft_text_w
         )
 
         # Figure pixel center -> paper coordinate (paper x=0 at left edge of plot area)
-        fig_center_paper = ((fig_w_px / 2.0) - float(m.l)) / plot_w_px if plot_w_px > 0 else 0.5
+        fig_center_paper = (
+            ((fig_w_px / 2.0) - float(m.l)) / plot_w_px if plot_w_px > 0 else 0.5
+        )
         x_cursor = fig_center_paper - 0.5 * total_width
 
         # Slight left adjustment so legend appears visually centered in the figure
         x_cursor -= 0.15
-        
+
     if has_ar:
         ar_w = 0.04
 
         x_star = x_cursor + 0.020
-        shapes.append(dict(
-            type="path", xref="paper", yref="paper",
-            path=_star_path(x_star, y_center, 0.016, 0.007, aspect),
-            fillcolor=AR_COLOR, line=dict(color=AR_COLOR, width=1),
-            layer="above",
-        ))
-        ann.append(dict(
-            x=x_star + 0.028, y=y_center,
-            xref="paper", yref="paper",
-            text="AR", showarrow=False,
-            xanchor="left", yanchor="middle",
-            font=dict(size=legend_font_size, color="#111", family=FONT_FAMILY),
-        ))
+        shapes.append(
+            dict(
+                type="path",
+                xref="paper",
+                yref="paper",
+                path=_star_path(x_star, y_center, 0.016, 0.007, aspect),
+                fillcolor=AR_COLOR,
+                line=dict(color=AR_COLOR, width=1),
+                layer="above",
+            )
+        )
+        ann.append(
+            dict(
+                x=x_star + 0.028,
+                y=y_center,
+                xref="paper",
+                yref="paper",
+                text="AR",
+                showarrow=False,
+                xanchor="left",
+                yanchor="middle",
+                font=dict(size=legend_font_size, color="#111", family=FONT_FAMILY),
+            )
+        )
 
         x_cursor += ar_w
 
@@ -259,20 +295,44 @@ def _add_custom_grouped_legend(
         bc = block_color_by_s.get(s, "#666")
         sc = soft_color_by_s.get(s, bc)
 
-        shapes.append(dict(type="line", xref="paper", yref="paper",
-                           x0=x_icon0_1, y0=y_row1, x1=x_icon1_1, y1=y_row1,
-                           line=dict(color=bc, width=3), layer="above"))
-        shapes.append(dict(type="path", xref="paper", yref="paper",
-                           path=_diamond_path(x_icon1_1, y_row1, 0.0135, 0.0135, aspect),
-                           line=dict(color=bc, width=2),
-                           fillcolor="white", layer="above"))
+        shapes.append(
+            dict(
+                type="line",
+                xref="paper",
+                yref="paper",
+                x0=x_icon0_1,
+                y0=y_row1,
+                x1=x_icon1_1,
+                y1=y_row1,
+                line=dict(color=bc, width=3),
+                layer="above",
+            )
+        )
+        shapes.append(
+            dict(
+                type="path",
+                xref="paper",
+                yref="paper",
+                path=_diamond_path(x_icon1_1, y_row1, 0.0135, 0.0135, aspect),
+                line=dict(color=bc, width=2),
+                fillcolor="white",
+                layer="above",
+            )
+        )
         block_label = "Block Diffusion" if simple else f"Block Diffusion (S={s})"
-        ann.append(dict(
-            x=x_text_1, y=y_row1, xref="paper", yref="paper",
-            text=block_label,
-            showarrow=False, xanchor="left", yanchor="middle",
-            font=dict(size=legend_text_size, color="#111", family=FONT_FAMILY),
-        ))
+        ann.append(
+            dict(
+                x=x_text_1,
+                y=y_row1,
+                xref="paper",
+                yref="paper",
+                text=block_label,
+                showarrow=False,
+                xanchor="left",
+                yanchor="middle",
+                font=dict(size=legend_text_size, color="#111", family=FONT_FAMILY),
+            )
+        )
 
         if simple:
             # In simple mode, put the second item right after the first label.
@@ -285,23 +345,49 @@ def _add_custom_grouped_legend(
             x_icon1_2 = x_icon0_2 + icon_len
             x_text_2 = x_icon1_2 + icon_gap
 
-        shapes.append(dict(type="line", xref="paper", yref="paper",
-                           x0=x_icon0_2, y0=y_row2, x1=x_icon1_2, y1=y_row2,
-                           line=dict(color=sc, width=3), layer="above"))
+        shapes.append(
+            dict(
+                type="line",
+                xref="paper",
+                yref="paper",
+                x0=x_icon0_2,
+                y0=y_row2,
+                x1=x_icon1_2,
+                y1=y_row2,
+                line=dict(color=sc, width=3),
+                layer="above",
+            )
+        )
         r = 0.009
         ry = r / max(aspect, 1e-9)
-        shapes.append(dict(type="rect", xref="paper", yref="paper",
-                           x0=x_icon1_2-r, x1=x_icon1_2+r,
-                           y0=y_row2-ry, y1=y_row2+ry,
-                           fillcolor=sc, line=dict(color=sc, width=1),
-                           layer="above"))
-        soft_label = "Set Diffusion" if simple else f"Ours: Set Diffusion (S ≤ {s*2})"
-        ann.append(dict(
-            x=x_text_2, y=y_row2, xref="paper", yref="paper",
-            text=soft_label,
-            showarrow=False, xanchor="left", yanchor="middle",
-            font=dict(size=legend_text_size, color="#111", family=FONT_FAMILY),
-        ))
+        shapes.append(
+            dict(
+                type="rect",
+                xref="paper",
+                yref="paper",
+                x0=x_icon1_2 - r,
+                x1=x_icon1_2 + r,
+                y0=y_row2 - ry,
+                y1=y_row2 + ry,
+                fillcolor=sc,
+                line=dict(color=sc, width=1),
+                layer="above",
+            )
+        )
+        soft_label = "Set Diffusion" if simple else f"Ours: Set Diffusion (S ≤ {s * 2})"
+        ann.append(
+            dict(
+                x=x_text_2,
+                y=y_row2,
+                xref="paper",
+                yref="paper",
+                text=soft_label,
+                showarrow=False,
+                xanchor="left",
+                yanchor="middle",
+                font=dict(size=legend_text_size, color="#111", family=FONT_FAMILY),
+            )
+        )
 
         x_cursor = x1 if not simple else x_text_2 + soft_text_w
 
@@ -318,18 +404,30 @@ groups = [
         "name": "Block Diffusion (S=4)",
         "x": np.array([1.0, 1.55, 1.78, 1.93, 2.05, 2.15, 2.25, 2.36, 2.47, 2.59]),
         "x_std": np.array([0.0, 0.19, 0.23, 0.25, 0.26, 0.28, 0.28, 0.29, 0.30, 0.31]),
-        "speed_x": np.array([40.51, 55.36, 61.10, 64.61, 67.06, 69.27, 71.68, 73.50, 75.33, 77.8]),
-        "speed_x_std": np.array([0.21, 4.53, 4.87, 5.02, 5.31, 5.30, 5.51, 4.98, 4.85, 4.84]),
-        "y": np.array([63.53, 63.61, 63.31, 61.56, 60.42, 60.05, 58.91, 57.62, 54.97, 52.62]),
+        "speed_x": np.array(
+            [40.51, 55.36, 61.10, 64.61, 67.06, 69.27, 71.68, 73.50, 75.33, 77.8]
+        ),
+        "speed_x_std": np.array(
+            [0.21, 4.53, 4.87, 5.02, 5.31, 5.30, 5.51, 4.98, 4.85, 4.84]
+        ),
+        "y": np.array(
+            [63.53, 63.61, 63.31, 61.56, 60.42, 60.05, 58.91, 57.62, 54.97, 52.62]
+        ),
     },
     {
         "name": "Set Diffusion (match w/ S=4)",
         "x": np.array([1.0, 1.54, 1.78, 1.95, 2.08, 2.20, 2.33, 2.46, 2.60, 2.75]),
         "x_std": np.array([0.0, 0.18, 0.22, 0.24, 0.25, 0.27, 0.28, 0.28, 0.29, 0.30]),
-        "conf": np.array([1e6,0.99,0.95,0.90,0.85,0.80,0.75,0.70,0.65,0.60]),
-        "speed_x": np.array([45.25, 69.79, 80.82, 87.47, 92.62, 96.81, 102.86, 107.24, 116.60, 122.25]),
-        "speed_x_std": np.array([0.17, 7.73, 9.48, 9.93, 10.17, 10.12, 10.65, 11.43, 10.33, 11.26]),
-        "y": np.array([66.41, 67.85, 67.10, 65.73, 64.37, 63.68, 61.56, 58.23, 58.23, 54.81]),
+        "conf": np.array([1e6, 0.99, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60]),
+        "speed_x": np.array(
+            [45.25, 69.79, 80.82, 87.47, 92.62, 96.81, 102.86, 107.24, 116.60, 122.25]
+        ),
+        "speed_x_std": np.array(
+            [0.17, 7.73, 9.48, 9.93, 10.17, 10.12, 10.65, 11.43, 10.33, 11.26]
+        ),
+        "y": np.array(
+            [66.41, 67.85, 67.10, 65.73, 64.37, 63.68, 61.56, 58.23, 58.23, 54.81]
+        ),
     },
     {
         "name": "Block Diffusion (S=16)",
@@ -338,30 +436,43 @@ groups = [
         "speed_x": np.array([42.3, 72.0, 87.01, 98.33, 108.82, 115.83, 122.54, 134.48]),
         "speed_x_std": np.array([0.21, 9.64, 12.78, 14.50, 16.49, 17.70, 19.38, 21.75]),
         "y": np.array([50.49, 50.27, 48.82, 46.78, 45.03, 43.67, 42.23, 39.27]),
-    },    
+    },
     {
         "name": "Set Diffusion (match w/ S=16)",
-        "x": np.array([1.0,1.69,2.04,2.30,2.54,2.78,3.04,3.32,3.67,4.06]),
-        "x_std": np.array([0.0,0.22,0.31,0.37,0.41,0.48,0.53,0.62,0.73,0.81]),
-        "conf": np.array([1e6,0.99,0.95,0.90,0.85,0.8,0.75,0.7,0.65,0.60]),
-        "speed_x": np.array([41.51,69.74,82.77,92.93,101.39,111.24,121.78,132.43,147.4,160.68]),
-        "speed_x_std": np.array([0.37,8.52,11.45,12.54,14.77,17.41,19.53,20.39,29.66,32.25]),
-        "y": np.array([61.94,60.12,60.73,59.59,57.9,56.56,54.13,49.20,44.58,41.62]),
+        "x": np.array([1.0, 1.69, 2.04, 2.30, 2.54, 2.78, 3.04, 3.32, 3.67, 4.06]),
+        "x_std": np.array([0.0, 0.22, 0.31, 0.37, 0.41, 0.48, 0.53, 0.62, 0.73, 0.81]),
+        "conf": np.array([1e6, 0.99, 0.95, 0.90, 0.85, 0.8, 0.75, 0.7, 0.65, 0.60]),
+        "speed_x": np.array(
+            [41.51, 69.74, 82.77, 92.93, 101.39, 111.24, 121.78, 132.43, 147.4, 160.68]
+        ),
+        "speed_x_std": np.array(
+            [0.37, 8.52, 11.45, 12.54, 14.77, 17.41, 19.53, 20.39, 29.66, 32.25]
+        ),
+        "y": np.array(
+            [61.94, 60.12, 60.73, 59.59, 57.9, 56.56, 54.13, 49.20, 44.58, 41.62]
+        ),
     },
 ]
 
 for g in groups:
-    assert len(g[xaxis_key]) == len(g["y"]), f"len of {g['name']} is {len(g[xaxis_key])} != {len(g['y'])}"
+    assert len(g[xaxis_key]) == len(g["y"]), (
+        f"len of {g['name']} is {len(g[xaxis_key])} != {len(g['y'])}"
+    )
 
 groups = [ar_dict] + groups
 
-# Simple version: only chosen block (Block Diffusion S + Set Diffusion match S), no AR, thinner plot
+# Simple version: only chosen block (Block Diffusion S + Set Diffusion match S),
+# no AR, thinner plot
 SIMPLE_BLOCK_COLOR = "#d62728"  # red
-SIMPLE_SOFT_COLOR = "#2ca02c"   # green
+SIMPLE_SOFT_COLOR = "#2ca02c"  # green
 if simple_version:
     groups = [
-        g for g in groups
-        if (_extract_s(g["name"]) == simple_s and (_is_block_diff(g["name"]) or _is_soft_block_diff(g["name"])))
+        g
+        for g in groups
+        if (
+            _extract_s(g["name"]) == simple_s
+            and (_is_block_diff(g["name"]) or _is_soft_block_diff(g["name"]))
+        )
     ]
     # Remove first value (lowest speed) from each group
     for g in groups:
@@ -375,7 +486,9 @@ if simple_version:
 def _compute_extents(groups_: list[dict]) -> tuple[float, float, float, float]:
     xs = np.concatenate([g[xaxis_key] for g in groups_])
     ys = np.concatenate([g["y"] for g in groups_])
-    xstd = np.concatenate([g.get(xaxis_std_key, np.zeros_like(g[xaxis_key])) for g in groups_])
+    xstd = np.concatenate(
+        [g.get(xaxis_std_key, np.zeros_like(g[xaxis_key])) for g in groups_]
+    )
     x_lo = float(np.min(xs - xstd))
     x_hi = float(np.max(xs + xstd))
     y_lo = float(np.min(ys))
@@ -506,15 +619,22 @@ for group in groups:
             mode="lines+markers" if not is_single_point else "markers",
             name=display_name,
             legendgroup=legendgroup,
-            legendrank=(0 if legendgroup == "AR" else (1000 * int(s or 0) + 10 * type_rank)),
-
-            line=dict(color=trace_color, width=2) if (not is_single_point and trace_color) else dict(width=2),
+            legendrank=(
+                0 if legendgroup == "AR" else (1000 * int(s or 0) + 10 * type_rank)
+            ),
+            line=(
+                dict(color=trace_color, width=2)
+                if (not is_single_point and trace_color)
+                else dict(width=2)
+            ),
             marker=(
                 dict(
                     symbol=symbol,
                     size=10 if is_single_point else 8,
                     color=("white" if _is_block_diff(name) else trace_color),
-                    line=dict(color=trace_color, width=(2 if _is_block_diff(name) else 1)),
+                    line=dict(
+                        color=trace_color, width=(2 if _is_block_diff(name) else 1)
+                    ),
                 )
                 if trace_color
                 else dict(symbol=symbol, size=10 if is_single_point else 10)
@@ -530,7 +650,9 @@ fig.update_layout(
     width=350 if simple_version else 500,
     height=400 if simple_version else 500,
     font=dict(family=FONT_FAMILY),
-    xaxis_title="Parallelism factor (↑)" if xaxis_key != "speed_x" else "Speed (tokens/sec; ↑)",
+    xaxis_title=(
+        "Parallelism factor (↑)" if xaxis_key != "speed_x" else "Speed (tokens/sec; ↑)"
+    ),
     yaxis_title="GSM8K Test Accuracy (↑)",
     legend_title="",
     plot_bgcolor="white",
@@ -539,12 +661,20 @@ fig.update_layout(
     margin=dict(t=35, l=45, r=8, b=0),
 )
 _add_custom_grouped_legend(
-    fig, groups_=groups, block_color_by_s=block_color_by_s, soft_color_by_s=soft_color_by_s,
+    fig,
+    groups_=groups,
+    block_color_by_s=block_color_by_s,
+    soft_color_by_s=soft_color_by_s,
     simple=simple_version,
 )
 
+
 def _arrowhead_path_paper_aspect(
-    xh, yh, xt, yt, aspect_y_over_x,
+    xh,
+    yh,
+    xt,
+    yt,
+    aspect_y_over_x,
     head_len=0.05,
     head_w=0.034,
 ):
@@ -577,7 +707,7 @@ x_head, y_head = 0.95, 0.91
 if simple_version:
     # Identify the two curves in the simple plot
     block_g = next(g for g in groups if _is_block_diff(g["name"]))
-    soft_g  = next(g for g in groups if _is_soft_block_diff(g["name"]))
+    soft_g = next(g for g in groups if _is_soft_block_diff(g["name"]))
 
     xb = np.asarray(block_g[xaxis_key], dtype=float)
     yb = np.asarray(block_g["y"], dtype=float)
@@ -606,7 +736,9 @@ if simple_version:
     x_head_d = x_mid + x_shift + 0.10 * x_span
 
     # Get curve y-values near endpoints to keep arrow inside the between-curves band
-    def _interp_safe(xd: float, xarr: np.ndarray, yarr: np.ndarray, idx: np.ndarray, fallback: float) -> float:
+    def _interp_safe(
+        xd: float, xarr: np.ndarray, yarr: np.ndarray, idx: np.ndarray, fallback: float
+    ) -> float:
         x_sorted = xarr[idx]
         y_sorted = yarr[idx]
         if xd < float(x_sorted[0]) or xd > float(x_sorted[-1]):
@@ -648,7 +780,8 @@ if simple_version:
     x_tail, y_tail = _to_paper_x(x_tail_d), _to_paper_y(y_tail_d)
     x_head, y_head = _to_paper_x(x_head_d), _to_paper_y(y_head_d)
 
-    # Force the arrow slightly downward in *paper space* (not affected by data-space clamping).
+    # Force the arrow slightly downward in *paper space* (not affected by
+    # data-space clamping).
     # Also keep it inside the plot area.
     arrow_down_paper = 0.025
     y_tail = float(np.clip(y_tail - arrow_down_paper, 0.02, 0.98))
@@ -677,28 +810,41 @@ ym = 0.5 * (y_tail + y_head)
 
 shapes = list(fig.layout.shapes) if fig.layout.shapes else []
 
-shapes.append(dict(
-    type="line",
-    xref="paper", yref="paper",
-    x0=x_tail, y0=y_tail,
-    x1=x_shaft_end, y1=y_shaft_end,
-    line=dict(color=arrow_color, width=3),
-    layer="above",
-))
+shapes.append(
+    dict(
+        type="line",
+        xref="paper",
+        yref="paper",
+        x0=x_tail,
+        y0=y_tail,
+        x1=x_shaft_end,
+        y1=y_shaft_end,
+        line=dict(color=arrow_color, width=3),
+        layer="above",
+    )
+)
 
 _head_len = 0.065 if simple_version else 0.05
 _head_w = 0.048 if simple_version else 0.034
-shapes.append(dict(
-    type="path",
-    xref="paper", yref="paper",
-    path=_arrowhead_path_paper_aspect(
-        x_head, y_head, x_tail, y_tail, aspect,
-        head_len=_head_len, head_w=_head_w,
-    ),
-    line=dict(width=0),
-    fillcolor=arrow_color,
-    layer="above",
-))
+shapes.append(
+    dict(
+        type="path",
+        xref="paper",
+        yref="paper",
+        path=_arrowhead_path_paper_aspect(
+            x_head,
+            y_head,
+            x_tail,
+            y_tail,
+            aspect,
+            head_len=_head_len,
+            head_w=_head_w,
+        ),
+        line=dict(width=0),
+        fillcolor=arrow_color,
+        layer="above",
+    )
+)
 
 fig.update_layout(shapes=shapes)
 
@@ -706,9 +852,11 @@ fig.update_layout(shapes=shapes)
 angle_deg = math.degrees(math.atan2(dy_s, dx_s))
 
 px_s = -dy_s / n_s
-py_s =  dx_s / n_s
+py_s = dx_s / n_s
 
-offset_up = -0.065  # move text slightly higher above the arrow (simple version wants more clearance)
+offset_up = (
+    -0.065
+)  # move text slightly higher above the arrow (simple version wants more clearance)
 offset_left = -0.1  # move slightly toward the tail (left along the arrow)
 
 x_text = xm + offset_up * px_s + offset_left * ux_s

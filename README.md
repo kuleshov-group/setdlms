@@ -79,7 +79,7 @@ experiments from our work.
       2. `Diffusion`: We implement masked diffusion models:
          - `MDLM`: Standard masked diffusion.
          - `BD3LM`: Block diffusion models.
-         - `SetMDLM`: Set diffusion models.
+         - `SetDLM`: Set diffusion models.
    2. [`src/backbone`](src/backbone): These are the underlying neural networks the take
    in noisy inputs and produce logits.
    Each denoiser is parameterized by a backbone.
@@ -91,23 +91,23 @@ The shell scripts provided in [`bash_scripts`](bash_scripts) can be used to repr
 the training and evaluations from our work.
 - For training, the files follow a convention where the dataset and denoiser class are
 specified.
-For example, to train the fine-tuning SetMDLM model on the GSM8K dataset, use the following
-shell script: [`run_train_setmdlm_gsm8k.sh`](bash_scripts/run_train_setmdlm_gsm8k.sh).
+For example, to train SetDLM on the GSM8K dataset, use
+[`run_train_setdlm_gsm8k.sh`](bash_scripts/run_train_setdlm_gsm8k.sh).
 - Once models have been trained, the provided evaluation scripts can be used to reproduce
 tables and figures from our work.
-For example, to evaluate models trained on the GSM8K dataset, use the
-following shell script: [`run_gsm8k_eval.sh`](bash_scripts/run_gsm8k_eval.sh).
+For example, to evaluate models trained on the GSM8K dataset, use
+[`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh) (or the `*_tput` / `*_intm` variants).
 In that file, and similar ones for other evaluations, specify the path to the saved
 checkpoints, and uncomment the relevant section for a given denoiser class.
 We also provide scripts that will produce the generation throughput numbers we report.
 These files contain a `_tput` at the end of the script name.
 
 Below are the evaluation scripts provided for various tasks:
-- Text summarization: [`run_seq2seq_eval_cnndm.sh`](bash_scripts/run_seq2seq_eval_cnndm.sh),[`run_seq2seq_eval_cnndm_tput.sh`](bash_scripts/run_seq2seq_eval_cnndm_tput.sh), [`run_likelihood_eval_cnndm.sh`](bash_scripts/run_likelihood_eval_cnndm.sh)
+- Text summarization: [`run_seq2seq_eval_cnndm.sh`](bash_scripts/run_seq2seq_eval_cnndm.sh), [`run_seq2seq_eval_cnndm_tput.sh`](bash_scripts/run_seq2seq_eval_cnndm_tput.sh)
 - Mathematical reasoning: [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh), [`run_lm_eval_harness_tput.sh`](bash_scripts/run_lm_eval_harness_tput.sh), [`run_likelihood_eval_gsm8k.sh`](bash_scripts/run_likelihood_eval_gsm8k.sh)
 - Likelihood estimation [`run_likelihood_eval_owt.sh`](bash_scripts/run_likelihood_eval_owt.sh), [`run_likelihood_eval_lm1b.sh`](bash_scripts/run_likelihood_eval_lm1b.sh)
 - Infilling (trained on OpenWebText): [`run_seq2seq_eval_infill_nlp.sh`](bash_scripts/run_seq2seq_eval_infill_nlp.sh)
-- Unconditional generation (trained on OpenWebText): [`run_uncond_gen_ppl.sh`](bash_scripts/run_uncond_gen_ppl.sh)
+- Unconditional generation (trained on OpenWebText): [`run_uncond_gen_ppl_owt.sh`](bash_scripts/run_uncond_gen_ppl_owt.sh)
 
 ## 3. HuggingFace Integration
 We release the following SetDLMs (s ≤ 8, 16, 32) on HuggingFace:

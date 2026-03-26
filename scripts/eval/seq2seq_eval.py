@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import sys
+from collections import OrderedDict
 
 import evaluate
 import hydra
@@ -12,15 +13,8 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
-from src.denoiser.diffusion import MDLM, MDLMConfig
-import torch
-from src.noise_schedule.noise_schedules import LinearNoise
-from src.denoiser.diffusion import BD3LM, BD3LMConfig
-from src.denoiser.ar import AR, ARConfig
-from src.denoiser.diffusion import SetDLM, SEDD
-from transformers.generation import StopStringCriteria
 from transformers.modeling_outputs import ModelOutput
-from collections import OrderedDict
+
 from scripts.utils import (
     count_parameters,
     format_number,
@@ -29,6 +23,9 @@ from scripts.utils import (
     register_useful_resolvers,
     set_seed,
 )
+from src.denoiser.ar import AR, ARConfig
+from src.denoiser.diffusion import BD3LM, MDLM, SEDD, BD3LMConfig, MDLMConfig
+from src.noise_schedule.noise_schedules import LinearNoise
 from src.utils import fsspec_exists, fsspec_mkdirs
 
 THROUGHPUT_WARMUP = 50
@@ -71,12 +68,13 @@ def main(cfg: DictConfig) -> None:
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
-
     # Load model
     model_config_overrides = getattr(cfg, "model_config_overrides", None) or {}
     # Convert to plain dict if it's a DictConfig to ensure proper merging
     if isinstance(model_config_overrides, DictConfig):
-        model_config_overrides = OmegaConf.to_container(model_config_overrides, resolve=True)
+        model_config_overrides = OmegaConf.to_container(
+            model_config_overrides, resolve=True
+        )
 
     # Load the dataset
     dataset = hydra.utils.instantiate(
@@ -99,40 +97,45 @@ def main(cfg: DictConfig) -> None:
             ckpt_file=cfg.ckpt_file,
             **getattr(cfg, "model_config_overrides", {}),
         )
-    except:
+    except Exception:
         try:
             model = AutoModelForCausalLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
                 trust_remote_code=True,
                 revision=getattr(cfg, "pretrained_model_revision", None),
             )
-        except:  # Model not compatible with CausalLM
+        except Exception:  # Model not compatible with CausalLM
             try:
                 model = AutoModelForMaskedLM.from_pretrained(
                     cfg.pretrained_model_name_or_path,
                     trust_remote_code=True,
                     revision=getattr(cfg, "pretrained_model_revision", None),
                 )
-            except:
+            except Exception:
                 model = None
-   
+
     # HACK for legacy codebase compatibility
     if model is None or not hasattr(model, "generate"):
-        
         # Create dit backbone config
         # Load the dit config template and update with actual values
         dit_config_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "configs", "model", "backbone", "dit_legacy.yaml"
+            "configs",
+            "model",
+            "backbone",
+            "dit_legacy.yaml",
         )
         backbone_config = OmegaConf.load(dit_config_path)
-        
-        # Update backbone config with necessary parameters (resolving the template values)
+
+        # Update backbone config with necessary parameters
+        # (resolving the template values)
         length = getattr(cfg, "length", 1024)
         backbone_config.length = length
         backbone_config.vocab_size = len(tokenizer)
         backbone_config.block_size = getattr(cfg, "block_size", None)
-        backbone_config.pretrained_model_name_or_path = getattr(cfg, "pretrained_model_name_or_path", None)
+        backbone_config.pretrained_model_name_or_path = getattr(
+            cfg, "pretrained_model_name_or_path", None
+        )
         backbone_config.num_layers = 12
         backbone_config.n_heads = 12
         backbone_config.hidden_size = 768
@@ -146,15 +149,19 @@ def main(cfg: DictConfig) -> None:
             backbone_config.adaln = True
         else:
             backbone_config.adaln = True
-    
+
         # Ensure it's a DictConfig
         if not isinstance(backbone_config, DictConfig):
-            backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
+            backbone_config = OmegaConf.create(
+                OmegaConf.to_container(backbone_config, resolve=False)
+            )
         if "mdlm-" in backbone_config.pretrained_model_name_or_path:
             model_config = MDLMConfig(
                 length=length,
             )
-            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.backbone_config = OmegaConf.to_container(
+                backbone_config, resolve=True
+            )
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
@@ -166,7 +173,9 @@ def main(cfg: DictConfig) -> None:
             model_config = MDLMConfig(
                 length=length,
             )
-            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.backbone_config = OmegaConf.to_container(
+                backbone_config, resolve=True
+            )
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
@@ -179,7 +188,9 @@ def main(cfg: DictConfig) -> None:
                 length=length,
                 backbone_config=backbone_config,
             )
-            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.backbone_config = OmegaConf.to_container(
+                backbone_config, resolve=True
+            )
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
@@ -193,7 +204,9 @@ def main(cfg: DictConfig) -> None:
                 backbone_config=backbone_config,
                 block_size=cfg.block_size,
             )
-            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.backbone_config = OmegaConf.to_container(
+                backbone_config, resolve=True
+            )
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
@@ -248,7 +261,9 @@ def main(cfg: DictConfig) -> None:
     tputs = []
     parallelism_factors = []
     latencies = []
-    pbar = tqdm(dataloader, desc="Generating", total=len(dataloader), disable=(local_rank != 0))
+    pbar = tqdm(
+        dataloader, desc="Generating", total=len(dataloader), disable=(local_rank != 0)
+    )
     for elem_id, elem in enumerate(pbar):
         ex_id = int(local_indices[elem_id])
         example_ids.append(ex_id)
@@ -282,10 +297,14 @@ def main(cfg: DictConfig) -> None:
         with torch.no_grad():
             # if this is an ar model, only pass the left context to the model.
             if isinstance(model, AR) and (input_ids == tokenizer.mask_token_id).any():
-                gen_kwargs.update({
-                    "max_new_tokens": (input_ids == tokenizer.mask_token_id).sum(),
-                })
-                first_mask_index = (input_ids == tokenizer.mask_token_id).nonzero(as_tuple=True)[1][0]
+                gen_kwargs.update(
+                    {
+                        "max_new_tokens": (input_ids == tokenizer.mask_token_id).sum(),
+                    }
+                )
+                first_mask_index = (input_ids == tokenizer.mask_token_id).nonzero(
+                    as_tuple=True
+                )[1][0]
                 input_ids = input_ids[:, :first_mask_index]
             if local_rank == 0:
                 start_event = torch.cuda.Event(enable_timing=True)
@@ -311,11 +330,16 @@ def main(cfg: DictConfig) -> None:
             else:
                 outputs = generation_outputs
                 parallelism_factor = -1.0
-            if tokenizer.mask_token_id is not None and tokenizer.mask_token_id in elem["input_ids"]:
+            if (
+                tokenizer.mask_token_id is not None
+                and tokenizer.mask_token_id in elem["input_ids"]
+            ):
                 if isinstance(model, AR):
                     outputs = outputs[0][first_mask_index:]
                 else:
-                    outputs = outputs[0][elem['input_ids'][0] == tokenizer.mask_token_id]
+                    outputs = outputs[0][
+                        elem["input_ids"][0] == tokenizer.mask_token_id
+                    ]
             else:
                 outputs = outputs[:, input_ids.shape[-1] :].squeeze(0)
             parallelism_factors.append(parallelism_factor)
@@ -323,11 +347,14 @@ def main(cfg: DictConfig) -> None:
                 if elem_id >= THROUGHPUT_WARMUP:
                     tputs.append(outputs.numel() / elapsed_time_s)
                     latencies.append(elapsed_time_s)
-        pbar.set_postfix(tput=np.mean(tputs), parallel=np.mean(parallelism_factors), latency=np.mean(latencies))
+        pbar.set_postfix(
+            tput=np.mean(tputs),
+            parallel=np.mean(parallelism_factors),
+            latency=np.mean(latencies),
+        )
         # Decode the generated samples
         outputs = tokenizer.decode(outputs)
         # Post-process:
-        outputs = outputs.replace(" .", ".")
         for st in stop_tokens:
             outputs = outputs.split(st)[0]
         decoded_samples = outputs.strip()
@@ -337,12 +364,17 @@ def main(cfg: DictConfig) -> None:
             print("Output length:", len(tokenizer(decoded_samples)["input_ids"]))
             print("Ground truth:", dataset.target_references[ex_id])
             print(
-                f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+                f"Parallelism factor: {np.mean(parallelism_factors):0.2f} "
+                f"+/- {np.std(parallelism_factors):0.2f}"
             )
             if elem_id >= THROUGHPUT_WARMUP:
                 print(f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}")
-                print(f"Latency (s): {np.mean(latencies):0.2f} +/- {np.std(latencies):0.2f}")
-                print(f"Latency (ms): {np.mean(np.array(latencies) * 1000):.2f} +/- {np.std(np.array(latencies) * 1000):.2f}")
+                print(
+                    f"Latency (s): {np.mean(latencies):0.2f} "
+                    f"+/- {np.std(latencies):0.2f}"
+                )
+                lat_ms = np.array(latencies) * 1000
+                print(f"Latency (ms): {np.mean(lat_ms):.2f} +/- {np.std(lat_ms):.2f}")
         generated_samples.append(decoded_samples)
 
     # Compute metrics
@@ -358,8 +390,9 @@ def main(cfg: DictConfig) -> None:
     throughputs = gather_results(tputs, world_size)
     latencies = gather_results(latencies, world_size)
     if local_rank == 0:
-        # Deduplicate padded/duplicated samples introduced by DistributedSampler (drop_last=False),
-        # and restore deterministic ordering by example id.
+        # Deduplicate padded/duplicated samples introduced by
+        # DistributedSampler (drop_last=False), and restore deterministic
+        # ordering by example id.
         by_id = OrderedDict()
         for i, pred, ref in zip(example_ids, generated_samples, references):
             if i not in by_id:
@@ -391,17 +424,15 @@ def main(cfg: DictConfig) -> None:
         print(f"| BLEU    | {bleu_score['score']:>7.4f} |")
         print(f"| METEOR  | {meteor_score['meteor']:>7.4f} |")
         print(
-            f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+            f"Parallelism factor: {np.mean(parallelism_factors):0.2f} "
+            f"+/- {np.std(parallelism_factors):0.2f}"
         )
         print(
             f"Thput (tok/s): {np.mean(throughputs):0.2f} +/- {np.std(throughputs):0.2f}"
         )
-        print(
-            f"Latency (s): {np.mean(latencies):0.2f} +/- {np.std(latencies):0.2f}"
-        )
-        print(
-            f"Latency (ms): {np.mean(np.array(latencies) * 1000):.2f} +/- {np.std(np.array(latencies) * 1000):.2f}"
-        )
+        print(f"Latency (s): {np.mean(latencies):0.2f} +/- {np.std(latencies):0.2f}")
+        lat_ms = np.array(latencies) * 1000
+        print(f"Latency (ms): {np.mean(lat_ms):.2f} +/- {np.std(lat_ms):.2f}")
         res_for_json = [
             {"ground_truth": references[i], "result": generated_samples[i]}
             for i in range(len(generated_samples))

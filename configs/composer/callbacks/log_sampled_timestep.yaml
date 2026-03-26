@@ -1,2 +1,0 @@
-log_sampled_timestep:
-  _target_: src.custom_composer.callbacks.LogSampledTimestep

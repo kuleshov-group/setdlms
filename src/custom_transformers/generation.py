@@ -51,9 +51,12 @@ class RegexStoppingCriteria(StoppingCriteria):
             text = [self.tokenizer.decode(input_ids)]
         for i in range(len(text)):
             matches_i = re.findall(self.pattern, text[i])
-            matches_i = [match for match in matches_i if self.tokenizer.mask_token not in match]
+            matches_i = [
+                match for match in matches_i if self.tokenizer.mask_token not in match
+            ]
             matches.append(len(matches_i) >= self.num_matches)
         return torch.tensor(matches, device=input_ids.device, dtype=torch.bool)
+
 
 class RepeatingTokenStoppingCriteria(StoppingCriteria):
     """
@@ -83,8 +86,10 @@ class RepeatingTokenStoppingCriteria(StoppingCriteria):
         if B > 1:
             raise NotImplementedError("Only batch size 1 is supported")
 
-        last_non_mask_token = input_ids.ne(self.mask_token_id).nonzero(as_tuple=False)[-1, -1].item()
-        input_ids = input_ids[:, :last_non_mask_token + 1]
+        last_non_mask_token = (
+            input_ids.ne(self.mask_token_id).nonzero(as_tuple=False)[-1, -1].item()
+        )
+        input_ids = input_ids[:, : last_non_mask_token + 1]
 
         B, T = input_ids.shape
         L = self.min_run_length
@@ -92,11 +97,12 @@ class RepeatingTokenStoppingCriteria(StoppingCriteria):
         if T < L:
             return torch.zeros(B, device=input_ids.device, dtype=torch.bool)
 
-        window = input_ids[:, -L:]          # [B, L]
+        window = input_ids[:, -L:]  # [B, L]
         last = input_ids[:, -1].unsqueeze(1)  # [B, 1]
 
         # All last L tokens must equal the last token.
         return (window == last).all(dim=1)
+
 
 class EntropyEosStoppingCriteria(StoppingCriteria):
     """
@@ -124,7 +130,7 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         self.block_size = block_size
         self.var_length = var_length
         self.num_matches = num_matches
-        
+
         # For optional post-processing:
         # one entry per batch item, filled with either None or an int truncate index.
         self.truncate_idx = None
@@ -141,18 +147,19 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         _, counts = torch.unique(x, return_counts=True, sorted=False)
         entropy = torch.special.entr(counts.float() / counts.sum()).sum()
         return entropy
-  
+
     @torch.no_grad()
-    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs
+    ) -> bool:
         """
         input_ids: (batch, seq_len)
         scores:    (batch, vocab) for the last step (may be None depending on config)
         """
-        device = input_ids.device
         bsz, seq_len = input_ids.shape
         self._ensure_state(bsz)
         if self.var_length:
-            eos_mask = (input_ids == self.eos_token_id)  # (B, L)
+            eos_mask = input_ids == self.eos_token_id  # (B, L)
             eos_counts = eos_mask.sum(dim=1)
 
             if torch.any(eos_counts >= self.num_matches):
@@ -173,12 +180,11 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
                             self.truncate_idx[i] = min(last_eos_pos + 1, seq_len)
                             self.stop_reason[i] = "last_eos"
                             return True
-    
+
         if seq_len < self.block_size:
             return False
 
-
-        last_block = input_ids[:, -self.block_size:]
+        last_block = input_ids[:, -self.block_size :]
         entropy = self._compute_entropy(last_block)
 
         if torch.is_tensor(entropy):

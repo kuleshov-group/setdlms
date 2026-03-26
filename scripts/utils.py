@@ -138,11 +138,13 @@ def format_number(num):
         return f"{num / 1_000:.1f}k"
     return str(num)
 
+
 def replace_strings(obj, old: str, new: str):
     if isinstance(obj, dict):
         return {
-            (k.replace(old, new) if isinstance(k, str) else k):
-            replace_strings(v, old, new)
+            (k.replace(old, new) if isinstance(k, str) else k): replace_strings(
+                v, old, new
+            )
             for k, v in obj.items()
         }
     elif isinstance(obj, list):
@@ -151,6 +153,7 @@ def replace_strings(obj, old: str, new: str):
         return obj.replace(old, new)
     else:
         return obj
+
 
 def print_and_save_config(
     cfg: DictConfig,
@@ -255,7 +258,7 @@ def load_model_from_ckpt_dir_path(
 
     def _deep_update(base_dict: dict, update_dict: dict) -> None:
         """Recursively update a dictionary with values from another dictionary.
-        
+
         Args:
             base_dict: The dictionary to update in-place.
             update_dict: The dictionary containing updates.
@@ -263,25 +266,67 @@ def load_model_from_ckpt_dir_path(
         # Convert any DictConfig values to plain dicts for proper merging
         if isinstance(update_dict, DictConfig):
             update_dict = OmegaConf.to_container(update_dict, resolve=True)
-        
+
         for k, v in update_dict.items():
             # Convert nested DictConfig values to plain dicts
             if isinstance(v, DictConfig):
                 v = OmegaConf.to_container(v, resolve=True)
-            
-            if k in base_dict and isinstance(base_dict[k], dict) and isinstance(v, dict):
+
+            if (
+                k in base_dict
+                and isinstance(base_dict[k], dict)
+                and isinstance(v, dict)
+            ):
                 _deep_update(base_dict[k], v)
             else:
                 base_dict[k] = v
+
+    def _strip_legacy_kwargs(config_node: Any) -> None:
+        """Remove deprecated Hydra kwargs kept in older checkpoint configs."""
+        if isinstance(config_node, dict):
+            legacy_kwargs_by_target = {
+                "src.backbone.dit.DIT": {"norm_type"},
+                "src.noise_schedule.noise_schedules.EaseOutPowerNoise": {
+                    "plot_schedule",
+                    "int_min"
+                },
+                "src.noise_schedule.noise_schedules.StaggeredNoise": {
+                    "plot_schedule",
+                    "int_min"
+                },
+            }
+            target = config_node.get("_target_")
+            removed_keys = []
+            for key in legacy_kwargs_by_target.get(target, set()):
+                if key in config_node:
+                    config_node.pop(key)
+                    removed_keys.append(key)
+            if verbose and removed_keys:
+                print(
+                    f"Removed legacy config keys {sorted(removed_keys)} "
+                    f"for target {target}"
+                )
+            for value in config_node.values():
+                _strip_legacy_kwargs(value)
+        elif isinstance(config_node, list):
+            for value in config_node:
+                _strip_legacy_kwargs(value)
 
     with open(os.path.join(path_to_ckpt_dir, "config.yaml"), "rb") as f:
         config = yaml.safe_load(f)
     if model_config_overrides:
         # Convert OmegaConf DictConfig to plain dict to ensure proper merging
-        # This is important because nested DictConfigs don't pass isinstance(..., dict) checks
-        overrides_dict = OmegaConf.to_container(model_config_overrides, resolve=True) if isinstance(model_config_overrides, DictConfig) else model_config_overrides
+        # This is important because nested DictConfigs don't pass
+        # isinstance(..., dict) checks
+        overrides_dict = (
+            OmegaConf.to_container(model_config_overrides, resolve=True)
+            if isinstance(model_config_overrides, DictConfig)
+            else model_config_overrides
+        )
         _deep_update(config["model"]["config"], overrides_dict)
     config = replace_strings(config, "AnyOrderBD3LM", "SetDLM")
+    config = replace_strings(config, "EaseOutPowerNoise", "StaggeredNoise")
+    _strip_legacy_kwargs(config)
     config = OmegaConf.create(config)
 
     model = hydra.utils.instantiate(
@@ -300,8 +345,10 @@ def load_model_from_ckpt_dir_path(
     if verbose:
         if "timestamp" in ckpt["state"]:
             timestamp = ckpt["state"]["timestamp"]
-            print(f"Loaded ckpt from ep: {timestamp['Timestamp']['epoch']}; "
-                f"batch: {timestamp['Timestamp']['batch']}.")
+            print(
+                f"Loaded ckpt from ep: {timestamp['Timestamp']['epoch']}; "
+                f"batch: {timestamp['Timestamp']['batch']}."
+            )
         elif (
             "callbacks" in ckpt["state"]
             and "SaveBestCheckpointing" in ckpt["state"]["callbacks"]

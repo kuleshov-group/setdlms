@@ -1,11 +1,13 @@
-from src.noise_schedule.noise_schedules import EaseOutPowerNoise
 import numpy as np
-import torch
 import plotly.colors as pc
 import plotly.graph_objects as go
+import torch
 from plotly.subplots import make_subplots
 
+from src.noise_schedule.noise_schedules import EaseOutPowerNoise
+
 L = 4
+
 
 def schedule_curves(noise_schedule, n_points=1000):
     num_blocks = noise_schedule.length // noise_schedule.block_size
@@ -71,7 +73,7 @@ for desired_block_size, b, k in zip(desired_block_sizes, widths, ks):
         subplot_title = f"<b>MDLM</b><br>C̄ = {expected_active:.1f} token(s)"
     else:
         subplot_title = (
-            "<b><span style=\"color:green;\"><i>SetDLM</i></span></b><br>"
+            '<b><span style="color:green;"><i>SetDLM</i></span></b><br>'
             f"C̄ = {expected_active:.1f} token(s)"
         )
 
@@ -103,16 +105,14 @@ fig.update_layout(
     plot_bgcolor="white",
     height=450,
     width=500,
-
     # reserve space for title + legend
     # margin=dict(t=120, b=60, l=80, r=40),
-
     showlegend=True,
     legend=dict(
         title="<b>Token index</b>",
         orientation="h",
         x=0.5,
-        y=1.3,          # keep padding, reduce whitespace above legend
+        y=1.3,  # keep padding, reduce whitespace above legend
         xanchor="center",
         yanchor="top",
         font=dict(size=16),
@@ -130,8 +130,8 @@ fig.update_yaxes(
 )
 fig.add_annotation(
     text=yaxis_title,
-    x=-0.06,          # move left/right if needed
-    y=0.5,            # centered vertically
+    x=-0.06,  # move left/right if needed
+    y=0.5,  # centered vertically
     xref="paper",
     yref="paper",
     showarrow=False,
@@ -157,7 +157,7 @@ for r in range(1, nrows2 + 1):
 fig.update_layout(
     autosize=False,
     margin=dict(
-        l=40,   # just enough for y-label
+        l=40,  # just enough for y-label
         r=10,
         t=0,
         b=45,

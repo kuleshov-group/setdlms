@@ -1,10 +1,10 @@
 import copy
+import inspect
 import sys
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple, Union
-import inspect
 
 import hydra.utils
 import torch
@@ -16,24 +16,22 @@ from transformers import (
     LogitsProcessorList,
     PretrainedConfig,
     PreTrainedModel,
-    StoppingCriteriaList,
     PreTrainedTokenizer,
+    StoppingCriteriaList,
 )
 from transformers.cache_utils import Cache
 from transformers.generation.utils import GenerateOutput
-from transformers.modeling_outputs import ModelOutput, CausalLMOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast, ModelOutput
 
 # Local imports not used, but added here so that HF push_to_hub adds them to model repo
 # noinspection PyUnresolvedReferences
 from src.backbone.automodel import AutoModelFromPreTrained  # noqa: F401
+from src.backbone.dit_legacy import DITLegacy
 from src.noise_schedule.noise_schedules import (  # noqa: F401
-    CosineNoise,
-    ExponentialNoise,
+    EsoLogLinearNoise,
     LinearNoise,
-    LogarithmicNoise,
     StaggeredNoise,
 )
-from src.backbone.dit_legacy import DITLegacy
 
 
 @dataclass
@@ -45,6 +43,7 @@ class DenoiserInput(OrderedDict):
     attention_mask: Optional[torch.FloatTensor] = None
     past_key_values: Optional[Union[torch.FloatTensor, Cache]] = None
     context_mask: Optional[torch.FloatTensor] = None
+    valid_tokens: Optional[torch.FloatTensor] = None  # (B, L)
     tokens_mask: Optional[torch.FloatTensor] = None  # (B, L)
     t: Optional[torch.FloatTensor] = None  # (B,) | # (B, L)
     alpha_t: Optional[torch.FloatTensor] = None  # (B,) | (B, 1|L) | (B, 1|L, 1)
@@ -162,9 +161,13 @@ class Denoiser(ABC, PreTrainedModel):
                         sys.modules[short] = sys.modules[name]
             del sys_modules
             self.backbone = hydra.utils.instantiate(config.backbone_config)
-        self.tokenizer = tokenizer if tokenizer is not None else AutoTokenizer.from_pretrained(
-            config.tokenizer_name,
-            trust_remote_code=True,
+        self.tokenizer = (
+            tokenizer
+            if tokenizer is not None
+            else AutoTokenizer.from_pretrained(
+                config.tokenizer_name,
+                trust_remote_code=True,
+            )
         )
         if getattr(self.config, "attend_to_dummy_tokens", False):
             # add dummy token to tokenizer
@@ -212,38 +215,6 @@ class Denoiser(ABC, PreTrainedModel):
         raise NotImplementedError(
             "Denoiser subclasses must implement _prepare_inputs_inference"
         )
-        # assert input_ids is not None or context is not None, (
-        #     "Must provide either input_ids or context."
-        # )
-        # cache = cache if cache is not None else {}
-        # past_key_values = cache.pop("past_key_values", DynamicCache())
-        # if context is not None:
-        #     if input_ids is not None:
-        #         if context_mask is None:
-        #             context_mask = torch.cat(
-        #                [torch.ones_like(context), torch.zeros_like(input_ids)], dim=-1
-        #             )
-        #         input_ids = torch.cat([context, input_ids], dim=-1)
-        #     else:
-        #         input_ids = context
-        #         context_mask = torch.ones_like(input_ids)
-        # if attention_mask is None:
-        #     cache_length = self._get_past_key_values_seq_length(past_key_values)
-        #     full_seq_length = cache_length + input_ids.shape[-1]
-        #     attention_mask = torch.ones(
-        #         (input_ids.shape[0], 1, input_ids.shape[1], full_seq_length),
-        #         device=input_ids.device,
-        #     )  # Make attention mask 4D
-        #     attention_mask = self._preprocess_attention_mask(
-        #         attention_mask, dtype=torch.float
-        #     )
-        # return DenoiserInput(
-        #     xt=input_ids,
-        #     attention_mask=attention_mask,
-        #     past_key_values=past_key_values,
-        #     context_mask=context_mask,
-        #     backbone_kwargs=backbone_kwargs,
-        # ), cache
 
     @abstractmethod
     def _compute_loss(
@@ -305,7 +276,15 @@ class Denoiser(ABC, PreTrainedModel):
         """
         # HACK FOR LEGACY MODELS
         compiled_backbone = hasattr(self.backbone, "_orig_mod")
-        if "timesteps" in inspect.signature(self.backbone.forward).parameters or isinstance(self.backbone, DITLegacy) or (compiled_backbone and "timesteps" in inspect.signature(self.backbone._orig_mod.forward).parameters):
+        if (
+            "timesteps" in inspect.signature(self.backbone.forward).parameters
+            or isinstance(self.backbone, DITLegacy)
+            or (
+                compiled_backbone
+                and "timesteps"
+                in inspect.signature(self.backbone._orig_mod.forward).parameters
+            )
+        ):
             with torch.cuda.amp.autocast(dtype=torch.float32):
                 backbone_output = self.backbone(
                     denoiser_inputs.xt,
@@ -322,9 +301,18 @@ class Denoiser(ABC, PreTrainedModel):
                         past_key_values=None,
                     )
         # HACK FOR LEGACY MDLM HF MODEL
-        if ("attention_mask" not in inspect.signature(self.backbone.forward).parameters and not compiled_backbone) or (compiled_backbone and "attention_mask" not in inspect.signature(self.backbone._orig_mod.forward).parameters):
+        if (
+            "attention_mask" not in inspect.signature(self.backbone.forward).parameters
+            and not compiled_backbone
+        ) or (
+            compiled_backbone
+            and "attention_mask"
+            not in inspect.signature(self.backbone._orig_mod.forward).parameters
+        ):
             with torch.cuda.amp.autocast(dtype=torch.float32):
-                backbone_output = self.backbone(denoiser_inputs.xt, sigma=torch.zeros_like(denoiser_inputs.xt[:, 0]))
+                backbone_output = self.backbone(
+                    denoiser_inputs.xt, sigma=torch.zeros_like(denoiser_inputs.xt[:, 0])
+                )
                 return CausalLMOutputWithPast(
                     logits=backbone_output[0],
                     past_key_values=None,
@@ -373,7 +361,9 @@ class Denoiser(ABC, PreTrainedModel):
         new_past_key_values = getattr(backbone_output, "past_key_values", None)
         backbone_output = getattr(backbone_output, "logits", backbone_output[0])
         # from legacy codebase
-        if "timesteps" in inspect.signature(self.backbone.forward).parameters or isinstance(self.backbone, DITLegacy):
+        if "timesteps" in inspect.signature(
+            self.backbone.forward
+        ).parameters or isinstance(self.backbone, DITLegacy):
             denoiser_output = self._forward(
                 backbone_output,
                 denoiser_inputs,
@@ -408,9 +398,10 @@ class Denoiser(ABC, PreTrainedModel):
             other_loss_terms=other_loss_terms,
         )
 
-
     @staticmethod
-    def _sample_categorical(probs: torch.Tensor, do_sample: bool = True) -> torch.Tensor:
+    def _sample_categorical(
+        probs: torch.Tensor, do_sample: bool = True
+    ) -> torch.Tensor:
         # probs: [B, T, V] (or [N, V])
         if not do_sample:
             return probs.argmax(dim=-1)  # [B, T]

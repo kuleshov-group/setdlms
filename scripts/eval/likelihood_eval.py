@@ -2,32 +2,29 @@ import logging
 import os
 
 import hydra
+import torch
 import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
 from omegaconf import DictConfig, OmegaConf
-from streaming import StreamingDataset
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
-from src.denoiser.diffusion import MDLM, MDLMConfig
-import torch
-from src.noise_schedule.noise_schedules import LinearNoise
-from src.denoiser.diffusion import BD3LM, BD3LMConfig
-from src.denoiser.ar import AR, ARConfig
-from src.denoiser.diffusion import SetDLM, SEDD
+
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
     register_useful_resolvers,
 )
+from src.denoiser.ar import AR, ARConfig
+from src.denoiser.diffusion import BD3LM, MDLM, SEDD, BD3LMConfig, MDLMConfig
+from src.noise_schedule.noise_schedules import LinearNoise
 from src.utils import fsspec_exists
 
 log = logging.getLogger(__name__)
 
-from torch.utils.data import DataLoader
-from itertools import repeat
 
 class RepeatDataloader:
     """Repeat an existing dataloader for k full passes."""
+
     def __init__(self, dataloader, k: int):
         self.dataloader = dataloader
         self.k = k
@@ -38,6 +35,7 @@ class RepeatDataloader:
 
     def __len__(self):
         return len(self.dataloader) * self.k
+
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
@@ -61,7 +59,9 @@ def main(cfg: DictConfig) -> None:
     model_config_overrides = getattr(cfg, "model_config_overrides", None) or {}
     # Convert to plain dict if it's a DictConfig to ensure proper merging
     if isinstance(model_config_overrides, DictConfig):
-        model_config_overrides = OmegaConf.to_container(model_config_overrides, resolve=True)
+        model_config_overrides = OmegaConf.to_container(
+            model_config_overrides, resolve=True
+        )
     if fsspec_exists(os.path.join(cfg.pretrained_model_name_or_path, "config.yaml")):
         model = load_model_from_ckpt_dir_path(
             path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
@@ -71,41 +71,49 @@ def main(cfg: DictConfig) -> None:
             **model_config_overrides,
         )
     else:
+        pretrained_kwargs = {
+            "trust_remote_code": True,
+            "revision": getattr(cfg, "pretrained_model_revision", None),
+        }
+        hf_token = os.environ.get("HF_TOKEN")
+        if hf_token is not None:
+            pretrained_kwargs["token"] = hf_token
         try:
             model = AutoModelForCausalLM.from_pretrained(
                 cfg.pretrained_model_name_or_path,
-                trust_remote_code=True,
-                revision=getattr(cfg, "pretrained_model_revision", None),
-                token="HF_TOKEN_REMOVED",
+                **pretrained_kwargs,
             )
-        except:  # Model not compatible with CausalLM
+        except Exception:  # Model not compatible with CausalLM
             try:
                 model = AutoModelForMaskedLM.from_pretrained(
                     cfg.pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    revision=getattr(cfg, "pretrained_model_revision", None),
-                    token="HF_TOKEN_REMOVED",
+                    **pretrained_kwargs,
                 )
-            except:
+            except Exception:
                 model = None
 
     # HACK for legacy codebase compatibility
     if model is None or not hasattr(model, "generate"):
-        
         # Create dit backbone config
         # Load the dit config template and update with actual values
         dit_config_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "configs", "model", "backbone", "dit_legacy.yaml"
+            "configs",
+            "model",
+            "backbone",
+            "dit_legacy.yaml",
         )
         backbone_config = OmegaConf.load(dit_config_path)
-        
-        # Update backbone config with necessary parameters (resolving the template values)
+
+        # Update backbone config with necessary parameters
+        # (resolving the template values)
         length = getattr(cfg, "length", 1024)
         backbone_config.length = length
         backbone_config.vocab_size = len(tokenizer)
         backbone_config.block_size = getattr(cfg, "block_size", None)
-        backbone_config.pretrained_model_name_or_path = getattr(cfg, "pretrained_model_name_or_path", None)
+        backbone_config.pretrained_model_name_or_path = getattr(
+            cfg, "pretrained_model_name_or_path", None
+        )
         backbone_config.num_layers = 12
         backbone_config.n_heads = 12
         backbone_config.hidden_size = 768
@@ -119,15 +127,19 @@ def main(cfg: DictConfig) -> None:
             backbone_config.adaln = True
         else:
             backbone_config.adaln = True
-    
+
         # Ensure it's a DictConfig
         if not isinstance(backbone_config, DictConfig):
-            backbone_config = OmegaConf.create(OmegaConf.to_container(backbone_config, resolve=False))
+            backbone_config = OmegaConf.create(
+                OmegaConf.to_container(backbone_config, resolve=False)
+            )
         if "mdlm-" in backbone_config.pretrained_model_name_or_path:
             model_config = MDLMConfig(
                 length=length,
             )
-            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.backbone_config = OmegaConf.to_container(
+                backbone_config, resolve=True
+            )
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
@@ -141,7 +153,9 @@ def main(cfg: DictConfig) -> None:
             model_config = MDLMConfig(
                 length=length,
             )
-            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.backbone_config = OmegaConf.to_container(
+                backbone_config, resolve=True
+            )
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
@@ -154,7 +168,9 @@ def main(cfg: DictConfig) -> None:
                 length=length,
                 backbone_config=backbone_config,
             )
-            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.backbone_config = OmegaConf.to_container(
+                backbone_config, resolve=True
+            )
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
@@ -168,7 +184,9 @@ def main(cfg: DictConfig) -> None:
                 backbone_config=backbone_config,
                 block_size=cfg.block_size,
             )
-            model_config.backbone_config = OmegaConf.to_container(backbone_config, resolve=True)
+            model_config.backbone_config = OmegaConf.to_container(
+                backbone_config, resolve=True
+            )
             model_config.keep_clean_bos = True
             model_config.mask_token_id = tokenizer.mask_token_id
             model_config.vocab_size = len(tokenizer)
@@ -226,11 +244,7 @@ def main(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         max_length=model.config.length,
     )
-    eval_sampler = (
-        dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
-        if not isinstance(eval_dataset, StreamingDataset)
-        else None
-    )
+    eval_sampler = dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
 
     eval_dataloader = hydra.utils.instantiate(
         cfg.task.eval_dataloader,

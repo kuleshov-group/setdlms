@@ -1,6 +1,7 @@
+import math
 from collections.abc import Callable
 from typing import Any
-import math
+
 import torch
 from transformers import DataCollatorWithPadding, PreTrainedTokenizerBase
 
@@ -80,17 +81,22 @@ class DenoisingCollator:
 
     def _sample_t(self, global_batch_size, batch_size, t_index, device):
         # Add extra padding if max_length is not a multiple of block_size
-        num_blocks = math.ceil(self.max_length / self.block_size) if self.block_size else 1
+        num_blocks = (
+            math.ceil(self.max_length / self.block_size) if self.block_size else 1
+        )
         if self.block_size is not None and self.block_size > 0:
             _eps_t = torch.rand(batch_size, num_blocks, device=device)
         else:
             _eps_t = torch.rand(batch_size, device=device)
         if self.antithetic_sampling:
-            offset = torch.arange(
-                start=t_index[0],
-                end=t_index[1],
-                device=device,
-            ) / global_batch_size
+            offset = (
+                torch.arange(
+                    start=t_index[0],
+                    end=t_index[1],
+                    device=device,
+                )
+                / global_batch_size
+            )
             offset = offset.view(batch_size)
             if self.block_size is not None and self.block_size > 0:
                 offset = offset.unsqueeze(1)
@@ -100,10 +106,10 @@ class DenoisingCollator:
             low, high = self.restricted_t_range
             t = (low - high) * t + high
         if self.block_size is not None and self.block_size > 0:
-            return t.repeat_interleave(self.block_size, dim=1)[:, :self.max_length]
+            return t.repeat_interleave(self.block_size, dim=1)[:, : self.max_length]
         # Remove extra padding
         if t.ndim == 2:
-            t = t[:, :self.max_length]
+            t = t[:, : self.max_length]
         return t
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
@@ -116,7 +122,9 @@ class DenoisingCollator:
             min((self._rank + 1) * batch_size, global_batch_size),
         )
         t = self._sample_t(
-            global_batch_size=global_batch_size if not self.legacy_antithetic_sampling else batch_size,
+            global_batch_size=(
+                global_batch_size if not self.legacy_antithetic_sampling else batch_size
+            ),
             batch_size=batch_size,
             t_index=t_index if not self.legacy_antithetic_sampling else (0, batch_size),
             device=batch["input_ids"].device,
@@ -128,9 +136,11 @@ class DenoisingCollator:
             )[..., : self.max_length]
             context_mask = torch.nn.functional.pad(
                 context_mask,
-                (0, self.max_length - context_mask.shape[-1])
-                if self.padding_side == "right"
-                else (self.max_length - context_mask.shape[-1], 0),
+                (
+                    (0, self.max_length - context_mask.shape[-1])
+                    if self.padding_side == "right"
+                    else (self.max_length - context_mask.shape[-1], 0)
+                ),
             )
             batch.update({"context_mask": context_mask})
         batch.update({"t": t})

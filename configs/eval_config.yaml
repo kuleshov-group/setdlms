@@ -4,6 +4,7 @@ defaults:
   - generation/logits_processor@logits_processor_list: ???
   - generation/stopping_criteria@stopping_criteria_list: ???
   - tokenizer: autotokenizer
+  - dataset@mauve_reference_dataset: owt_eval_gpt2
   # - composer/callbacks:
   #   - permutation_to_masking_pattern_analysis
   #   # - permutation_order_loss_analysis
@@ -17,8 +18,14 @@ pretrained_model_revision: null
 output_path: ???  # Where to save metrics
 generated_samples_output_path: null  # Where to save the generated samples
 
-gen_ppl_num_tokens: null
-eval_model_name: null
+num_samples: 1
+
+mauve_reference_num_samples: 5000
+mauve_verbose: false
+adlm_compatible_mauve: false
+adlm_compatible_mauve_max_text_length: 1024
+adlm_compatible_mauve_valid_seed: ${seed}
+adlm_compatible_mauve_eval_batch_size: ${batch_size}
 
 eos_token_id: ${get_tokenizer_eos_token_id:${tokenizer}}
 # Generation parameters

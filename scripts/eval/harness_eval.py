@@ -6,24 +6,21 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Tuple
 from datetime import timedelta
-from accelerate.utils import InitProcessGroupKwargs
+from typing import Any, Dict, List, Tuple
+
 import accelerate
 import hydra
 import numpy as np
 import torch
 import torch.distributed as dist
+from accelerate.utils import InitProcessGroupKwargs
 from lm_eval.api.model import LM
 from lm_eval.loggers.evaluation_tracker import EvaluationTracker
 from lm_eval.utils import make_table
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
-from transformers import (
-    AutoModelForCausalLM,
-    AutoModelForMaskedLM,
-    PreTrainedTokenizer,
-)
+from transformers import AutoModelForCausalLM, AutoModelForMaskedLM, PreTrainedTokenizer
 from transformers.modeling_outputs import ModelOutput
 
 from datasets import Dataset
@@ -103,12 +100,12 @@ class LMEvalHarnessModel(LM):
         )
         # Handle string input (JSON string) - parse it to dict
         if isinstance(model_config_overrides, str):
-            import json
             model_config_overrides = json.loads(model_config_overrides)
         # Convert to plain dict if it's a DictConfig to ensure proper merging
         if isinstance(model_config_overrides, DictConfig):
-            from omegaconf import OmegaConf
-            model_config_overrides = OmegaConf.to_container(model_config_overrides, resolve=True)
+            model_config_overrides = OmegaConf.to_container(
+                model_config_overrides, resolve=True
+            )
         if fsspec_exists(os.path.join(pretrained_model_name_or_path, "config.yaml")):
             model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=pretrained_model_name_or_path,
@@ -118,19 +115,22 @@ class LMEvalHarnessModel(LM):
                 **model_config_overrides,
             )
         else:
+            pretrained_kwargs = {
+                "trust_remote_code": True,
+                "revision": pretrained_model_revision,
+            }
+            hf_token = os.environ.get("HF_TOKEN")
+            if hf_token is not None:
+                pretrained_kwargs["token"] = hf_token
             try:
                 model = AutoModelForCausalLM.from_pretrained(
                     pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    revision=pretrained_model_revision,
-                    token="HF_TOKEN_REMOVED",
+                    **pretrained_kwargs,
                 )
-            except:  # Model not compatible with CausalLM
+            except Exception:  # Model not compatible with CausalLM
                 model = AutoModelForMaskedLM.from_pretrained(
                     pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    revision=pretrained_model_revision,
-                    token="HF_TOKEN_REMOVED",
+                    **pretrained_kwargs,
                 )
         self.model = model.to(self.device)
         self.model.eval()
@@ -172,7 +172,7 @@ class LMEvalHarnessModel(LM):
         def _tokenize(
             e,
             prefix_text: str | None = (
-                f"Please reason step by step, and put your "
+                "Please reason step by step, and put your "
                 + "final answer within $\\boxed{}$. "
             ),
         ):
@@ -212,27 +212,6 @@ class LMEvalHarnessModel(LM):
 
         ds = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
         ds = Dataset.from_list(ds)
-        # from src.datasets.preprocessed_dataset import load_preprocessed_dataset
-        # ds = load_preprocessed_dataset(
-        #     dataset_path="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_eval",
-        #     inject_context_mask=True,
-        #     tokenizer=self.tokenizer,
-        #     token_to_split="<|im_start|>",
-        #     split_offset=2
-        # )
-
-        # target_text = "Every day, Wendi feeds " 
-        # for i,elem in enumerate(ds):
-        #     text = self.tokenizer.decode(elem["input_ids"])
-        #     if target_text in text:
-        #         print(text)
-        #         print(i)
-        #         break
-        
-        # ds = [ds[i]]
-            
-
-
         ds = ds.map(_tokenize)
         ds = ds.with_format("torch")
         res = []
@@ -245,9 +224,6 @@ class LMEvalHarnessModel(LM):
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
         ):
-            # text = self.tokenizer.decode(elem["input_ids"])
-            # elem["prefix"] = torch.tensor(self.tokenizer(text.split("<|im_start|>assistant\n")[0] + "<|im_start|>assistant\n")["input_ids"])
-            # elem["target"] = torch.tensor(self.tokenizer(text.split("<|im_start|>assistant\n")[1])["input_ids"])
             if (
                 self.throughput_run
                 and i >= self.throughput_samples + self.throughput_warmup
@@ -311,11 +287,13 @@ class LMEvalHarnessModel(LM):
                 print("(Ground truth): ", requests[i].doc["answer"])
                 print("=" * 20, end="\n\n")
                 print(
-                    f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+                    f"Parallelism factor: {np.mean(parallelism_factors):0.2f} "
+                    f"+/- {np.std(parallelism_factors):0.2f}"
                 )
                 if "inf_budget" in generation_outputs:
                     print(
-                        f"Inference prediction budget: {np.mean(inf_budgets):0.2f} +/- {np.std(inf_budgets):0.2f}"
+                        f"Inference prediction budget: {np.mean(inf_budgets):0.2f} "
+                        f"+/- {np.std(inf_budgets):0.2f}"
                     )
             res.append(result)
 
@@ -339,7 +317,8 @@ class LMEvalHarnessModel(LM):
                         f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}"
                     )
                     print(
-                        f"Response length: {np.mean(response_lengths):0.2f} +/- {np.std(response_lengths):0.2f}"
+                        f"Response length: {np.mean(response_lengths):0.2f} "
+                        f"+/- {np.std(response_lengths):0.2f}"
                     )
                 else:
                     print(f"Thput (tok/s): {tput:0.2f}")
@@ -361,17 +340,21 @@ class LMEvalHarnessModel(LM):
             print("=" * 20)
             print("Metrics aggregated across ranks:")
             print(
-                f"Parallelism factor: {np.mean(parallelism_factors):0.2f} +/- {np.std(parallelism_factors):0.2f}"
+                f"Parallelism factor: {np.mean(parallelism_factors):0.2f} "
+                f"+/- {np.std(parallelism_factors):0.2f}"
             )
             print(
-                f"Thput (tok/s): {np.mean(throughputs):0.2f} +/- {np.std(throughputs):0.2f}"
+                f"Thput (tok/s): {np.mean(throughputs):0.2f} "
+                f"+/- {np.std(throughputs):0.2f}"
             )
             print(
-                f"Response length: {np.mean(response_lengths):0.2f} +/- {np.std(response_lengths):0.2f}"
+                f"Response length: {np.mean(response_lengths):0.2f} "
+                f"+/- {np.std(response_lengths):0.2f}"
             )
             if "inf_budget" in generation_outputs:
                 print(
-                    f"Inference prediction budget: {np.mean(inf_budgets):0.2f} +/- {np.std(inf_budgets):0.2f}"
+                    f"Inference prediction budget: {np.mean(inf_budgets):0.2f} "
+                    f"+/- {np.std(inf_budgets):0.2f}"
                 )
         return res
 

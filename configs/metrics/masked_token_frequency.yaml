@@ -1,2 +1,0 @@
-loss:
-  _target_: src.tasks.metrics.MaskedTokenFrequency

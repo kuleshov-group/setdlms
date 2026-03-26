@@ -1,0 +1,3 @@
+_target_: src.noise_schedule.noise_schedules.EsoLogLinearNoise
+alpha_0: ${model.config.alpha_0}
+eps: ${training.sampling_eps}

@@ -3,41 +3,36 @@
 cd ../ || exit  # Go to the root directory of the repo
 source setup_env.sh
 
+COMPILE_BACKBONE=true
+
+# TODO: Uncomment a model and run
 # bd3lm
-# MODEL_PATH="kuleshov-group/bd3lm-owt-block_size16"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
+# CKPT_FILE="ep17-ba300000-rank0.pt"
 # BLOCK_SIZE=16
+# MAX_WINDOW_SIZE=16
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=true
-# COMPILE_BACKBONE=false
+# USE_EMA=false
 
 # setdlm
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
-CKPT_FILE="ep17-ba300000-rank0.pt"
-MAX_WINDOW_SIZE=32
-BLOCK_SIZE=1024
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=false
-AR_CACHING=true
-COMPILE_BACKBONE=false
-USE_EMA=false
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
+# CKPT_FILE="ep17-ba300000-rank0.pt"
+# MAX_WINDOW_SIZE=32
+# BLOCK_SIZE=1024
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+# USE_EMA=false
 
 # ar
-# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1"
-# CKPT_FILE="20-300000.ckpt"
-# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
+# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1/20-300000.ckpt"
 # BLOCK_SIZE=1
-# COMPILE_BACKBONE=false
 # USE_EMA=true
 
 # mdlm
-# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4"
-# CKPT_FILE="18-300000.ckpt"
-# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
-# # CKPT_FILE="best.ckpt"
+# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4/18-300000.ckpt"
 # ALIGN_INPUTS_TO_BLOCKS=true
-# AR_CACHING=false
 # BLOCK_SIZE=1024
-# COMPILE_BACKBONE=true
 # USE_EMA=true
 
 echo "MODEL_PATH: ${MODEL_PATH}"
@@ -55,13 +50,16 @@ CONFIDENCE_BASED_NOISING=false
 CONF_THRESHOLD=1e6
 MAX_LENGTH=1024
 
-# NUM_TARGET_SENTENCES=3
-# REPEAT_PENALTY=1.5
+# TODO: Uncomment an infilling setting and run
+# NUM_TARGET_SENTENCES=1
+# REPEAT_PENALTY=1.0
 
 NUM_TARGET_SENTENCES=3
 REPEAT_PENALTY=1.1
 
-OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-T${T}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}"
+echo "NUM_TARGET_SENTENCES: ${NUM_TARGET_SENTENCES} REPEAT_PENALTY: ${REPEAT_PENALTY}"
+
+OUTPUT_PATH="${OUTPUT_DIR}/num_target_sentences${NUM_TARGET_SENTENCES}/L-${L}-block_size-${BLOCK_SIZE}-T${T}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-repeat_penalty${REPEAT_PENALTY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}"
 PORT=$((RANDOM % 10000 + 29500))
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/seq2seq_eval.py \
   hydra.output_subdir=null \
@@ -90,9 +88,9 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
-  generation_config.ar_caching=${AR_CACHING} \
   generation_config.linear_unmasking=true \
-  generation/stopping_criteria@stopping_criteria_list='[eos_token_criteria]' \
+  ~generation/stopping_criteria@stopping_criteria_list \
+  gen_kwargs.stopping_criteria=null \
   generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor]' \
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPEAT_PENALTY} \
   +model_config_overrides.backbone_config.attn_backend=sdpa \

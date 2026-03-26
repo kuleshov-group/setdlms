@@ -1,10 +1,10 @@
 from typing import Any, Dict, Union
 
+import torch
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 from datasets import Dataset, DatasetDict, load_from_disk
 from src.utils import fsspec_exists
-import torch
 
 Tokenizer = Union[PreTrainedTokenizer, PreTrainedTokenizerFast]
 
@@ -48,7 +48,14 @@ def load_preprocessed_dataset(
         dataset = dataset.select(range(limit_size))
     if inject_context_mask:
         tokens_to_split = tokenizer.encode(token_to_split)[0]
-        map_fn = lambda x: {
-            "context_mask": (torch.arange(x["input_ids"].shape[-1]) <= (x["input_ids"] == tokens_to_split).nonzero()[-1]+split_offset).to(torch.int)}
+
+        def map_fn(x):
+            return {
+                "context_mask": (
+                    torch.arange(x["input_ids"].shape[-1])
+                    <= (x["input_ids"] == tokens_to_split).nonzero()[-1] + split_offset
+                ).to(torch.int)
+            }
+
         dataset = dataset.map(map_fn)
     return dataset

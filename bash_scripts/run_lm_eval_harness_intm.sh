@@ -125,7 +125,6 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
-  generation_config.ar_caching=true \
   generation_config.linear_unmasking=${LINEAR_UNMASKING} \
   +generation_config.save_intermediate_samples=true \
   ~generation/logits_processor@logits_processor_list \

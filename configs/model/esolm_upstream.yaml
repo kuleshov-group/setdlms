@@ -1,0 +1,7 @@
+defaults:
+  - esolm@_here_
+  - _self_
+
+# Compatibility alias for the upstream-parity EsoLM preset from:
+# - `s-sahoo/Eso-LMs/configs/algo/esolm.yaml` lines 8-14
+# - `s-sahoo/Eso-LMs/scripts/esolm/train_owt_esolmb_alpha0_1.sh` lines 29-34

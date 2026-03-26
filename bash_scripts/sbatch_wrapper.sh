@@ -24,13 +24,15 @@ if [ ! -e "${script_full_path}" ]; then
   echo "Script '$script_full_path' not found."
 fi
 
+
+
 WATCH_FOLDER=$(realpath "../watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
 export TMPDIR=/share/kuleshov/${USERNAME}/tmp
 export TRITON_CACHE_DIR=/share/kuleshov/${USERNAME}/triton_cache
 export TORCHINDUCTOR_CACHE_DIR=/share/kuleshov/${USERNAME}/torchinductor_cache
-NUM_VISIBLE_DEVICES=4
+NUM_VISIBLE_DEVICES=1
 RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev"
 DATA_DIR="/share/kuleshov/ma2238/dllm-data"
 mkdir -p ${RUN_DIR}
@@ -40,8 +42,8 @@ sbatch \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=gpu,kuleshov \
-  --constraint="[a6000]" \
+  --partition=gpu \
+  --constraint="[a100|h100]" \
   --time=960:00:00 \
   --mem=128000 \
   --nodes=1 \
@@ -50,6 +52,6 @@ sbatch \
   --mail-user=${USERNAME}@cornell.edu \
   --mail-type=ALL \
   --requeue \
-  --exclude=nikola-compute-12,goyal-compute-01,snavely-compute-02,rush-compute-02,sun-compute-01,klara,rush-compute-03,ma-compute-02 \
+  --exclude=nikola-compute-[01-05,11-18],goyal-compute-01,snavely-compute-02,rush-compute-02,sun-compute-01,klara,rush-compute-03,ma-compute-02,ellis-compute-02,lancer-compute-01,lil-compute-04,seo-compute-02,badfellow,joachims-compute-03 \
   --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
-  ${script_full_path}
+  ${script_full_path} "${@:2}"

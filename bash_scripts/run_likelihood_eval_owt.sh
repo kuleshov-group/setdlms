@@ -25,6 +25,25 @@ source setup_env.sh
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block1024_vscratch"
 # CKPT_FILE="ep17-ba300000-rank0.pt"
 # BLOCK_SIZE=1024
+# COMPILE_BACKBONE=true
+
+# bd3lm s = 4
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block4_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
+# CKPT_FILE="ep17-ba300000-rank0.pt"
+# BLOCK_SIZE=4
+# COMPILE_BACKBONE=true
+
+# bd3lm s = 8
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block8_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
+# CKPT_FILE="ep17-ba300000-rank0.pt"
+# BLOCK_SIZE=8
+# COMPILE_BACKBONE=true
+
+# bd3lm s = 16
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
+CKPT_FILE="ep17-ba300000-rank0.pt"
+BLOCK_SIZE=16
+COMPILE_BACKBONE=true
 
 # ar
 # MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1"

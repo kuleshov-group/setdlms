@@ -1,3 +1,4 @@
+import fnmatch
 import hashlib
 import inspect
 import logging
@@ -12,7 +13,6 @@ from types import MethodType
 import fsspec
 from huggingface_hub import HfApi, file_exists, repo_exists
 from transformers import PreTrainedModel, PreTrainedTokenizer
-import fnmatch
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,6 @@ def fsspec_mkdirs(dirname, exist_ok=True):
     fs, _ = fsspec.core.url_to_fs(dirname)
     fs.makedirs(dirname, exist_ok=exist_ok)
 
-import fnmatch
 
 def _should_ignore(src_path: Path, ignore: list[str]) -> bool:
     s = str(src_path)
@@ -57,6 +56,7 @@ def _should_ignore(src_path: Path, ignore: list[str]) -> bool:
             return True
 
     return False
+
 
 def snapshot_repo_to_tmp_dir(
     run_id: str | None = None,

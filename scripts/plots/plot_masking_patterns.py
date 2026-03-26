@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from src.noise_schedule.noise_schedules import EaseOutPowerNoise
 
+
 def all_nonzero_patterns_sorted(L: int):
     pats = []
     for m in range(1, 2**L):
@@ -22,11 +23,13 @@ def all_nonzero_patterns_sorted(L: int):
 
     return sorted(pats, key=sort_key)
 
+
 BASE_FONT_SIZE = 20
 AXIS_TITLE_FONT_SIZE = 22
 SUBPLOT_TITLE_FONT_SIZE = 18
 XLABEL_FONT_SIZE = 18
 TICK_FONT_SIZE = 16
+
 
 def sample_permutation_order(noise, L: int, num_samples: int = 100):
     t = torch.rand(1, L)
@@ -34,7 +37,9 @@ def sample_permutation_order(noise, L: int, num_samples: int = 100):
     to_permute = torch.ones(L).unsqueeze(0)
     for _ in tqdm(range(num_samples), desc="Sampling permutation order"):
         perm_indices = noise.sample_permutation_order(t, to_permute)
-        max_deviation = (perm_indices - torch.arange(0, noise.block_size)[None, None, :]).abs()
+        max_deviation = (
+            perm_indices - torch.arange(0, noise.block_size)[None, None, :]
+        ).abs()
         max_deviations.extend(max_deviation.flatten().tolist())
     max_deviations = torch.tensor(max_deviations)
     print("max deviation: ", max_deviations.max().item())
@@ -45,10 +50,11 @@ def sample_permutation_order(noise, L: int, num_samples: int = 100):
     fig.update_layout(
         xaxis_title="Max deviation",
         yaxis_title="Frequency",
-        title="Max deviation distribution"
+        title="Max deviation distribution",
     )
     fig.write_image(f"max_deviation_distribution_L{L}_block_size{noise.block_size}.png")
     print(f"max_deviation_distribution_L{L}_block_size{noise.block_size}.png saved")
+
 
 def simulate_pattern_probs_across_t(
     noise,
@@ -77,7 +83,9 @@ def simulate_pattern_probs_across_t(
             p = p.clamp(0, 1)
 
         mask_samples = torch.rand(masking_trials_per_t, L, device=device) < p
-        alpha_mask = (alpha_t_prime != 0.0).reshape(1, L).expand(masking_trials_per_t, L)
+        alpha_mask = (
+            (alpha_t_prime != 0.0).reshape(1, L).expand(masking_trials_per_t, L)
+        )
         num_predicted.extend((mask_samples & alpha_mask).sum(dim=-1).tolist())
 
         patterns_np = mask_samples.to(torch.int8).cpu().numpy()
@@ -93,6 +101,7 @@ def simulate_pattern_probs_across_t(
     if len(patterns_cond) == L:
         probs_cond.fill(1.0 / L)
     return patterns_cond, probs_cond, num_predicted
+
 
 def plot_pattern_probabilities(
     fig,
@@ -278,19 +287,25 @@ def plot_pattern_probabilities_multi_schedule(
     clean_x = group_left + masked_item_w + item_gap + sq_w / 2.0
 
     fig.add_annotation(
-        xref="paper", yref="paper",
-        x=mask_x, y=header_y,
+        xref="paper",
+        yref="paper",
+        x=mask_x,
+        y=header_y,
         text="■",
         showarrow=False,
-        xanchor="center", yanchor="middle",
+        xanchor="center",
+        yanchor="middle",
         font=dict(size=LEGEND_SQUARE_FS, color="rgb(51,51,51)"),
     )
     fig.add_annotation(
-        xref="paper", yref="paper",
-        x=mask_x + d_legend, y=header_y,
+        xref="paper",
+        yref="paper",
+        x=mask_x + d_legend,
+        y=header_y,
         text=masked_label,
         showarrow=False,
-        xanchor="left", yanchor="middle",
+        xanchor="left",
+        yanchor="middle",
         font=dict(size=LEGEND_LABEL_FS),
     )
 
@@ -298,45 +313,60 @@ def plot_pattern_probabilities_multi_schedule(
     dy = 0.0
 
     fig.add_annotation(
-        xref="paper", yref="paper",
-        x=clean_x, y=header_y,
+        xref="paper",
+        yref="paper",
+        x=clean_x,
+        y=header_y,
         text="■",
         showarrow=False,
-        xanchor="center", yanchor="middle",
+        xanchor="center",
+        yanchor="middle",
         font=dict(size=LEGEND_SQUARE_FS + 2, color="black"),
     )
     fig.add_annotation(
-        xref="paper", yref="paper",
-        x=clean_x + dx, y=header_y + dy,
+        xref="paper",
+        yref="paper",
+        x=clean_x + dx,
+        y=header_y + dy,
         text="■",
         showarrow=False,
-        xanchor="center", yanchor="middle",
+        xanchor="center",
+        yanchor="middle",
         font=dict(size=LEGEND_SQUARE_FS - 4, color="white"),
     )
     fig.add_annotation(
-        xref="paper", yref="paper",
-        x=clean_x + d_legend, y=header_y,
+        xref="paper",
+        yref="paper",
+        x=clean_x + d_legend,
+        y=header_y,
         text=clean_label,
         showarrow=False,
-        xanchor="left", yanchor="middle",
+        xanchor="left",
+        yanchor="middle",
         font=dict(size=LEGEND_LABEL_FS),
     )
 
     x_ar = -0.01
     fig.add_annotation(
-        xref="paper", yref="paper",
-        x=x_ar, y=header_y,
+        xref="paper",
+        yref="paper",
+        x=x_ar,
+        y=header_y,
         text="■",
         showarrow=False,
-        xanchor="center", yanchor="middle",
+        xanchor="center",
+        yanchor="middle",
         font=dict(size=LEGEND_SQUARE_FS, color="orange"),
     )
     fig.add_annotation(
-        xref="paper", yref="paper",
-        x=x_ar + d_legend, y=header_y,
+        xref="paper",
+        yref="paper",
+        x=x_ar + d_legend,
+        y=header_y,
         text="AR masking",
         showarrow=False,
-        xanchor="left", yanchor="middle",
+        xanchor="left",
+        yanchor="middle",
         font=dict(size=LEGEND_AR_FS),
     )
 
@@ -354,20 +384,31 @@ def plot_pattern_probabilities_multi_schedule(
         all_patterns.append(patterns)
         all_probs.append(probs)
         expected_inference_prediction_budget = ns.compute_inf_budget()
-        print("empirical inference prediction budget: ", np.mean(num_predicted), "+/-", np.std(num_predicted))
-        print("expected inference prediction budget: ", expected_inference_prediction_budget)
+        print(
+            "empirical inference prediction budget: ",
+            np.mean(num_predicted),
+            "+/-",
+            np.std(num_predicted),
+        )
+        print(
+            "expected inference prediction budget: ",
+            expected_inference_prediction_budget,
+        )
 
     global_ymax = max(float(p.max()) if len(p) else 1e-8 for p in all_probs)
 
     for patterns, probs, ns in zip(all_patterns, all_probs, noise_schedules):
         expected_active = max(np.round(ns.k / (ns.k + 1) * ns.b * L, 1), 1.0)
         if ns.b <= 1 / L:
-            title = f'<b>AR</b><br>C̄ = {expected_active:.1f} token(s)'
+            title = f"<b>AR</b><br>C̄ = {expected_active:.1f} token(s)"
         elif ns.b == 1.0:
-            title = f'<b>MDLM</b><br>C̄ = {expected_active:.1f} token(s)'
+            title = f"<b>MDLM</b><br>C̄ = {expected_active:.1f} token(s)"
         else:
             text_color = "green"
-            title = f'<b><span style="color:{text_color};"><i>SetDLM</i></span></b><br>C̄ = {expected_active:.1f} token(s)'
+            title = (
+                f'<b><span style="color:{text_color};"><i>SetDLM</i></span></b><br>'
+                f"C̄ = {expected_active:.1f} token(s)"
+            )
         titles.append(title)
         print(row_idx, col_idx)
         plot_pattern_probabilities(
@@ -392,7 +433,7 @@ def plot_pattern_probabilities_multi_schedule(
         yaxis_key = "yaxis" if i == 1 else f"yaxis{i}"
         x_dom0, x_dom1 = fig.layout[xaxis_key].domain
         x_center = 0.5 * (x_dom0 + x_dom1)
-        y_top = fig.layout[yaxis_key].domain[1] - 0.
+        y_top = fig.layout[yaxis_key].domain[1] - 0.0
 
         fig.add_annotation(
             text=title,
@@ -424,7 +465,9 @@ def plot_pattern_probabilities_multi_schedule(
 
     for r in range(1, nrows + 1):
         for c in range(1, ncols + 1):
-            fig.update_yaxes(showticklabels=True, tickfont=dict(size=TICK_FONT_SIZE), row=r, col=c)
+            fig.update_yaxes(
+                showticklabels=True, tickfont=dict(size=TICK_FONT_SIZE), row=r, col=c
+            )
 
     # Caption under bottom row
     fig.add_annotation(
@@ -460,15 +503,20 @@ def plot_pattern_probabilities_multi_schedule(
     )
 
     if savepath is not None:
-        if savepath.endswith('.html'):
+        if savepath.endswith(".html"):
             fig.write_html(savepath)
         else:
             try:
-                fig.write_image(savepath, width=figsize[0] * 50, height=figsize[1] * 100, scale=2)
+                fig.write_image(
+                    savepath, width=figsize[0] * 50, height=figsize[1] * 100, scale=2
+                )
             except Exception as e:
                 print(f"Warning: Could not save as image. Error: {e}")
-                print("Falling back to HTML output. Install kaleido with: pip install kaleido")
-                html_path = savepath.replace('.png', '.html').replace('.jpg', '.html')
+                print(
+                    "Falling back to HTML output. Install kaleido with: "
+                    "pip install kaleido"
+                )
+                html_path = savepath.replace(".png", ".html").replace(".jpg", ".html")
                 fig.write_html(html_path)
     print(f"Saved to {savepath}")
 

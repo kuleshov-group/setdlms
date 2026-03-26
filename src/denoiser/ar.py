@@ -1,5 +1,5 @@
 import copy
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Union
 
 import torch
 from transformers import (
@@ -10,13 +10,8 @@ from transformers import (
 )
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation.utils import GenerateOutput
-from tqdm import tqdm
-from src.denoiser.base import (
-    Denoiser,
-    DenoiserConfig,
-    DenoiserInput,
-    LossAndNllOutput,
-)
+
+from src.denoiser.base import Denoiser, DenoiserConfig, DenoiserInput, LossAndNllOutput
 
 
 class ARConfig(DenoiserConfig):
@@ -73,9 +68,8 @@ class AR(Denoiser):
             attention_mask = attention_mask[..., :-1]
         if context_mask is None:
             context_mask = torch.zeros_like(input_ids)
-        elif (
-            context_mask.sum() == 0
-            and (attention_mask is None or (attention_mask == 1).all())
+        elif context_mask.sum() == 0 and (
+            attention_mask is None or (attention_mask == 1).all()
         ):
             attention_mask = None
         else:
@@ -137,9 +131,7 @@ class AR(Denoiser):
 
         # Avoid division by zero: if count is 0, set token_nll to 0
         token_nll = torch.where(
-            count > 0,
-            batch_nll / count,
-            torch.zeros_like(batch_nll)
+            count > 0, batch_nll / count, torch.zeros_like(batch_nll)
         ).mean()
 
         return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
@@ -169,13 +161,15 @@ class AR(Denoiser):
         else:
             log_x_theta = self._forward(log_x_theta, denoiser_inputs=None)
         if getattr(generation_config, "nucleus_p", 1.0) < 1.0:
-            log_x_theta = self._nucleus_sample(log_x_theta.exp(), p=getattr(generation_config, "nucleus_p", 1.0)).log()
-        y = self._sample_categorical(log_x_theta.exp(), do_sample=getattr(generation_config, "do_sample", False))
+            log_x_theta = self._nucleus_sample(
+                log_x_theta.exp(), p=getattr(generation_config, "nucleus_p", 1.0)
+            ).log()
+        y = self._sample_categorical(
+            log_x_theta.exp(), do_sample=getattr(generation_config, "do_sample", False)
+        )
         return y
 
-    def _crop_kv_cache_left(
-        self, past_key_values: Any, drop: int
-    ) -> Any:
+    def _crop_kv_cache_left(self, past_key_values: Any, drop: int) -> Any:
         """
         Drop `drop` tokens from the *left/oldest* side of the KV cache.
         Works with common DynamicCache-like implementations that store per-layer
@@ -185,7 +179,9 @@ class AR(Denoiser):
         if drop <= 0 or past_key_values is None:
             return past_key_values
 
-        assert hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"), "DynamicCache-like structure not found"
+        assert hasattr(past_key_values, "key_cache") and hasattr(
+            past_key_values, "value_cache"
+        ), "DynamicCache-like structure not found"
         key_cache = getattr(past_key_values, "key_cache")
         value_cache = getattr(past_key_values, "value_cache")
         for i in range(len(past_key_values)):
@@ -223,8 +219,6 @@ class AR(Denoiser):
                 stopping_criteria=stopping_criteria,
                 max_length=max_length,
                 max_new_tokens=max_new_tokens,
-                # TODO: Can we pass this in `generation_config`?
-                # eos_token_id=None,  # Uncomment for t-put runs; prevents stopping at EOS
                 **kwargs,
             )
             return outputs
@@ -233,20 +227,41 @@ class AR(Denoiser):
         input_len = inputs.shape[-1]
         device = inputs.device
         cache = {}
-        all_position_ids = torch.arange(input_len + num_pred_tokens).to(device).unsqueeze(0)
+        all_position_ids = (
+            torch.arange(input_len + num_pred_tokens).to(device).unsqueeze(0)
+        )
 
         if input_len == 0:
             x = torch.full(
                 (batch_size, num_pred_tokens + 1),
                 fill_value=tokenizer.mask_token_id,
                 dtype=torch.long,
-                device=device)
+                device=device,
+            )
             x[:, 0] = tokenizer.bos_token_id
             input_len = 0
         else:
-            x = torch.cat((inputs, torch.full((batch_size, num_pred_tokens), fill_value=tokenizer.mask_token_id, dtype=torch.long, device=device)), dim=-1)
+            x = torch.cat(
+                (
+                    inputs,
+                    torch.full(
+                        (batch_size, num_pred_tokens),
+                        fill_value=tokenizer.mask_token_id,
+                        dtype=torch.long,
+                        device=device,
+                    ),
+                ),
+                dim=-1,
+            )
             # cache
-            cache_inputs = self._prepare_inputs_inference(inputs, None, None, None, cache, position_ids=all_position_ids[:, :input_len])
+            cache_inputs = self._prepare_inputs_inference(
+                inputs,
+                None,
+                None,
+                None,
+                cache,
+                position_ids=all_position_ids[:, :input_len],
+            )
             backbone_output = self._backbone_forward(
                 cache_inputs,
             )
@@ -255,11 +270,20 @@ class AR(Denoiser):
             else:
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
-            x[:, input_len] = self._generate_unconditional(generation_config, x, logits[:, -1], logits_processor)
+            x[:, input_len] = self._generate_unconditional(
+                generation_config, x, logits[:, -1], logits_processor
+            )
             cache["past_key_values"] = backbone_output["past_key_values"]
-        
+
         for i in range(input_len, x.shape[-1] - 1):
-            denoiser_inputs = self._prepare_inputs_inference(x[:, i].unsqueeze(-1), None, None, None, cache, position_ids=all_position_ids[:, i:i+1])
+            denoiser_inputs = self._prepare_inputs_inference(
+                x[:, i].unsqueeze(-1),
+                None,
+                None,
+                None,
+                cache,
+                position_ids=all_position_ids[:, i : i + 1],
+            )
             backbone_output = self._backbone_forward(
                 denoiser_inputs,
             )
@@ -269,15 +293,17 @@ class AR(Denoiser):
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
             cache["past_key_values"] = backbone_output["past_key_values"]
-            x[:, i + 1] = self._generate_unconditional(generation_config, x, logits[:, -1], logits_processor)
+            x[:, i + 1] = self._generate_unconditional(
+                generation_config, x, logits[:, -1], logits_processor
+            )
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
-                    input_ids=x[:, :i+2],
+                    input_ids=x[:, : i + 2],
                     scores=None,
                 )
                 if torch.any(is_done):
-                    x = x[:, :i+2]
+                    x = x[:, : i + 2]
                     break
-                    
+
         # Decode output
         return x

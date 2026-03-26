@@ -7,7 +7,6 @@ ipdb
 lm-eval==0.4.9
 magic-wormhole
 mosaicml==0.32.1
-mosaicml-streaming==0.13.0
 pre-commit
 ruff
 sentencepiece==0.2.1

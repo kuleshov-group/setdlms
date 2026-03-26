@@ -1,36 +1,34 @@
-from __future__ import annotations
-
 """
 This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 """
 
+from __future__ import annotations
+
 import json
 import os
-import math
 import re
 import sys
-from typing import Any, Dict, List, Tuple
 from datetime import timedelta
-from accelerate.utils import InitProcessGroupKwargs
+from typing import Any, Dict, List, Optional, Tuple
+
 import accelerate
 import hydra
+import imageio.v2 as imageio
 import numpy as np
 import torch
 import torch.distributed as dist
+from accelerate.utils import InitProcessGroupKwargs
 from lm_eval.api.model import LM
 from lm_eval.loggers.evaluation_tracker import EvaluationTracker
 from lm_eval.utils import make_table
+from matplotlib import font_manager
 from omegaconf import DictConfig
-from tqdm import tqdm
-import imageio.v2 as imageio
-from transformers import (
-    AutoModelForCausalLM,
-    AutoModelForMaskedLM,
-    PreTrainedTokenizer,
-)
-from transformers.modeling_outputs import ModelOutput
 
-from datasets import Dataset
+# visualize the intermediate samples, create a gif
+from PIL import Image, ImageDraw, ImageFont
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoModelForMaskedLM, PreTrainedTokenizer
+
 from scripts.utils import (
     load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
@@ -38,11 +36,6 @@ from scripts.utils import (
     set_seed,
 )
 from src.utils import fsspec_exists, fsspec_mkdirs
-
-# visualize the intermediate samples, create a gif            
-from PIL import Image, ImageDraw, ImageFont
-from matplotlib import font_manager
-from typing import List, Tuple, Optional, Callable
 
 
 def _find_monospace_font_path() -> str:
@@ -60,7 +53,9 @@ def _find_monospace_font_path() -> str:
 
 def _to_gif_palette(im: Image.Image) -> Image.Image:
     # Adaptive 256-color palette + dithering improves GIF text/box quality substantially.
-    return im.convert("P", palette=Image.ADAPTIVE, colors=256, dither=Image.FLOYDSTEINBERG)
+    return im.convert(
+        "P", palette=Image.ADAPTIVE, colors=256, dither=Image.FLOYDSTEINBERG
+    )
 
 
 def wrap_by_pixels(
@@ -78,7 +73,7 @@ def wrap_by_pixels(
     global_idx = 0
 
     for p_i, para in enumerate(paragraphs):
-        has_nl_after_para = (p_i < len(paragraphs) - 1)
+        has_nl_after_para = p_i < len(paragraphs) - 1
         if para == "":
             lines_with_idx.append(("", global_idx, has_nl_after_para))
             if has_nl_after_para:
@@ -109,20 +104,19 @@ def wrap_by_pixels(
 
     return lines_with_idx
 
+
 def strings_to_gif_oldstyle(
     tokenizer,
-    tokens,                         # iterable of sequences of token ids, one per frame
-    highlight_token_indices=None,    # per-frame token indices to highlight (can be non-contiguous)
+    tokens,  # iterable of sequences of token ids, one per frame
+    highlight_token_indices=None,  # per-frame token indices to highlight (can be non-contiguous)
     out_path="strings.gif",
     size=(400, 2200),
-
     # Style knobs
     scale=2,
     downscale_output=True,
     padding=5,
     line_spacing=10,
     font_size=25,
-
     # Box styling
     box_fill=(232, 210, 109),
     underlay_fill=(255, 255, 255),  # NEW: white underlay fill (same as background)
@@ -138,10 +132,8 @@ def strings_to_gif_oldstyle(
     # - token_box_gap_px: adds visual "air" between adjacent token boxes by shrinking each side
     token_box_inset_px=1,
     token_box_gap_px=2,
-
     # Mask handling
     mask_token="<|fim_middle|>",
-
     # Timing
     frame_ms=100,
     loop=0,
@@ -174,7 +166,6 @@ def strings_to_gif_oldstyle(
     )
 
     bg_color = (255, 255, 255)
-
 
     # Resolve mask token id (may be None if tokenizer doesn't know it)
     try:
@@ -265,10 +256,12 @@ def strings_to_gif_oldstyle(
         line_text: str,
         line_char_start: int,
         invisible_spans: List[Tuple[int, int]],
-        highlight_bg_spans_global: Optional[List[Tuple[int, int, Tuple[int, int, int]]]],
+        highlight_bg_spans_global: Optional[
+            List[Tuple[int, int, Tuple[int, int, int]]]
+        ],
         font: ImageFont.ImageFont,
         fg,
-        bg_default,        # usually bg_color (white)
+        bg_default,  # usually bg_color (white)
     ):
         if not line_text:
             return
@@ -370,7 +363,9 @@ def strings_to_gif_oldstyle(
         """
         return any(a <= idx < b for (a, b) in spans)
 
-    def _should_box_newline(text: str, spans: List[Tuple[int, int]], nl_idx: int) -> bool:
+    def _should_box_newline(
+        text: str, spans: List[Tuple[int, int]], nl_idx: int
+    ) -> bool:
         """
         Only draw a newline box when the highlighted token is *a newline token* at that point,
         not when the newline is merely a trailing character of a token that also contains a
@@ -456,7 +451,6 @@ def strings_to_gif_oldstyle(
     # Baseline-consistent box placement:
     # yy is baseline. Text occupies [yy-ascent, yy+descent]. Box is padded and shifted down by box_offset.
     ascent, descent = font.getmetrics()
-    box_offset = int(0.35 * ascent)  # increase => boxes move further down
 
     # NEW: enforce a minimum highlight-box height so punctuation/short glyph lines
     # don't produce "squashed" boxes.
@@ -509,7 +503,7 @@ def strings_to_gif_oldstyle(
         if n <= 1:
             return 255
         a0 = 255  # start: no transparency
-        a1 = 25   # end: very transparent
+        a1 = 25  # end: very transparent
         t = float(k) / float(n - 1)
         return int(round(a0 * (1.0 - t) + a1 * t))
 
@@ -523,7 +517,9 @@ def strings_to_gif_oldstyle(
         white = Image.new("RGBA", im_rgba.size, (255, 255, 255, 255))
         return Image.alpha_composite(white, im_rgba).convert("RGB")
 
-    def _blend_over_white(rgb: Tuple[int, int, int], alpha: int) -> Tuple[int, int, int]:
+    def _blend_over_white(
+        rgb: Tuple[int, int, int], alpha: int
+    ) -> Tuple[int, int, int]:
         """
         Return the effective RGB when an RGBA fill is composited over a white background.
         This is what the viewer actually sees after we later flatten RGBA->RGB.
@@ -570,7 +566,9 @@ def strings_to_gif_oldstyle(
         # - "first mask index" := first position where the token id equals `mask_id`
         # - "highlight_token_indices[0]" := the first highlighted token index for this frame
         #   (i.e., frame_highlight[0])
-        underlay_token_span: Optional[Tuple[int, int]] = None  # [start_tok, end_tok_exclusive)
+        underlay_token_span: Optional[Tuple[int, int]] = (
+            None  # [start_tok, end_tok_exclusive)
+        )
         if not block_diffusion:
             first_mask_idx: Optional[int] = None
             if mask_id is not None:
@@ -596,7 +594,7 @@ def strings_to_gif_oldstyle(
 
         # Build RAW text deltas + RAW per-token char spans
         pieces: List[str] = []
-        invisible_spans: List[Tuple[int, int]] = []        # RAW spans to render invisible
+        invisible_spans: List[Tuple[int, int]] = []  # RAW spans to render invisible
         token_char_ranges_raw: List[Tuple[int, int]] = []  # RAW spans per token
 
         pos = 0
@@ -622,7 +620,7 @@ def strings_to_gif_oldstyle(
 
             # Delta: what new text appeared by adding this token?
             if decoded.startswith(prev_decoded):
-                txt = decoded[len(prev_decoded):]
+                txt = decoded[len(prev_decoded) :]
             else:
                 k = 0
                 m = min(len(decoded), len(prev_decoded))
@@ -666,7 +664,9 @@ def strings_to_gif_oldstyle(
 
         # Build per-token spans to highlight (VISIBLE spans; DO NOT MERGE)
         # Store token index as well so we can apply per-token alpha in non-block diffusion.
-        highlight_token_spans: Optional[List[Tuple[int, int, int]]] = None  # (tok_idx, a, b)
+        highlight_token_spans: Optional[List[Tuple[int, int, int]]] = (
+            None  # (tok_idx, a, b)
+        )
         if block_diffusion:
             if frame_highlight is not None:
                 spans3: List[Tuple[int, int, int]] = []
@@ -687,19 +687,20 @@ def strings_to_gif_oldstyle(
                 highlight_token_spans = spans3
 
         # NEW: map the underlay token-span (token indices) to a single char-span (contiguous)
-        underlay_char_span: Optional[Tuple[int, int]] = None
         if underlay_token_span is not None:
             start_tok, end_tok_excl = underlay_token_span
             # clamp to available token ranges
             start_tok = (
-                max(0, min(start_tok, len(token_char_ranges) - 1)) if token_char_ranges else 0
+                max(0, min(start_tok, len(token_char_ranges) - 1))
+                if token_char_ranges
+                else 0
             )
             end_tok_excl = max(0, min(end_tok_excl, len(token_char_ranges)))
             if token_char_ranges and end_tok_excl > start_tok:
                 a = token_char_ranges[start_tok][0]
                 b = token_char_ranges[end_tok_excl - 1][1]
                 if b > a:
-                    underlay_char_span = (a, b)
+                    pass
 
         # Use RGBA so non-block diffusion highlight boxes can have alpha gradients.
         im = Image.new("RGBA", (render_W, render_H), color=bg_color + (255,))
@@ -798,7 +799,7 @@ def strings_to_gif_oldstyle(
                             draw,
                             lb,
                             fill=fillc,
-                            outline=None,   # no border on highlighted token boxes
+                            outline=None,  # no border on highlighted token boxes
                             width=0,
                             radius=int(corner_radius * s),
                         )
@@ -813,7 +814,9 @@ def strings_to_gif_oldstyle(
                         # If a single highlighted token decodes to multiple consecutive newlines
                         # (e.g. "\n\n"), avoid boxing the earlier newline(s) at the end of the
                         # previous line; instead only box the newline that creates the empty line.
-                        if _is_consecutive_newline_in_same_span(s_full, spans_ab, nl_idx):
+                        if _is_consecutive_newline_in_same_span(
+                            s_full, spans_ab, nl_idx
+                        ):
                             pass
                         else:
                             # place right after the last visible char; empty line anchors at x0
@@ -850,7 +853,9 @@ def strings_to_gif_oldstyle(
             if line:
                 # Build per-char highlight background spans so invisible text can match the
                 # actual box color behind it (including alpha-composited gradients).
-                highlight_bg_spans: Optional[List[Tuple[int, int, Tuple[int, int, int]]]] = None
+                highlight_bg_spans: Optional[
+                    List[Tuple[int, int, Tuple[int, int, int]]]
+                ] = None
                 if highlight_token_spans is None:
                     # Whole-line highlight (back-compat): treat entire visible line as "boxed".
                     # If the line is empty, there is nothing to draw anyway.
@@ -860,7 +865,9 @@ def strings_to_gif_oldstyle(
                     for tok_idx, a, b in highlight_token_spans:
                         # Determine the effective RGB behind text for this token span.
                         if (not block_diffusion) and (tok_idx in gradient_tok_to_alpha):
-                            eff = _blend_over_white(box_fill, gradient_tok_to_alpha[tok_idx])
+                            eff = _blend_over_white(
+                                box_fill, gradient_tok_to_alpha[tok_idx]
+                            )
                         else:
                             # Opaque box fill
                             eff = box_fill
@@ -971,11 +978,15 @@ class LMEvalHarnessModel(LM):
         # Handle string input (JSON string) - parse it to dict
         if isinstance(model_config_overrides, str):
             import json
+
             model_config_overrides = json.loads(model_config_overrides)
         # Convert to plain dict if it's a DictConfig to ensure proper merging
         if isinstance(model_config_overrides, DictConfig):
             from omegaconf import OmegaConf
-            model_config_overrides = OmegaConf.to_container(model_config_overrides, resolve=True)
+
+            model_config_overrides = OmegaConf.to_container(
+                model_config_overrides, resolve=True
+            )
         if fsspec_exists(os.path.join(pretrained_model_name_or_path, "config.yaml")):
             model = load_model_from_ckpt_dir_path(
                 path_to_ckpt_dir=pretrained_model_name_or_path,
@@ -985,19 +996,22 @@ class LMEvalHarnessModel(LM):
                 **model_config_overrides,
             )
         else:
+            pretrained_kwargs = {
+                "trust_remote_code": True,
+                "revision": pretrained_model_revision,
+            }
+            hf_token = os.environ.get("HF_TOKEN")
+            if hf_token is not None:
+                pretrained_kwargs["token"] = hf_token
             try:
                 model = AutoModelForCausalLM.from_pretrained(
                     pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    revision=pretrained_model_revision,
-                    token="HF_TOKEN_REMOVED",
+                    **pretrained_kwargs,
                 )
-            except:  # Model not compatible with CausalLM
+            except Exception:  # Model not compatible with CausalLM
                 model = AutoModelForMaskedLM.from_pretrained(
                     pretrained_model_name_or_path,
-                    trust_remote_code=True,
-                    revision=pretrained_model_revision,
-                    token="HF_TOKEN_REMOVED",
+                    **pretrained_kwargs,
                 )
         self.model = model.to(self.device)
         self.model.eval()
@@ -1038,7 +1052,7 @@ class LMEvalHarnessModel(LM):
         def _tokenize(
             e,
             prefix_text: str | None = (
-                f"Please reason step by step, and put your "
+                "Please reason step by step, and put your "
                 + "final answer within $\\boxed{}$. "
             ),
         ):
@@ -1083,10 +1097,10 @@ class LMEvalHarnessModel(LM):
             inject_context_mask=True,
             tokenizer=self.tokenizer,
             token_to_split="<|im_start|>",
-            split_offset=2
+            split_offset=2,
         )
         ds = ds.select(range(400, 401))
-        
+
         self.throughput_samples = len(ds)
         tputs = []
 
@@ -1095,14 +1109,14 @@ class LMEvalHarnessModel(LM):
         ):
             full_text = self.tokenizer.decode(elem["input_ids"])
             target_text = full_text.split("<|im_start|>assistant\n")[1]
-            prefix_text = full_text.split("<|im_start|>assistant\n")[0] + "<|im_start|>assistant\n"
+            prefix_text = (
+                full_text.split("<|im_start|>assistant\n")[0]
+                + "<|im_start|>assistant\n"
+            )
             elem["prefix"] = prefix_text
             elem["target"] = target_text
             elem = _tokenize(elem)
-            if (
-                self.throughput_run
-                and i >= self.throughput_samples
-            ):
+            if self.throughput_run and i >= self.throughput_samples:
                 tputs_path = (
                     f"{self.generated_samples_output_path}/throughput-rank{self.rank}"
                 )
@@ -1145,11 +1159,11 @@ class LMEvalHarnessModel(LM):
             # for intm_window_offset in generation_outputs.intermediate_window_offsets:
             #     new_intermediate_window_offsets.append(intm_window_offset[intm_window_offset < last_index_of_box - input_offset])
             # generation_outputs.intermediate_window_offsets = new_intermediate_window_offsets
-            intm_samples = generation_outputs.intermediate_samples
-            intm_window_offsets = generation_outputs.intermediate_window_offsets
 
             sample = generation_outputs.sequences
-            import ipdb ; ipdb.set_trace()
+            import ipdb
+
+            ipdb.set_trace()
             end_event.record()
             torch.cuda.synchronize()
             elapsed_time_s = start_event.elapsed_time(end_event) / 1000
@@ -1215,6 +1229,7 @@ def main(cfg: DictConfig) -> None:
             f.write(make_table(results))
         if "groups" in results:
             print(make_table(results, "groups"))
+
 
 if __name__ == "__main__":
     register_useful_resolvers()

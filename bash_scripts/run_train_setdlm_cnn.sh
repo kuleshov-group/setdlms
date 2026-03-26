@@ -11,8 +11,7 @@ HIDDEN_SIZE=256
 INTERMEDIATE_SIZE=768
 N_LAYERS=28
 
-DESIRED_BLOCK_SIZE=4
-MAX_BLOCK_SIZE=768
+DESIRED_BLOCK_SIZE=16
 
 # Hyperparameters
 LR=3e-4
@@ -21,7 +20,7 @@ BATCH_SIZE=128
 MAX_DURATION="500000ba"
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
-TAG="aoarm_tgt${DESIRED_BLOCK_SIZE}_len768_v1"
+TAG="setdlm_tgt${DESIRED_BLOCK_SIZE}_len768_v1"
 LAYERS="layers${N_LAYERS}"
 RUN_NAME=cnn_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_${LAYERS}_hidden${HIDDEN_SIZE}_inter${INTERMEDIATE_SIZE}_${TAG}
 
@@ -46,7 +45,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.trainer.save_num_checkpoints_to_keep=1 \
   composer/lr_scheduler=constant_with_warmup \
   composer.lr_scheduler.t_warmup=${WARMUP_DURATION} \
-  model=aoarm_efficient \
+  model=setdlm \
   model.config.attn_backend="sdpa" \
   training.compile_backbone=true \
   model.config.length=768 \
@@ -66,8 +65,6 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.loggers.name=${RUN_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
-  noise@model.config.noise_config=power \
+  noise@model.config.noise_config=staggered \
   model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
-  model.config.noise_config.max_block_size=${MAX_BLOCK_SIZE} \
-  model.config.noise_config.length=768 \
-  model.config.noise_config.plot_schedule=false
+  model.config.noise_config.length=768

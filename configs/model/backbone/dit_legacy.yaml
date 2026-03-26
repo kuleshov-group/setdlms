@@ -11,5 +11,4 @@ tie_word_embeddings: true
 attn_backend: sdpa
 vocab_size: -1
 block_size: ${block_size}
-norm_type: layernorm  # Options: 'layernorm' or 'rmsnorm'
 pretrained_model_name_or_path: ${pretrained_model_name_or_path}

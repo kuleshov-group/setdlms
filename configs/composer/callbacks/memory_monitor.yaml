@@ -1,2 +1,0 @@
-memory_monitor:
-  _target_: composer.callbacks.MemoryMonitor

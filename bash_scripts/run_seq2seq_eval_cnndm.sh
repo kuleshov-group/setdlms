@@ -5,21 +5,21 @@ source setup_env.sh
 # TODO: Uncomment a model and run
 
 # setdlm s <= 8
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block768_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_len768_v1"
-BLOCK_SIZE=768
-MAX_WINDOW_SIZE=4
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=false
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block768_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt4_len768_v1"
+# BLOCK_SIZE=768
+# MAX_WINDOW_SIZE=4
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
 
 # setdlm s <= 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_v3"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block768_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt8_len768_v1"
 # BLOCK_SIZE=768
 # MAX_WINDOW_SIZE=8
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
 # setdlm s <= 32
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block1024_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len1k_v2"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block768_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len768_v1"
 # BLOCK_SIZE=768
 # MAX_WINDOW_SIZE=16
 # KV_CACHING=true
@@ -36,7 +36,8 @@ ALIGN_INPUTS_TO_BLOCKS=false
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_mdlm_len768_v1"
 # BLOCK_SIZE=32
 # KV_CACHING=false
-# ALIGN_INPUTS_TO_BLOCKS=false
+# ALIGN_INPUTS_TO_BLOCKS=true
+# MAX_WINDOW_SIZE=32
 
 # bd3lm s = 4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block4_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len768_v1"
@@ -46,13 +47,13 @@ ALIGN_INPUTS_TO_BLOCKS=false
 # MAX_WINDOW_SIZE=4
 
 # bd3lm s = 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block8_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
-# BLOCK_SIZE=8
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=true
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block8_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len768_v1"
+BLOCK_SIZE=8
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=true
 
 # bd3lm s = 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block16_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len1k_v1"
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/cnn_block16_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_bd3lm_len768_v1"
 # BLOCK_SIZE=16
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=true
@@ -126,5 +127,4 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation/stopping_criteria@stopping_criteria_list='[cnndm_stop_string_criteria]' \
   generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor,exponential_decay_length_penalty]' \
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY} \
-  logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]" \
-  generation_config.ar_caching=true
+  logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]"
