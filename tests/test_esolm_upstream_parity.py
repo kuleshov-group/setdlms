@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
+from src.backbone.automodel import AutoModelFromPreTrained
 from src.backbone.dit import DIT, EmbeddingLayer
 from src.denoiser.base import DenoiserInput
 from src.denoiser.diffusion import EsoLM, SetDiffusionGenerationConfig
@@ -147,6 +148,57 @@ class DummyOutputLayer(nn.Module):
         return logits.expand(batch_size, -1, -1).clone()
 
 
+class DummyCache:
+    def __init__(self):
+        self.length = 0
+        self.crop_calls: list[int] = []
+
+    def crop(self, keep_length: int):
+        self.crop_calls.append(keep_length)
+        self.length = keep_length
+
+
+class DummyHFModel(nn.Module):
+    def __init__(self, vocab_size: int = 11):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.calls: list[dict[str, object]] = []
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        use_cache=False,
+        **kwargs,
+    ):
+        del kwargs
+        cache = past_key_values if past_key_values is not None else DummyCache()
+        if use_cache:
+            cache.length += input_ids.shape[1]
+        logits = torch.full(
+            (input_ids.shape[0], input_ids.shape[1], self.vocab_size),
+            -100.0,
+            dtype=torch.float32,
+        )
+        if position_ids is None:
+            position_ids = torch.arange(input_ids.shape[1])[None, :].expand_as(input_ids)
+        logits.scatter_(-1, (position_ids % self.vocab_size).unsqueeze(-1), 0.0)
+        self.calls.append(
+            {
+                "input_ids": input_ids.clone(),
+                "attention_mask": None
+                if attention_mask is None
+                else attention_mask.clone(),
+                "position_ids": None if position_ids is None else position_ids.clone(),
+                "use_cache": use_cache,
+                "cache_length": cache.length,
+            }
+        )
+        return CausalLMOutputWithPast(logits=logits, past_key_values=cache)
+
+
 def _make_recording_dit(vocab_size: int = 11) -> tuple[DIT, RecordingBlock]:
     backbone = object.__new__(DIT)
     nn.Module.__init__(backbone)
@@ -281,6 +333,81 @@ class EsoLMUpstreamParityTests(unittest.TestCase):
             ]
         )
         self.assertTrue(torch.equal(prefix_mask, expected_prefix))
+
+    def test_hf_backbone_kwargs_use_dense_masks_and_sorted_positions(self):
+        model = _make_bare_esolm(
+            alpha_0=0.8,
+            length=4,
+            diffusion_shuffle=False,
+            sequential_shuffle=False,
+        )
+
+        diffusion_inputs = DenoiserInput(
+            xt=torch.tensor([[1, model.mask_token_id, 3, model.mask_token_id]]),
+            x0=torch.tensor([[1, 2, 3, 4]]),
+            attention_mask=torch.ones(1, 4, dtype=torch.long),
+            backbone_kwargs={
+                "sort_index": torch.tensor([[2, 0, 3, 1]]),
+                "diffusion_attn_mode": "causal",
+                "mask_token_id": model.mask_token_id,
+                "sigma": torch.zeros(1),
+            },
+        )
+        diffusion_kwargs, diffusion_output_length = model._build_hf_esolm_backbone_kwargs(
+            denoiser_inputs=diffusion_inputs,
+            merged_kwargs=dict(diffusion_inputs.backbone_kwargs),
+        )
+        expected_diffusion_mask = model._build_diffusion_attention_mask(
+            attention_mask=diffusion_inputs.attention_mask,
+            cutoffs=torch.sum(diffusion_inputs.xt != model.mask_token_id, dim=1),
+            attn_mode="causal",
+        )
+        self.assertIsNone(diffusion_output_length)
+        self.assertTrue(
+            torch.equal(diffusion_kwargs["position_ids"], diffusion_inputs.backbone_kwargs["sort_index"])
+        )
+        self.assertTrue(torch.equal(diffusion_kwargs["attention_mask"], expected_diffusion_mask))
+        self.assertNotIn("sigma", diffusion_kwargs)
+
+        sequential_inputs = DenoiserInput(
+            xt=torch.tensor([[1, model.mask_token_id, 3, 4, 1, 2, 3, 4]]),
+            x0=torch.tensor([[1, 2, 3, 4]]),
+            attention_mask=torch.ones(1, 8, dtype=torch.long),
+            backbone_kwargs={
+                "sort_index": torch.tensor([[2, 0, 3, 1]]),
+                "sequential_input": True,
+                "sequential_attn_mode": "causal",
+                "mask_token_id": model.mask_token_id,
+                "sigma": torch.zeros(1),
+            },
+        )
+        sequential_kwargs, sequential_output_length = model._build_hf_esolm_backbone_kwargs(
+            denoiser_inputs=sequential_inputs,
+            merged_kwargs=dict(sequential_inputs.backbone_kwargs),
+        )
+        expected_sequential_mask = model._build_sequential_attention_mask(
+            attention_mask=sequential_inputs.attention_mask,
+            xt=sequential_inputs.xt,
+            mask_token_id=model.mask_token_id,
+            attn_mode="causal",
+        )
+        self.assertEqual(sequential_output_length, 4)
+        self.assertTrue(
+            torch.equal(
+                sequential_kwargs["position_ids"],
+                torch.cat(
+                    [
+                        sequential_inputs.backbone_kwargs["sort_index"],
+                        sequential_inputs.backbone_kwargs["sort_index"],
+                    ],
+                    dim=1,
+                ),
+            )
+        )
+        self.assertTrue(
+            torch.equal(sequential_kwargs["attention_mask"], expected_sequential_mask)
+        )
+        self.assertNotIn("sigma", sequential_kwargs)
 
     def test_per_token_loss_weights_match_upstream(self):
         model = _make_bare_esolm(loss_type="elbo")
@@ -489,6 +616,80 @@ class EsoLMUpstreamParityTests(unittest.TestCase):
         )
         with self.assertRaises(NotImplementedError):
             model.generate_samples(num_samples=1, generation_config=generation_config)
+
+    def test_automodel_native_esolm_forward_builds_sorted_positions_and_dense_masks(self):
+        backbone = object.__new__(AutoModelFromPreTrained)
+        nn.Module.__init__(backbone)
+        backbone.use_causal_mask = False
+        backbone.is_esolm_backbone = True
+        backbone._esolm_past_key_values = None
+        backbone.model = DummyHFModel(vocab_size=16)
+
+        input_ids = torch.tensor([[7, 7, 1, 7, 4, 5, 6, 8]])
+        attention_mask = torch.ones_like(input_ids)
+        sort_idx = torch.tensor([[2, 0, 3, 1]])
+
+        output = backbone.forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            sort_index=sort_idx,
+            sequential_input=True,
+            sequential_attn_mode="causal",
+            mask_token_id=7,
+            sigma=torch.zeros(1),
+        )
+
+        self.assertEqual(output.logits.shape, (1, 4, 16))
+        call = backbone.model.calls[0]
+        self.assertEqual(tuple(call["position_ids"].shape), (1, 8))
+        self.assertTrue(
+            torch.equal(
+                call["position_ids"],
+                torch.cat([sort_idx, sort_idx], dim=1),
+            )
+        )
+        self.assertEqual(tuple(call["attention_mask"].shape), (1, 1, 8, 8))
+
+    def test_automodel_forward_sample_replays_last_clean_block_before_sampling(self):
+        backbone = object.__new__(AutoModelFromPreTrained)
+        nn.Module.__init__(backbone)
+        backbone.use_causal_mask = False
+        backbone.is_esolm_backbone = True
+        backbone._esolm_past_key_values = None
+        backbone.model = DummyHFModel(vocab_size=16)
+
+        zt = torch.tensor([[9, 9, 9, 9]])
+        sort_idx = torch.tensor([[2, 0, 3, 1]])
+
+        step1 = backbone.forward_sample(
+            zt=zt,
+            sort_idx=sort_idx,
+            last_k_start=0,
+            curr_k_start=0,
+            curr_k_end=1,
+        )
+        self.assertEqual(step1.logits.shape, (1, 1, 16))
+
+        step2 = backbone.forward_sample(
+            zt=zt,
+            sort_idx=sort_idx,
+            last_k_start=0,
+            curr_k_start=1,
+            curr_k_end=3,
+        )
+        self.assertEqual(step2.logits.shape, (1, 2, 16))
+        self.assertEqual(tuple(backbone.model.calls[1]["input_ids"].shape), (1, 3))
+
+        step3 = backbone.forward_sample(
+            zt=zt,
+            sort_idx=sort_idx,
+            last_k_start=1,
+            curr_k_start=3,
+            curr_k_end=4,
+        )
+        self.assertEqual(step3.logits.shape, (1, 1, 16))
+        self.assertEqual(tuple(backbone.model.calls[2]["input_ids"].shape), (1, 3))
+        self.assertEqual(backbone._esolm_past_key_values.crop_calls[-1], 1)
 
     def test_forward_supports_num_iw_orders(self):
         model = _make_bare_esolm(alpha_0=0.5, length=4)

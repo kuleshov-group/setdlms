@@ -2,13 +2,14 @@ defaults:
   - esolm@_here_
   - _self_
 
-# Official alpha0=1 training recipe layered on top of the upstream algo defaults.
-# Keep these settings here or in launcher overrides rather than in `esolm.yaml`.
+# Official LM1B alpha0=1 training recipe layered on top of the upstream algo
+# defaults. Keep these settings here or in launcher overrides rather than in
+# `esolm.yaml`.
 config:
   alpha_0: 1.0
   batch_split: 1.0
   diffusion_shuffle: true
   diffusion_attn_mode: "causal"
-  sequential_shuffle: false
+  sequential_shuffle: true
   sequential_attn_mode: "causal"
-  loss_type: "low_var"
+  loss_type: "elbo"

@@ -891,8 +891,10 @@ class DITLegacy(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         block_size: int,
         attn_backend: str,
         pretrained_model_name_or_path: str,
+        is_esolm_backbone: bool = False,
     ):
         super().__init__()
+        self.is_esolm_backbone = is_esolm_backbone
         self.causal = causal_attention
         self.n = length
         self.adaLN = adaln

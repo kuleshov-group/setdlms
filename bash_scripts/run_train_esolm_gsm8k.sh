@@ -10,9 +10,8 @@ source setup_env.sh
 # Official Eso-LMs tunables borrowed from:
 #   s-sahoo/Eso-LMs/scripts/esolm/train_owt_esolmb_alpha0_1.sh
 #   https://raw.githubusercontent.com/s-sahoo/Eso-LMs/main/scripts/esolm/train_owt_esolmb_alpha0_1.sh
-BLOCK_SIZE=1024
-EVAL_BLOCK_SIZE=1024
-N_LAYERS=1
+SEQ_LEN=1024
+N_LAYERS=28
 TOP_LAYERS=false
 REINIT_MODEL=false
 
@@ -65,16 +64,42 @@ NUM_SHOT=0
 
 UPSTREAM_LOSS_TYPE="low_var"
 
-TAG="esolm_a${ALPHA_0}_bsplit${BATCH_SPLIT}_dshuf${DIFFUSION_SHUFFLE}_dattn${DIFFUSION_ATTN_MODE}_sshuf${SEQUENTIAL_SHUFFLE}_sattn${SEQUENTIAL_ATTN_MODE}_${UPSTREAM_LOSS_TYPE}_distill_v1"
+TAG="eso_a${ALPHA_0}_bsplit${BATCH_SPLIT}_dshuf${DIFFUSION_SHUFFLE}_dattn${DIFFUSION_ATTN_MODE}_sshuf${SEQUENTIAL_SHUFFLE}_sattn${SEQUENTIAL_ATTN_MODE}_${UPSTREAM_LOSS_TYPE}"
+if [ "${DIFFUSION_SHUFFLE}" == "true" ]; then
+  WANDB_DIFFUSION_SHUFFLE="1"
+else
+  WANDB_DIFFUSION_SHUFFLE="0"
+fi
+if [ "${SEQUENTIAL_SHUFFLE}" == "true" ]; then
+  WANDB_SEQUENTIAL_SHUFFLE="1"
+else
+  WANDB_SEQUENTIAL_SHUFFLE="0"
+fi
+if [ "${DIFFUSION_ATTN_MODE}" == "causal" ]; then
+  WANDB_DIFFUSION_ATTN="c"
+else
+  WANDB_DIFFUSION_ATTN="${DIFFUSION_ATTN_MODE}"
+fi
+if [ "${SEQUENTIAL_ATTN_MODE}" == "causal" ]; then
+  WANDB_SEQUENTIAL_ATTN="c"
+else
+  WANDB_SEQUENTIAL_ATTN="${SEQUENTIAL_ATTN_MODE}"
+fi
+WANDB_TAG="a${ALPHA_0}_b${BATCH_SPLIT}_d${WANDB_DIFFUSION_SHUFFLE}${WANDB_DIFFUSION_ATTN}_s${WANDB_SEQUENTIAL_SHUFFLE}${WANDB_SEQUENTIAL_ATTN}"
 if [ "${TOP_LAYERS}" == "true" ]; then
   LAYERS="TOPlayers${N_LAYERS}"
+  WANDB_LAYERS="top${N_LAYERS}"
 else
   LAYERS="layers${N_LAYERS}"
+  WANDB_LAYERS="l${N_LAYERS}"
 fi
-RUN_NAME=gsm8k-${NUM_SHOT}shot_block${BLOCK_SIZE}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
+RUN_NAME=gsm8k-${NUM_SHOT}shot_block${SEQ_LEN}_lr${LR}_bsz${BATCH_SIZE}_warm${WARMUP_DURATION}_alphaf${ALPHA_F}_max-dur${MAX_DURATION}_${PRECISION}_${LAYERS}_${TAG}
+WANDB_NAME="gsm8k_${WANDB_LAYERS}_${WANDB_TAG}"
 if [ "${REINIT_MODEL}" == "true" ]; then
   RUN_NAME="${RUN_NAME}_reinit"
+  WANDB_NAME="${WANDB_NAME}_reinit"
 fi
+WANDB_NAME="${WANDB_NAME:0:120}"
 
 MICRO_BATCH_SIZE=1
 NUM_WORKERS=0
@@ -96,24 +121,24 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.lr_scheduler.alpha_f=${ALPHA_F} \
   training.compile_backbone=false \
   model=esolm_upstream \
-  model.config.length=1024 \
+  model.config.length=${SEQ_LEN} \
   model/backbone@model.config.backbone_config=automodel_for_causal_lm \
   model.config.backbone_config.reinit_model=${REINIT_MODEL} \
   model.config.backbone_config.num_layers=${N_LAYERS} \
   model.config.backbone_config.keep_top_layers=${TOP_LAYERS} \
   training.global_batch_size=${BATCH_SIZE} \
   training.grad_accum=$(( BATCH_SIZE / NUM_VISIBLE_DEVICES / MICRO_BATCH_SIZE )) \
-  block_size=${BLOCK_SIZE} \
-  eval_block_size=${EVAL_BLOCK_SIZE} \
+  block_size=null \
+  eval_block_size=null \
   training.antithetic_sampling=false \
   hydra.run.dir=${RUN_DIR}/${RUN_NAME} \
   composer.trainer.save_interval="2000ba" \
-  composer.loggers.name=${RUN_NAME} \
+  composer.loggers.name=${WANDB_NAME} \
+  composer.loggers.init_kwargs.id=${WANDB_NAME} \
   train_dataloader.num_workers=${NUM_WORKERS} \
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   eval_dataloader.batch_size=1 \
   noise@model.config.noise_config=esolm_loglinear \
-  composer.callbacks.log_gradient_variance.accumulation_steps=2 \
   model.config.alpha_0=${ALPHA_0} \
   model.config.batch_split=${BATCH_SPLIT} \
   model.config.diffusion_shuffle=${DIFFUSION_SHUFFLE} \

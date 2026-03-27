@@ -28,10 +28,18 @@ class MDLMConfig(DenoiserConfig):
     def __init__(
         self,
         keep_clean_bos: Optional[bool] = None,  # Whether to enforce un-noised BOS token
+        papl_alpha: float = 0.0,
+        papl_tau: float = 1.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        if papl_alpha < 0:
+            raise ValueError(f"`papl_alpha` must be non-negative, got {papl_alpha}.")
+        if papl_tau <= 0:
+            raise ValueError(f"`papl_tau` must be > 0, got {papl_tau}.")
         self.keep_clean_bos = keep_clean_bos
+        self.papl_alpha = papl_alpha
+        self.papl_tau = papl_tau
 
 
 class MDLM(Denoiser):
@@ -225,6 +233,9 @@ class MDLM(Denoiser):
             denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[:, 1:]
             denoiser_inputs.xt = denoiser_inputs.xt[:, 1:]
         block_size = getattr(self.config, "block_size", denoiser_inputs.x0.shape[-1])
+        papl_alpha = float(getattr(self.config, "papl_alpha", 0.0))
+        masked_tokens = (denoiser_inputs.xt == self.mask_token_id).int()
+        masked_positions = masked_tokens.bool() & denoiser_inputs.tokens_mask.bool()
 
         # below is needed to reproduce mdlm/sedd numbers with models from sahoo et al
         # (numerical imprecision computing probs under loglinear schedule)
@@ -246,13 +257,36 @@ class MDLM(Denoiser):
         else:
             batch_nll = nlls.sum(dim=-1)
 
-        if (
+        papl_active = (
+            self.training
+            and not getattr(self.config, "train_on_nelbo", False)
+            and papl_alpha > 0
+        )
+        other_loss_terms = {
+            "masked_tokens": masked_tokens,
+            "log_p_theta": -log_p_theta * denoiser_inputs.tokens_mask,
+        }
+        if papl_active:
+            token_nll, papl_metrics = self._papl_loss(
+                target_log_probs=log_p_theta,
+                masked_positions=masked_positions,
+            )
+            other_loss_terms.update(
+                {
+                    "papl_avg_n_masked": papl_metrics["avg_n_masked"],
+                    "papl_avg_planner_entropy": papl_metrics["avg_planner_entropy"],
+                    "papl_avg_correct_prob_on_masked": papl_metrics[
+                        "avg_correct_prob_on_masked"
+                    ],
+                    "papl_enabled": torch.ones((), device=log_p_theta.device, dtype=torch.int),
+                }
+            )
+        elif (
             self.training and not getattr(self.config, "train_on_nelbo", False)
         ) or block_size == 1:
             # Average over masked tokens during training
             batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
-            mask_token_indicator = (denoiser_inputs.xt == self.mask_token_id).float()
-            count = mask_token_indicator.sum(
+            count = masked_tokens.sum(
                 dim=-1
             )  # override count to be masked tokens
             token_nll = torch.where(
@@ -267,10 +301,75 @@ class MDLM(Denoiser):
         return LossAndNllOutput(
             loss=token_nll,  # type: ignore
             nlls=nlls,
-            other_loss_terms={
-                "masked_tokens": (denoiser_inputs.xt == self.mask_token_id).int(),
-                "log_p_theta": -log_p_theta * denoiser_inputs.tokens_mask,
-            },
+            other_loss_terms=other_loss_terms,
+        )
+
+    def _papl_params(self) -> tuple[float, float]:
+        papl_alpha = float(getattr(self.config, "papl_alpha", 0.0))
+        papl_tau = float(getattr(self.config, "papl_tau", 1.0))
+        if papl_alpha < 0:
+            raise ValueError(
+                f"`papl_alpha` must be non-negative, got {papl_alpha}."
+            )
+        if papl_tau <= 0:
+            raise ValueError(f"`papl_tau` must be > 0, got {papl_tau}.")
+        return papl_alpha, papl_tau
+
+    @staticmethod
+    def _papl_metrics(
+        planner_weights: torch.FloatTensor,
+        masked_positions: torch.BoolTensor,
+        target_log_probs: torch.FloatTensor,
+        eps: float = 1e-8,
+    ) -> dict[str, torch.FloatTensor]:
+        masked_float = masked_positions.to(target_log_probs.dtype)
+        n_masked = masked_float.sum(dim=-1).clamp_min(1)
+        safe_probs = torch.where(
+            masked_positions,
+            planner_weights.clamp_min(eps),
+            torch.ones_like(planner_weights),
+        )
+        avg_planner_entropy = (
+            -(planner_weights * safe_probs.log()).sum(dim=-1)
+        ).mean()
+        if masked_positions.any():
+            avg_correct_prob_on_masked = target_log_probs.exp()[masked_positions].mean()
+        else:
+            avg_correct_prob_on_masked = target_log_probs.new_zeros(())
+        return {
+            "avg_n_masked": n_masked.mean(),
+            "avg_planner_entropy": avg_planner_entropy,
+            "avg_correct_prob_on_masked": avg_correct_prob_on_masked,
+        }
+
+    def _papl_loss(
+        self,
+        target_log_probs: torch.FloatTensor,
+        masked_positions: torch.BoolTensor,
+    ) -> tuple[torch.FloatTensor, dict[str, torch.FloatTensor]]:
+        papl_alpha, papl_tau = self._papl_params()
+        target_nll = -target_log_probs
+        masked_nll = target_nll * masked_positions.to(target_nll.dtype)
+        detached_scores = (target_log_probs.detach() / papl_tau).masked_fill(
+            ~masked_positions, float("-inf")
+        )
+        planner_weights = torch.zeros_like(target_log_probs)
+        has_masked = masked_positions.any(dim=-1)
+        if has_masked.any():
+            planner_weights[has_masked] = F.softmax(
+                detached_scores[has_masked], dim=-1
+            )
+        planner_weights = torch.where(
+            masked_positions, planner_weights, torch.zeros_like(planner_weights)
+        )
+        n_masked = masked_positions.sum(dim=-1).clamp_min(1).to(target_nll.dtype)
+        base_weight = n_masked.reciprocal().unsqueeze(-1)
+        weights = base_weight * (1.0 + papl_alpha * planner_weights)
+        loss = (weights * masked_nll).sum(dim=-1).mean()
+        return loss, self._papl_metrics(
+            planner_weights=planner_weights,
+            masked_positions=masked_positions,
+            target_log_probs=target_log_probs,
         )
 
     @torch.no_grad()

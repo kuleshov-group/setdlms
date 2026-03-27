@@ -13,3 +13,5 @@ config:
   sequential_attn_mode: "causal"
   loss_type: "elbo"
   num_iw_orders: 0
+  backbone_config:
+    is_esolm_backbone: true

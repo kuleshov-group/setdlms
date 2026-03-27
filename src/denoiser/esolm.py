@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import time
 from typing import Any, Optional
 
@@ -229,17 +228,19 @@ class EsoLM(SetDLM):
         self,
         attention_mask: torch.LongTensor,
         cutoffs: torch.LongTensor,
+        attn_mode: str | None = None,
     ) -> torch.FloatTensor | None:
         # Eso-LMs source: `model.py::EsoLMDiT._get_attention_mask`.
         # Change from original: the official implementation caches flex-attention
         # block masks. This repo expects a standard 4D attention mask, so we
         # materialize the same relations explicitly.
         seq_len = attention_mask.shape[1]
-        if attention_mask.bool().all() and self.config.diffusion_attn_mode in {
+        mode = attn_mode or self.config.diffusion_attn_mode
+        if attention_mask.bool().all() and mode in {
             "causal",
             "bidirectional",
         }:
-            if self.config.diffusion_attn_mode == "causal":
+            if mode == "causal":
                 mask = self._causal_mask(
                     torch.arange(seq_len, device=attention_mask.device)[None, :, None],
                     torch.arange(seq_len, device=attention_mask.device)[
@@ -258,7 +259,6 @@ class EsoLM(SetDLM):
 
         q_idx = torch.arange(seq_len, device=attention_mask.device)[None, :, None]
         kv_idx = torch.arange(seq_len, device=attention_mask.device)[None, None, :]
-        mode = self.config.diffusion_attn_mode
         if mode == "causal":
             mask = self._causal_mask(q_idx, kv_idx)
         elif mode == "bidirectional":
@@ -275,6 +275,95 @@ class EsoLM(SetDLM):
             & attention_mask[:, :, None].bool()
         )
         return self._preprocess_attention_mask(mask[:, None], dtype=torch.float)
+
+    def _build_sequential_attention_mask(
+        self,
+        attention_mask: torch.LongTensor,
+        xt: torch.LongTensor,
+        mask_token_id: int,
+        attn_mode: str,
+    ) -> torch.FloatTensor:
+        seq_len = xt.shape[1] // 2
+        q_idx = torch.arange(seq_len * 2, device=xt.device)[None, :, None]
+        kv_idx = torch.arange(seq_len * 2, device=xt.device)[None, None, :]
+        if attn_mode == "causal":
+            mask = self._sequential_block_mask(q_idx=q_idx, kv_idx=kv_idx, seq_len=seq_len)
+        elif attn_mode == "mixed":
+            cutoffs = torch.sum(xt[:, :seq_len] != mask_token_id, dim=1)
+            mask = self._sequential_prefix_mask(
+                seq_len=seq_len,
+                cutoffs=cutoffs,
+                device=xt.device,
+            )
+        else:
+            raise ValueError(f"Unsupported sequential_attn_mode: {attn_mode}")
+        mask = (
+            mask
+            & attention_mask[:, None, :].bool()
+            & attention_mask[:, :, None].bool()
+        )
+        return self._preprocess_attention_mask(mask[:, None], dtype=torch.float)
+
+    @staticmethod
+    def _has_native_esolm_path(*modules: Any) -> bool:
+        return any(
+            callable(getattr(module, "_forward_esolm", None))
+            for module in modules
+            if module is not None
+        )
+
+    def _build_hf_esolm_backbone_kwargs(
+        self,
+        denoiser_inputs: DenoiserInput,
+        merged_kwargs: dict[str, Any],
+    ) -> tuple[dict[str, Any], int | None]:
+        sort_index = merged_kwargs.pop("sort_index", None)
+        if sort_index is None:
+            raise ValueError("EsoLM HF backbone path requires `sort_index`.")
+        sequential_input = bool(merged_kwargs.pop("sequential_input", False))
+        diffusion_attn_mode = str(
+            merged_kwargs.pop(
+                "diffusion_attn_mode",
+                self.config.diffusion_attn_mode,
+            )
+        )
+        sequential_attn_mode = str(
+            merged_kwargs.pop(
+                "sequential_attn_mode",
+                self.config.sequential_attn_mode,
+            )
+        )
+        mask_token_id = int(merged_kwargs.pop("mask_token_id", self.mask_token_id))
+        # HF backbones do not implement the EsoLM sigma-conditioning path.
+        merged_kwargs.pop("sigma", None)
+
+        if sequential_input:
+            seq_len = denoiser_inputs.xt.shape[1] // 2
+            position_ids = torch.cat([sort_index, sort_index], dim=1)
+            attention_mask = self._build_sequential_attention_mask(
+                attention_mask=denoiser_inputs.attention_mask,
+                xt=denoiser_inputs.xt,
+                mask_token_id=mask_token_id,
+                attn_mode=sequential_attn_mode,
+            )
+            output_length = seq_len
+        else:
+            position_ids = sort_index
+            cutoffs = torch.sum(denoiser_inputs.xt != mask_token_id, dim=1)
+            attention_mask = self._build_diffusion_attention_mask(
+                attention_mask=denoiser_inputs.attention_mask,
+                cutoffs=cutoffs,
+                attn_mode=diffusion_attn_mode,
+            )
+            output_length = None
+
+        # The custom HF/Qwen path expects the same dense 4D additive mask used by
+        # the native EsoLM backbone. Passing the old dict wrapper here leaves the
+        # mask uninterpreted by the model stack, which breaks upstream-equivalent
+        # per-example ordering behavior.
+        merged_kwargs["position_ids"] = position_ids
+        merged_kwargs["attention_mask"] = attention_mask
+        return merged_kwargs, output_length
 
     def _prepare_diffusion_inputs(
         self,
@@ -357,10 +446,12 @@ class EsoLM(SetDLM):
         context_mask = torch.gather(context_mask, dim=-1, index=perm_indices)
         valid_tokens = attention_mask * (1 - context_mask)
         masked_tokens = z0 == self.mask_token_id
+        sequential_xt = torch.cat([z0, x0], dim=1)
+        sequential_attention_mask = torch.cat([attention_mask, attention_mask], dim=1)
         return DenoiserInput(
-            xt=z0,
+            xt=sequential_xt,
             x0=x0,
-            attention_mask=attention_mask,
+            attention_mask=sequential_attention_mask,
             context_mask=context_mask,
             valid_tokens=valid_tokens,
             tokens_mask=valid_tokens * masked_tokens,
@@ -370,7 +461,7 @@ class EsoLM(SetDLM):
             backbone_kwargs={
                 "sigma": torch.zeros(x0.shape[0], device=x0.device, dtype=torch.float32),
                 "sort_index": perm_indices,
-                "x0": x0,
+                "sequential_input": True,
                 "sequential_attn_mode": self.config.sequential_attn_mode,
                 "mask_token_id": self.mask_token_id,
             },
@@ -551,25 +642,46 @@ class EsoLM(SetDLM):
         denoiser_inputs: DenoiserInput,
         **backbone_kwargs: Any,
     ):
-        forward_fn = (
-            self.backbone._orig_mod.forward
-            if hasattr(self.backbone, "_orig_mod")
-            else self.backbone.forward
+        backbone_modules = (
+            self.backbone,
+            getattr(self.backbone, "_orig_mod", None),
+            getattr(self.backbone, "model", None),
+            getattr(getattr(self.backbone, "_orig_mod", None), "model", None),
         )
-        signature = inspect.signature(forward_fn).parameters
-        if "sort_index" not in signature or "x0" not in signature:
+        backbone_supports_esolm = any(
+            getattr(module, "is_esolm_backbone", False)
+            for module in backbone_modules
+            if module is not None
+        )
+        if not backbone_supports_esolm:
             raise NotImplementedError(
-                "EsoLM requires a backbone with dedicated EsoLM forward support; "
-                f"`{type(self.backbone).__name__}` only exposes the generic path."
+                "EsoLM requires a backbone marked with `is_esolm_backbone=True`; "
+                f"`{type(self.backbone).__name__}` is not configured for that path."
             )
         merged_kwargs = dict(denoiser_inputs.backbone_kwargs)
         merged_kwargs.update(backbone_kwargs)
-        return self.backbone(
-            denoiser_inputs.xt,
-            attention_mask=denoiser_inputs.attention_mask,
-            past_key_values=denoiser_inputs.past_key_values,
-            **merged_kwargs,
+        if self._has_native_esolm_path(*backbone_modules):
+            return self.backbone(
+                denoiser_inputs.xt,
+                attention_mask=denoiser_inputs.attention_mask,
+                past_key_values=denoiser_inputs.past_key_values,
+                **merged_kwargs,
+            )
+
+        hf_kwargs, sequential_output_length = self._build_hf_esolm_backbone_kwargs(
+            denoiser_inputs=denoiser_inputs,
+            merged_kwargs=merged_kwargs,
         )
+        backbone_output = self.backbone(
+            denoiser_inputs.xt,
+            past_key_values=denoiser_inputs.past_key_values,
+            **hf_kwargs,
+        )
+        if sequential_output_length is not None and getattr(
+            backbone_output, "logits", None
+        ) is not None:
+            backbone_output.logits = backbone_output.logits[:, :sequential_output_length]
+        return backbone_output
 
     def _any_order_ar_loss(self, x0: torch.LongTensor) -> torch.FloatTensor:
         # Direct transcription of `s-sahoo/Eso-LMs/algo.py::_any_order_ar_loss`
@@ -593,15 +705,15 @@ class EsoLM(SetDLM):
             mask=torch.zeros_like(x0, dtype=torch.float),
         )
         denoiser_inputs = DenoiserInput(
-            xt=z0,
+            xt=torch.cat([z0, x0], dim=1),
             x0=x0,
-            attention_mask=torch.ones_like(x0),
+            attention_mask=torch.ones((x0.shape[0], x0.shape[1] * 2), device=x0.device),
             valid_tokens=torch.ones_like(x0, dtype=torch.float),
             tokens_mask=torch.ones_like(x0, dtype=torch.float),
             backbone_kwargs={
                 "sigma": torch.zeros(x0.shape[0], device=x0.device, dtype=torch.float32),
                 "sort_index": sort_idx,
-                "x0": x0,
+                "sequential_input": True,
                 "sequential_attn_mode": self.config.sequential_attn_mode,
                 "mask_token_id": self.mask_token_id,
             },

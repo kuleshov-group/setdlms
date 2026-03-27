@@ -1008,8 +1008,10 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         block_size: int,
         attn_backend: str,
         pretrained_model_name_or_path: str,
+        is_esolm_backbone: bool = False,
     ):
         super().__init__()
+        self.is_esolm_backbone = is_esolm_backbone
         self.causal = causal_attention
         self.n = length
         self.adaLN = adaln
@@ -1183,19 +1185,20 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
     def _sequential_features(
         self,
-        zt,
-        x0,
+        zt_and_x0,
         sort_idx,
         mask_token_id,
         attention_mask=None,
         attn_mode="causal",
     ):
-        seq_len = zt.shape[1]
-        zt_and_x0 = torch.cat([zt, x0], dim=1)
+        if zt_and_x0.shape[1] % 2 != 0:
+            raise ValueError("EsoLM sequential inputs must contain two concatenated halves.")
+        seq_len = zt_and_x0.shape[1] // 2
+        zt = zt_and_x0[:, :seq_len]
         x = self.vocab_embed(zt_and_x0)
         position_ids = torch.arange(
             seq_len,
-            device=zt.device,
+            device=zt_and_x0.device,
             dtype=sort_idx.dtype,
         )[None, :].expand(zt.shape[0], -1)
         rotary_cos_sin = self.rotary_emb(position_ids)
@@ -1205,12 +1208,12 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         cutoffs = torch.sum(zt != mask_token_id, dim=1)
         mask = self._get_esolm_sequential_attention_mask(
             seq_len=seq_len,
-            device=zt.device,
+            device=zt_and_x0.device,
             attn_mode=attn_mode,
             cutoffs=cutoffs,
         )
         if attention_mask is not None:
-            mask = self._apply_attention_mask(mask, attention_mask, repeat=2)
+            mask = self._apply_attention_mask(mask, attention_mask)
         return {"x": x, "rotary": rotary_cos_sin, "attention": mask}
 
     def reset_kv_cache(self):
@@ -1223,7 +1226,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         zt,
         sigma,
         sort_index,
-        x0=None,
+        sequential_input=False,
         attention_mask=None,
         diffusion_attn_mode="bidirectional",
         sequential_attn_mode="causal",
@@ -1231,24 +1234,25 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     ):
         if mask_token_id is None:
             raise ValueError("EsoLM forward requires `mask_token_id`.")
-        diffusion_mode = x0 is None
-        seq_len = zt.shape[1]
-        if diffusion_mode:
+        if sequential_input:
+            if zt.shape[1] % 2 != 0:
+                raise ValueError("EsoLM sequential inputs must have even sequence length.")
+            seq_len = zt.shape[1] // 2
+            features = self._sequential_features(
+                zt_and_x0=zt,
+                sort_idx=sort_index,
+                mask_token_id=mask_token_id,
+                attention_mask=attention_mask,
+                attn_mode=sequential_attn_mode,
+            )
+        else:
+            seq_len = zt.shape[1]
             features = self._diffusion_features(
                 zt=zt,
                 sort_idx=sort_index,
                 mask_token_id=mask_token_id,
                 attention_mask=attention_mask,
                 attn_mode=diffusion_attn_mode,
-            )
-        else:
-            features = self._sequential_features(
-                zt=zt,
-                x0=x0,
-                sort_idx=sort_index,
-                mask_token_id=mask_token_id,
-                attention_mask=attention_mask,
-                attn_mode=sequential_attn_mode,
             )
         x = features["x"]
         t_cond = F.silu(self.sigma_map(sigma)) if self.adaLN else None
@@ -1261,7 +1265,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 mask=features["attention"],
             )
         x = self.output_layer(x, t_cond)
-        if not diffusion_mode:
+        if sequential_input:
             x = x[:, :seq_len]
         return CausalLMOutputWithPast(logits=x, past_key_values=None)
 
@@ -1275,7 +1279,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         input_ids: torch.LongTensor,
         attention_mask: torch.FloatTensor | Any | None = None,
         sort_index: torch.LongTensor | None = None,
-        x0: torch.LongTensor | None = None,
+        sequential_input: bool = False,
         diffusion_attn_mode: str = "bidirectional",
         sequential_attn_mode: str = "causal",
         mask_token_id: int | None = None,
@@ -1287,14 +1291,14 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         sigma=None,
         **kwargs,
     ) -> CausalLMOutputWithPast | BaseModelOutputWithPast:
-        if sort_index is not None or x0 is not None:
+        if sort_index is not None:
             if sigma is None:
                 raise ValueError("EsoLM forward requires explicit sigma conditioning.")
             return self._forward_esolm(
                 zt=input_ids,
                 sigma=sigma,
                 sort_index=sort_index,
-                x0=x0,
+                sequential_input=sequential_input,
                 attention_mask=attention_mask,
                 diffusion_attn_mode=diffusion_attn_mode,
                 sequential_attn_mode=sequential_attn_mode,
