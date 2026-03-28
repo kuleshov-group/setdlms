@@ -9,6 +9,11 @@ from src.denoiser.diffusion_config import (
 )
 from src.denoiser.mdlm import MDLM, SEDD, MDLMConfig
 from src.denoiser.esolm import EsoLM, EsoLMConfig
+from src.denoiser.refusion import (
+    ReFusion,
+    ReFusionConfig,
+    ReFusionGenerationConfig,
+)
 from src.denoiser.setdlm import SetDLM
 
 # Alias for legacy imports (e.g. isinstance checks); same class as BD3LM.
@@ -24,6 +29,9 @@ __all__ = [
     "EsoLMConfig",
     "MDLM",
     "MDLMConfig",
+    "ReFusion",
+    "ReFusionConfig",
+    "ReFusionGenerationConfig",
     "SEDD",
     "SetDLM",
     "SetDiffusionGenerationConfig",

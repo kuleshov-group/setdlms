@@ -18,14 +18,17 @@ from accelerate.utils import InitProcessGroupKwargs
 from lm_eval.api.model import LM
 from lm_eval.loggers.evaluation_tracker import EvaluationTracker
 from lm_eval.utils import make_table
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoModelForMaskedLM, PreTrainedTokenizer
+from transformers import PreTrainedTokenizer
 from transformers.modeling_outputs import ModelOutput
 
 from datasets import Dataset
+from scripts.eval.model_loading import (
+    load_eval_model,
+    normalize_model_config_overrides,
+)
 from scripts.utils import (
-    load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
     register_useful_resolvers,
     set_seed,
@@ -95,46 +98,20 @@ class LMEvalHarnessModel(LM):
             self._world_size = 1
         self.device = torch.device(f"{device}")
 
-        model_config_overrides = (
-            {} if model_config_overrides is None else model_config_overrides
-        )
-        # Handle string input (JSON string) - parse it to dict
-        if isinstance(model_config_overrides, str):
-            model_config_overrides = json.loads(model_config_overrides)
-        # Convert to plain dict if it's a DictConfig to ensure proper merging
-        if isinstance(model_config_overrides, DictConfig):
-            model_config_overrides = OmegaConf.to_container(
-                model_config_overrides, resolve=True
-            )
-        if fsspec_exists(os.path.join(pretrained_model_name_or_path, "config.yaml")):
-            model = load_model_from_ckpt_dir_path(
-                path_to_ckpt_dir=pretrained_model_name_or_path,
-                load_ema_weights=load_ema_weights,
-                ckpt_file=ckpt_file,
-                device=self.device,
-                **model_config_overrides,
-            )
-        else:
-            pretrained_kwargs = {
-                "trust_remote_code": True,
-                "revision": pretrained_model_revision,
-            }
-            hf_token = os.environ.get("HF_TOKEN")
-            if hf_token is not None:
-                pretrained_kwargs["token"] = hf_token
-            try:
-                model = AutoModelForCausalLM.from_pretrained(
-                    pretrained_model_name_or_path,
-                    **pretrained_kwargs,
-                )
-            except Exception:  # Model not compatible with CausalLM
-                model = AutoModelForMaskedLM.from_pretrained(
-                    pretrained_model_name_or_path,
-                    **pretrained_kwargs,
-                )
-        self.model = model.to(self.device)
-        self.model.eval()
         self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
+        model_config_overrides = normalize_model_config_overrides(
+            model_config_overrides
+        )
+        self.model = load_eval_model(
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            tokenizer=self.tokenizer,
+            device=self.device,
+            pretrained_model_revision=pretrained_model_revision,
+            load_ema_weights=load_ema_weights,
+            ckpt_file=ckpt_file,
+            model_config_overrides=model_config_overrides,
+        )
+        self.model.eval()
         self.gen_kwargs = gen_kwargs
         self.throughput_run = throughput_run
         self.throughput_warmup = throughput_warmup

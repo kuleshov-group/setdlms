@@ -1,0 +1,30 @@
+defaults:
+  - _self_
+
+benchmarks: ???
+load_ema_weights: false
+ckpt_file: "best-rank0.pt"
+max_examples: null
+test_mode: false
+test_num_examples_per_benchmark: 32
+test_shuffle: true
+require_refusion_semantics: false
+num_importance_samples: 1
+sampling_eps: 1e-3
+restricted_t_range: null
+normalize_by_answer_length: true
+benchmark_configs:
+  hellaswag:
+    dataset_names:
+      - Rowan/hellaswag
+      - hellaswag
+    split: validation
+  piqa:
+    dataset_names:
+      - piqa
+    split: validation
+  siqa:
+    dataset_names:
+      - social_i_qa
+      - allenai/social_i_qa
+    split: validation

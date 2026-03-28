@@ -106,8 +106,17 @@ Below are the evaluation scripts provided for various tasks:
 - Text summarization: [`run_seq2seq_eval_cnndm.sh`](bash_scripts/run_seq2seq_eval_cnndm.sh), [`run_seq2seq_eval_cnndm_tput.sh`](bash_scripts/run_seq2seq_eval_cnndm_tput.sh)
 - Mathematical reasoning: [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh), [`run_lm_eval_harness_tput.sh`](bash_scripts/run_lm_eval_harness_tput.sh), [`run_likelihood_eval_gsm8k.sh`](bash_scripts/run_likelihood_eval_gsm8k.sh)
 - Likelihood estimation [`run_likelihood_eval_owt.sh`](bash_scripts/run_likelihood_eval_owt.sh), [`run_likelihood_eval_lm1b.sh`](bash_scripts/run_likelihood_eval_lm1b.sh)
+- Multiple-choice commonsense benchmarks (trained on OpenWebText): [`run_mcqa_eval_owt.sh`](bash_scripts/run_mcqa_eval_owt.sh)
 - Infilling (trained on OpenWebText): [`run_seq2seq_eval_infill_nlp.sh`](bash_scripts/run_seq2seq_eval_infill_nlp.sh)
 - Unconditional generation (trained on OpenWebText): [`run_uncond_gen_ppl_owt.sh`](bash_scripts/run_uncond_gen_ppl_owt.sh)
+
+The MCQA evaluation flow uses Hydra overrides in the same style as the other eval
+frameworks, for example `+eval/mcqa@task=all` or `+eval/mcqa@task=hellaswag`.
+It evaluates the validation splits of HellaSwag, PIQA, and Social IQa with
+continuation scoring rather than greedy generation, writes per-example predictions
+and option scores to `predictions.json`, and saves aggregate accuracies plus a
+summary table to `metrics.json` / `metrics.txt`. By default, answer options are
+ranked by average log-probability per answer token to reduce length bias.
 
 ## 3. HuggingFace Integration
 We release the following SetDLMs (s ≤ 8, 16, 32) on HuggingFace:

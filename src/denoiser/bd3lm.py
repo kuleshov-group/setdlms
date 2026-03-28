@@ -376,6 +376,7 @@ class BD3LM(MDLM):
     ) -> LossAndNllOutput:
         input_length = denoiser_inputs.x0.shape[1]
         model_output = model_output[:, input_length : input_length * 2, ...]
+        denoiser_inputs.xt = denoiser_inputs.xt[:, input_length : input_length * 2]
         return super()._compute_loss(
             model_output=model_output,  # type: ignore
             denoiser_inputs=denoiser_inputs,

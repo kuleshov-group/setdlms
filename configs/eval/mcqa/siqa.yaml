@@ -1,0 +1,6 @@
+defaults:
+  - base@_here_
+  - _self_
+
+benchmarks:
+  - siqa

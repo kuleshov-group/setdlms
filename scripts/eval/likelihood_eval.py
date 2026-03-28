@@ -1,23 +1,21 @@
 import logging
 import os
+from numbers import Integral
+from typing import Any
 
 import hydra
 import torch
 import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
-from omegaconf import DictConfig, OmegaConf
-from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
+from omegaconf import DictConfig
 
+from scripts.eval.model_loading import load_eval_model, normalize_model_config_overrides
 from scripts.utils import (
-    load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
     register_useful_resolvers,
 )
-from src.denoiser.ar import AR, ARConfig
-from src.denoiser.diffusion import BD3LM, MDLM, SEDD, BD3LMConfig, MDLMConfig
-from src.noise_schedule.noise_schedules import LinearNoise
-from src.utils import fsspec_exists
+from src.denoiser.refusion import ReFusion
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +33,43 @@ class RepeatDataloader:
 
     def __len__(self):
         return len(self.dataloader) * self.k
+
+
+def require_refusion_semantics(cfg: DictConfig) -> bool:
+    return bool(getattr(cfg.task, "require_refusion_semantics", False))
+
+
+def _validate_refusion_length(value: Any, source_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(
+            "Likelihood eval requested ReFusion semantics, but "
+            f"`{source_name}` must be a positive finite integer sequence length. "
+            "Refusing non-ReFusion behavior."
+        )
+    length = int(value)
+    if length <= 0 or length >= 1_000_000:
+        raise ValueError(
+            "Likelihood eval requested ReFusion semantics, but "
+            f"`{source_name}={length}` is not a usable explicit sequence length. "
+            "Refusing non-ReFusion behavior."
+        )
+    return length
+
+
+def build_likelihood_model_config_overrides(cfg: DictConfig) -> dict[str, Any]:
+    model_config_overrides = normalize_model_config_overrides(
+        getattr(cfg, "model_config_overrides", None)
+    )
+    if not require_refusion_semantics(cfg):
+        return model_config_overrides
+    model_config_overrides["model_type"] = "refusion"
+    _validate_refusion_length(
+        model_config_overrides.get("length"),
+        "model_config_overrides.length",
+    )
+    return model_config_overrides
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
@@ -56,170 +91,25 @@ def main(cfg: DictConfig) -> None:
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
     # Load model
-    model_config_overrides = getattr(cfg, "model_config_overrides", None) or {}
-    # Convert to plain dict if it's a DictConfig to ensure proper merging
-    if isinstance(model_config_overrides, DictConfig):
-        model_config_overrides = OmegaConf.to_container(
-            model_config_overrides, resolve=True
+    model_config_overrides = build_likelihood_model_config_overrides(cfg)
+    model = load_eval_model(
+        pretrained_model_name_or_path=cfg.pretrained_model_name_or_path,
+        tokenizer=tokenizer,
+        device=device,
+        pretrained_model_revision=getattr(cfg, "pretrained_model_revision", None),
+        load_ema_weights=cfg.task.load_ema_weights,
+        ckpt_file=cfg.task.ckpt_file,
+        model_config_overrides=model_config_overrides,
+        verbose=True,
+        force_legacy_if_no_generate=True,
+        require_explicit_refusion_length=require_refusion_semantics(cfg),
+    )
+    if require_refusion_semantics(cfg) and not isinstance(model, ReFusion):
+        raise ValueError(
+            "Likelihood eval requested ReFusion semantics, but loading returned a "
+            f"non-local `ReFusion` wrapper ({type(model).__name__}). Refusing "
+            "non-ReFusion behavior."
         )
-    if fsspec_exists(os.path.join(cfg.pretrained_model_name_or_path, "config.yaml")):
-        model = load_model_from_ckpt_dir_path(
-            path_to_ckpt_dir=cfg.pretrained_model_name_or_path,
-            load_ema_weights=cfg.task.load_ema_weights,
-            ckpt_file=cfg.task.ckpt_file,
-            verbose=True,
-            **model_config_overrides,
-        )
-    else:
-        pretrained_kwargs = {
-            "trust_remote_code": True,
-            "revision": getattr(cfg, "pretrained_model_revision", None),
-        }
-        hf_token = os.environ.get("HF_TOKEN")
-        if hf_token is not None:
-            pretrained_kwargs["token"] = hf_token
-        try:
-            model = AutoModelForCausalLM.from_pretrained(
-                cfg.pretrained_model_name_or_path,
-                **pretrained_kwargs,
-            )
-        except Exception:  # Model not compatible with CausalLM
-            try:
-                model = AutoModelForMaskedLM.from_pretrained(
-                    cfg.pretrained_model_name_or_path,
-                    **pretrained_kwargs,
-                )
-            except Exception:
-                model = None
-
-    # HACK for legacy codebase compatibility
-    if model is None or not hasattr(model, "generate"):
-        # Create dit backbone config
-        # Load the dit config template and update with actual values
-        dit_config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "configs",
-            "model",
-            "backbone",
-            "dit_legacy.yaml",
-        )
-        backbone_config = OmegaConf.load(dit_config_path)
-
-        # Update backbone config with necessary parameters
-        # (resolving the template values)
-        length = getattr(cfg, "length", 1024)
-        backbone_config.length = length
-        backbone_config.vocab_size = len(tokenizer)
-        backbone_config.block_size = getattr(cfg, "block_size", None)
-        backbone_config.pretrained_model_name_or_path = getattr(
-            cfg, "pretrained_model_name_or_path", None
-        )
-        backbone_config.num_layers = 12
-        backbone_config.n_heads = 12
-        backbone_config.hidden_size = 768
-
-        if "-ar-" in backbone_config.pretrained_model_name_or_path:
-            backbone_config.adaln = False
-            backbone_config.causal_attention = True
-            backbone_config.attn_backend = "flash_attn"
-        elif "mdlm-" in backbone_config.pretrained_model_name_or_path:
-            # backbone_config.attn_backend = "flash_attn"
-            backbone_config.adaln = True
-        else:
-            backbone_config.adaln = True
-
-        # Ensure it's a DictConfig
-        if not isinstance(backbone_config, DictConfig):
-            backbone_config = OmegaConf.create(
-                OmegaConf.to_container(backbone_config, resolve=False)
-            )
-        if "mdlm-" in backbone_config.pretrained_model_name_or_path:
-            model_config = MDLMConfig(
-                length=length,
-            )
-            model_config.backbone_config = OmegaConf.to_container(
-                backbone_config, resolve=True
-            )
-            model_config.keep_clean_bos = True
-            model_config.mask_token_id = tokenizer.mask_token_id
-            model_config.vocab_size = len(tokenizer)
-            for k, v in model_config_overrides.items():
-                setattr(model_config, k, v)
-            denoiser = MDLM(
-                model_config,
-                tokenizer=tokenizer,
-            )
-        elif "sedd-" in backbone_config.pretrained_model_name_or_path:
-            model_config = MDLMConfig(
-                length=length,
-            )
-            model_config.backbone_config = OmegaConf.to_container(
-                backbone_config, resolve=True
-            )
-            model_config.keep_clean_bos = True
-            model_config.mask_token_id = tokenizer.mask_token_id
-            model_config.vocab_size = len(tokenizer)
-            denoiser = SEDD(
-                model_config,
-                tokenizer=tokenizer,
-            )
-        elif "ar-" in backbone_config.pretrained_model_name_or_path:
-            model_config = ARConfig(
-                length=length,
-                backbone_config=backbone_config,
-            )
-            model_config.backbone_config = OmegaConf.to_container(
-                backbone_config, resolve=True
-            )
-            model_config.keep_clean_bos = True
-            model_config.mask_token_id = tokenizer.mask_token_id
-            model_config.vocab_size = len(tokenizer)
-            denoiser = AR(
-                model_config,
-                tokenizer=tokenizer,
-            )
-        else:
-            model_config = BD3LMConfig(
-                length=length,
-                backbone_config=backbone_config,
-                block_size=cfg.block_size,
-            )
-            model_config.backbone_config = OmegaConf.to_container(
-                backbone_config, resolve=True
-            )
-            model_config.keep_clean_bos = True
-            model_config.mask_token_id = tokenizer.mask_token_id
-            model_config.vocab_size = len(tokenizer)
-            denoiser = BD3LM(
-                model_config,
-                tokenizer=tokenizer,
-            )
-        if model is not None:
-            denoiser.backbone = model.backbone
-        else:
-            state_dict = torch.load(
-                cfg.pretrained_model_name_or_path,
-                map_location="cpu",
-                weights_only=False,
-            )["state_dict"]
-
-            for key in list(state_dict.keys()):
-                new_key = key
-                if "backbone." in new_key:
-                    new_key = new_key.replace("backbone.", "")
-                if "_orig_mod." in new_key:
-                    new_key = new_key.replace("_orig_mod.", "")
-
-                if new_key != key:
-                    state_dict[new_key] = state_dict.pop(key)
-
-            state_dict.pop("sampling_eps_min", None)
-            state_dict.pop("sampling_eps_max", None)
-
-            denoiser.backbone.load_state_dict(state_dict)
-
-        model = denoiser.to(device)
-        model.noise_schedule = LinearNoise()
 
     if getattr(cfg, "compile_backbone", False):
         log.info("Compiling model backbone")

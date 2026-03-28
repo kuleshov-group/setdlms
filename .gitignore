@@ -19,3 +19,4 @@ test_hf_model.py
 bash_scripts/eval_models.py
 notebooks/create_gif.ipynb
 scripts/push_eval_checkpoints_to_hub.py
+gsm8k_diffusion/

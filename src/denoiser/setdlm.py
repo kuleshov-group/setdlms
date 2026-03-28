@@ -590,15 +590,18 @@ class SetDLM(BD3LM):
             is_infill_task=is_infill_task,
             device=device,
         )
-        first_hitting_times = self.noise_schedule.compute_first_hitting_times(
-            batch_size=batch_size,
-            length=(
-                accumulated_samples.shape[-1]
-                if not is_infill_task
-                else accumulated_samples[:, first_mask_token_idx:].shape[-1]
-            ),
-            device=device,
-        )
+        if accumulated_samples.shape[-1] > self.config.length:
+            first_hitting_times = None
+        else:
+            first_hitting_times = self.noise_schedule.compute_first_hitting_times(
+                batch_size=batch_size,
+                length=(
+                    accumulated_samples.shape[-1]
+                    if not is_infill_task
+                    else accumulated_samples[:, first_mask_token_idx:].shape[-1]
+                ),
+                device=device,
+            )
         xt = accumulated_samples[:, inputs_offset:]
         timesteps = self._sample_generation_timesteps(
             generation_config,

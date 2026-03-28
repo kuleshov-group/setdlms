@@ -32,7 +32,7 @@ USERNAME=$(whoami)
 export TMPDIR=/share/kuleshov/${USERNAME}/tmp
 export TRITON_CACHE_DIR=/share/kuleshov/${USERNAME}/triton_cache
 export TORCHINDUCTOR_CACHE_DIR=/share/kuleshov/${USERNAME}/torchinductor_cache
-NUM_VISIBLE_DEVICES=1
+NUM_VISIBLE_DEVICES=4
 RUN_DIR="/share/kuleshov/${USERNAME}/runs/dllm-dev"
 DATA_DIR="/share/kuleshov/ma2238/dllm-data"
 mkdir -p ${RUN_DIR}
@@ -42,8 +42,8 @@ sbatch \
   --output="${WATCH_FOLDER}/%x_%j.log" \
   --open-mode=append \
   --get-user-env \
-  --partition=gpu \
-  --constraint="[a100|h100]" \
+  --partition=kuleshov,gpu \
+  --constraint="[a6000]" \
   --time=960:00:00 \
   --mem=128000 \
   --nodes=1 \

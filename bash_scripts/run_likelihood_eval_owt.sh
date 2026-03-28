@@ -67,12 +67,26 @@ COMPILE_BACKBONE=true
 # COMPILE_BACKBONE=true
 
 REVISION=null
+REQUIRE_REFUSION_SEMANTICS=false
+REFUSION_LENGTH=null
 
 for EVAL_DATASET in "owt_eval_gpt2" "ptb_eval" "wikitext2_eval" "lm1b_eval_gpt2" "lambada_eval" "ag_news_eval" "scientific_papers_pubmed_eval" "scientific_papers_arxiv_eval"; do
   BATCH_SIZE=16
   PRETRAINED_MODEL_NAME_OR_PATH="gpt2"  # TODO: Change as needed
   USE_EMA=false
   echo "Evaluating ${EVAL_DATASET} with model ${MODEL_PATH}"
+
+  REFUSION_ARGS=()
+  if [ "${REQUIRE_REFUSION_SEMANTICS}" = true ]; then
+    REFUSION_ARGS+=(
+      task.require_refusion_semantics=true
+    )
+    if [ "${REFUSION_LENGTH}" != "null" ]; then
+      REFUSION_ARGS+=(
+        +model_config_overrides.length=${REFUSION_LENGTH}
+      )
+    fi
+  fi
 
   composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
     hydra.output_subdir=null \
@@ -99,6 +113,7 @@ for EVAL_DATASET in "owt_eval_gpt2" "ptb_eval" "wikitext2_eval" "lm1b_eval_gpt2"
     task.collator.antithetic_sampling=true \
     +metrics@task.metrics='[loss,nll,bpd,perplexity]' \
     +composer/trainer@task.trainer=eval_trainer \
+    "${REFUSION_ARGS[@]}" \
     ~generation@generation_config \
     ~generation/logits_processor@logits_processor_list \
     ~generation/stopping_criteria@stopping_criteria_list \

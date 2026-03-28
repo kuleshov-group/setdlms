@@ -1,0 +1,8 @@
+defaults:
+  - base@_here_
+  - _self_
+
+benchmarks:
+  - hellaswag
+  - piqa
+  - siqa
