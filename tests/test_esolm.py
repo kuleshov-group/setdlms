@@ -5,9 +5,10 @@ import unittest
 
 import torch
 from torch import nn
+from transformers import StoppingCriteria, StoppingCriteriaList
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from src.backbone.dit import DIT, EmbeddingLayer
+from src.backbone.dit import DDiTBlock, DIT, EmbeddingLayer
 from src.denoiser.base import DenoiserInput
 from src.denoiser.diffusion import EsoLM, SetDiffusionGenerationConfig
 from src.noise_schedule.noise_schedules import EsoLogLinearNoise
@@ -294,6 +295,269 @@ class EsoLMRegressionTests(unittest.TestCase):
         self.assertEqual(nfe, 4.0)
         self.assertEqual(model.backbone.reset_kv_cache_calls, 2)
         self.assertEqual(model.backbone.reset_calls, 2)
+
+    def test_generate_supports_prompt_conditioned_sampling(self):
+        class DummyBackbone(nn.Module):
+            def __init__(self, vocab_size: int):
+                super().__init__()
+                self.vocab_size = vocab_size
+                self.reset_kv_cache_calls = 0
+                self.reset_sorted_rotary_cache_calls = 0
+                self.calls: list[dict[str, int]] = []
+
+            def reset_kv_cache(self):
+                self.reset_kv_cache_calls += 1
+
+            def reset_sorted_rotary_cache(self):
+                self.reset_sorted_rotary_cache_calls += 1
+
+            def forward_sample(
+                self,
+                zt,
+                sort_idx,
+                last_k_start=None,
+                curr_k_start=None,
+                curr_k_end=None,
+            ):
+                del zt
+                assert last_k_start is not None
+                assert curr_k_start is not None
+                assert curr_k_end is not None
+                self.calls.append(
+                    {
+                        "last_k_start": last_k_start,
+                        "curr_k_start": curr_k_start,
+                        "curr_k_end": curr_k_end,
+                    }
+                )
+                num_samples = sort_idx.shape[0]
+                k = curr_k_end - curr_k_start
+                logits = torch.full(
+                    (num_samples, k, self.vocab_size), -100.0, dtype=torch.float32
+                )
+                if k > 0:
+                    next_tokens = sort_idx[:, curr_k_start:curr_k_end] % self.vocab_size
+                    logits.scatter_(-1, next_tokens.unsqueeze(-1), 0.0)
+                return CausalLMOutputWithPast(logits=logits, past_key_values=None)
+
+        model = _make_bare_esolm(alpha_0=1.0, length=6)
+        model.backbone = DummyBackbone(vocab_size=16)
+        prompt = torch.tensor([[10, 11, 12]])
+        generation_config = SetDiffusionGenerationConfig(
+            num_steps=2,
+            block_size=6,
+            use_cache=True,
+            do_sample=False,
+            subcontext_len=2,
+        )
+
+        outputs = model.generate(
+            inputs=prompt,
+            generation_config=generation_config,
+            max_new_tokens=2,
+        )
+
+        self.assertTrue(torch.equal(outputs, torch.tensor([[10, 11, 12, 3, 4]])))
+        self.assertEqual(model.backbone.reset_kv_cache_calls, 2)
+        self.assertEqual(model.backbone.reset_sorted_rotary_cache_calls, 2)
+        self.assertEqual(
+            model.backbone.calls,
+            [
+                {"last_k_start": 0, "curr_k_start": 3, "curr_k_end": 3},
+                {"last_k_start": 3, "curr_k_start": 3, "curr_k_end": 4},
+                {"last_k_start": 3, "curr_k_start": 4, "curr_k_end": 5},
+            ],
+        )
+
+    def test_generate_allows_prompt_plus_new_tokens_to_exceed_config_length(self):
+        class DummyBackbone(nn.Module):
+            def __init__(self, vocab_size: int):
+                super().__init__()
+                self.vocab_size = vocab_size
+
+            def reset_kv_cache(self):
+                return None
+
+            def reset_sorted_rotary_cache(self):
+                return None
+
+            def forward_sample(
+                self,
+                zt,
+                sort_idx,
+                last_k_start=None,
+                curr_k_start=None,
+                curr_k_end=None,
+            ):
+                del zt, last_k_start
+                assert curr_k_start is not None
+                assert curr_k_end is not None
+                num_samples = sort_idx.shape[0]
+                k = curr_k_end - curr_k_start
+                logits = torch.full(
+                    (num_samples, k, self.vocab_size), -100.0, dtype=torch.float32
+                )
+                if k > 0:
+                    next_tokens = sort_idx[:, curr_k_start:curr_k_end] % self.vocab_size
+                    logits.scatter_(-1, next_tokens.unsqueeze(-1), 0.0)
+                return CausalLMOutputWithPast(logits=logits, past_key_values=None)
+
+        model = _make_bare_esolm(alpha_0=1.0, length=4)
+        model.backbone = DummyBackbone(vocab_size=16)
+
+        outputs = model.generate(
+            inputs=torch.tensor([[10, 11, 12]]),
+            generation_config=SetDiffusionGenerationConfig(
+                num_steps=4,
+                block_size=4,
+                use_cache=True,
+                do_sample=False,
+            ),
+            max_new_tokens=4,
+        )
+
+        self.assertTrue(torch.equal(outputs, torch.tensor([[10, 11, 12, 3, 4, 5, 6]])))
+
+    def test_generate_applies_stopping_criteria_after_prompt_sampling(self):
+        class DummyBackbone(nn.Module):
+            def __init__(self, vocab_size: int):
+                super().__init__()
+                self.vocab_size = vocab_size
+
+            def reset_kv_cache(self):
+                return None
+
+            def reset_sorted_rotary_cache(self):
+                return None
+
+            def forward_sample(
+                self,
+                zt,
+                sort_idx,
+                last_k_start=None,
+                curr_k_start=None,
+                curr_k_end=None,
+            ):
+                del zt, last_k_start
+                assert curr_k_start is not None
+                assert curr_k_end is not None
+                num_samples = sort_idx.shape[0]
+                k = curr_k_end - curr_k_start
+                logits = torch.full(
+                    (num_samples, k, self.vocab_size), -100.0, dtype=torch.float32
+                )
+                if k > 0:
+                    next_tokens = sort_idx[:, curr_k_start:curr_k_end] % self.vocab_size
+                    logits.scatter_(-1, next_tokens.unsqueeze(-1), 0.0)
+                return CausalLMOutputWithPast(logits=logits, past_key_values=None)
+
+        class LastTokenStop(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs):
+                del scores, kwargs
+                return input_ids[:, -1] == 3
+
+        model = _make_bare_esolm(alpha_0=1.0, length=6)
+        model.backbone = DummyBackbone(vocab_size=16)
+        prompt = torch.tensor([[10, 11, 12]])
+        generation_config = SetDiffusionGenerationConfig(
+            num_steps=2,
+            block_size=6,
+            use_cache=True,
+            do_sample=False,
+            subcontext_len=2,
+        )
+
+        outputs = model.generate(
+            inputs=prompt,
+            generation_config=generation_config,
+            max_new_tokens=2,
+            stopping_criteria=StoppingCriteriaList([LastTokenStop()]),
+        )
+
+        self.assertTrue(torch.equal(outputs, torch.tensor([[10, 11, 12, 3]])))
+
+    def test_prepare_diffusion_inputs_keeps_context_prefix_fixed(self):
+        model = _make_bare_esolm(alpha_0=1.0, length=6, diffusion_shuffle=True)
+        input_ids = torch.tensor([[10, 11, 12, 20, 21, 22]])
+        attention_mask = torch.ones_like(input_ids)
+        context_mask = torch.tensor([[1, 1, 1, 0, 0, 0]])
+
+        torch.manual_seed(0)
+        denoiser_inputs = model._prepare_diffusion_inputs(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            context_mask=context_mask,
+            t=torch.tensor([1.0]),
+        )
+
+        self.assertTrue(torch.equal(denoiser_inputs.x0[0, :3], input_ids[0, :3]))
+        self.assertTrue(torch.equal(denoiser_inputs.context_mask[0, :3], context_mask[0, :3]))
+
+    def test_prepare_sequential_inputs_keeps_context_prefix_fixed_when_shuffling(self):
+        model = _make_bare_esolm(alpha_0=0.5, length=6, sequential_shuffle=True)
+        input_ids = torch.tensor([[10, 11, 12, 20, 21, 22]])
+        attention_mask = torch.ones_like(input_ids)
+        context_mask = torch.tensor([[1, 1, 1, 0, 0, 0]])
+
+        torch.manual_seed(0)
+        denoiser_inputs = model._prepare_sequential_inputs(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            context_mask=context_mask,
+        )
+
+        self.assertTrue(torch.equal(denoiser_inputs.x0[0, :3], input_ids[0, :3]))
+        self.assertTrue(torch.equal(denoiser_inputs.context_mask[0, :3], context_mask[0, :3]))
+
+    def test_ddit_block_prefilled_cache_is_visible_without_clean_replay(self):
+        block = object.__new__(DDiTBlock)
+        nn.Module.__init__(block)
+        block.k_cache = torch.tensor([[[[1.0]], [[2.0]]]])
+        block.v_cache = torch.tensor([[[[3.0]], [[4.0]]]])
+        block.num_clean_cached = 2
+
+        k = torch.tensor([[[[5.0]]]])
+        v = torch.tensor([[[[6.0]]]])
+        combined_k, combined_v = DDiTBlock._process_and_update_kv(
+            block,
+            k=k,
+            v=v,
+            num_clean=0,
+        )
+
+        self.assertTrue(
+            torch.equal(combined_k, torch.tensor([[[[1.0]], [[2.0]], [[5.0]]]]))
+        )
+        self.assertTrue(
+            torch.equal(combined_v, torch.tensor([[[[3.0]], [[4.0]], [[6.0]]]]))
+        )
+        self.assertEqual(block.num_clean_cached, 2)
+
+    def test_ddit_block_expands_cache_for_prompt_plus_generation(self):
+        block = object.__new__(DDiTBlock)
+        nn.Module.__init__(block)
+        block.n = 4
+        block.n_heads = 1
+        block.attn_qkv = nn.Linear(1, 3, bias=False)
+        block.reset_kv_cache()
+
+        prompt_k = torch.arange(3, dtype=torch.float32).view(1, 3, 1, 1)
+        prompt_v = prompt_k + 10
+        DDiTBlock._process_and_update_kv(block, k=prompt_k, v=prompt_v, num_clean=3)
+
+        gen_k = torch.arange(4, dtype=torch.float32).view(1, 4, 1, 1) + 20
+        gen_v = gen_k + 10
+        combined_k, combined_v = DDiTBlock._process_and_update_kv(
+            block,
+            k=gen_k,
+            v=gen_v,
+            num_clean=1,
+        )
+
+        self.assertGreaterEqual(block.k_cache.shape[1], 7)
+        self.assertEqual(block.num_clean_cached, 4)
+        self.assertTrue(torch.equal(combined_k, torch.cat([prompt_k, gen_k], dim=1)))
+        self.assertTrue(torch.equal(combined_v, torch.cat([prompt_v, gen_v], dim=1)))
 
     def test_dit_forward_sample_threads_clean_token_metadata(self):
         backbone = object.__new__(DIT)

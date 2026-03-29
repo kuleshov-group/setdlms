@@ -224,6 +224,37 @@ class EsoLM(SetDLM):
             )[None, :].expand_as(indices)
         return (masked.to(offsets.dtype) + offsets).argsort(dim=-1, descending=False)
 
+    def _sort_active_indices(
+        self,
+        indices: torch.LongTensor,
+        active_mask: torch.BoolTensor,
+        shuffle: bool,
+        keep_masks_unshuffled: bool = False,
+    ) -> torch.LongTensor:
+        # GSM8K and other conditional tasks rely on context tokens remaining a
+        # fixed prefix. Only the active target span should participate in the
+        # EsoLM permutation; context and padding stay in place.
+        if indices.shape != active_mask.shape:
+            raise ValueError(
+                "EsoLM active permutation expects `indices` and `active_mask` "
+                f"to have the same shape, got {indices.shape} and {active_mask.shape}."
+            )
+
+        batch_size, seq_len = indices.shape
+        base_positions = torch.arange(seq_len, device=indices.device)
+        perm_indices = base_positions[None, :].expand(batch_size, -1).clone()
+        for batch_idx in range(batch_size):
+            active_positions = base_positions[active_mask[batch_idx]]
+            if active_positions.numel() <= 1:
+                continue
+            local_perm = self._sort_indices(
+                indices=indices[batch_idx : batch_idx + 1, active_positions],
+                shuffle=shuffle,
+                keep_masks_unshuffled=keep_masks_unshuffled,
+            )[0]
+            perm_indices[batch_idx, active_positions] = active_positions[local_perm]
+        return perm_indices
+
     def _build_diffusion_attention_mask(
         self,
         attention_mask: torch.LongTensor,
@@ -391,8 +422,11 @@ class EsoLM(SetDLM):
         sigma = self._sigma_from_alpha_t(alpha_t.squeeze(-1))
         noise_mask = context_mask | ~attention_mask.bool()
         xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, mask=noise_mask)
-        perm_indices = self._sort_indices(
-            xt, shuffle=self.config.diffusion_shuffle, keep_masks_unshuffled=False
+        perm_indices = self._sort_active_indices(
+            indices=xt,
+            active_mask=(~noise_mask.bool()) & attention_mask.bool(),
+            shuffle=self.config.diffusion_shuffle,
+            keep_masks_unshuffled=False,
         )
         xt = torch.gather(xt, dim=-1, index=perm_indices)
         x0 = torch.gather(input_ids, dim=-1, index=perm_indices)
@@ -435,8 +469,9 @@ class EsoLM(SetDLM):
         )
         noise_mask = context_mask | ~attention_mask.bool()
         z0 = self._sample_q_xt(x0=input_ids, alpha_t=alpha_0, mask=noise_mask)
-        perm_indices = self._sort_indices(
-            z0,
+        perm_indices = self._sort_active_indices(
+            indices=z0,
+            active_mask=(~noise_mask.bool()) & attention_mask.bool(),
             shuffle=self.config.sequential_shuffle,
             keep_masks_unshuffled=True,
         )
@@ -531,7 +566,17 @@ class EsoLM(SetDLM):
         # `config.length`, so we use `self.num_tokens` as the faithful equivalent.
         # We also use `torch.binomial` instead of `np.random.binomial` to avoid
         # introducing a new runtime dependency into this repo.
-        remaining_tokens = self.num_tokens
+        return self._tokens_unmasked_per_step_for_length(
+            num_steps=num_steps,
+            num_tokens=self.num_tokens,
+        )
+
+    def _tokens_unmasked_per_step_for_length(
+        self,
+        num_steps: int,
+        num_tokens: int,
+    ) -> list[int]:
+        remaining_tokens = num_tokens
         num_tokens_to_unmask: list[int] = []
         dt = 1 / num_steps
         for t in torch.linspace(1.0, dt, steps=num_steps).tolist():
@@ -566,29 +611,34 @@ class EsoLM(SetDLM):
         num_samples: int,
         generation_config: SetDiffusionGenerationConfig,
         device: torch.device,
+        num_tokens: int | None = None,
     ) -> tuple[list[int], torch.LongTensor]:
         # Direct transcription of `s-sahoo/Eso-LMs/algo.py::EsoLM.generate_samples`
         # (lines 522-559).
         # Deviation from upstream: we read options from the local
         # `SetDiffusionGenerationConfig` instead of Hydra's `config.sampling`.
+        total_tokens = self.num_tokens if num_tokens is None else int(num_tokens)
         subcontext_len = int(getattr(generation_config, "subcontext_len", 0) or 0)
         if subcontext_len == 0:
-            unmask_k_tokens = self._tokens_unmasked_per_step(generation_config.num_steps)
+            unmask_k_tokens = self._tokens_unmasked_per_step_for_length(
+                num_steps=generation_config.num_steps,
+                num_tokens=total_tokens,
+            )
             num_diffusion_tokens = sum(unmask_k_tokens)
-            sort_idx = torch.rand(num_samples, self.num_tokens, device=device).argsort(
+            sort_idx = torch.rand(num_samples, total_tokens, device=device).argsort(
                 dim=-1, descending=False
             )
             sort_idx[:, num_diffusion_tokens:] = (
                 sort_idx[:, num_diffusion_tokens:].sort(dim=-1).values
             )
         else:
-            if self.num_tokens % subcontext_len != 0:
+            if total_tokens % subcontext_len != 0:
                 raise ValueError(
                     "EsoLM subcontext sampling requires length divisible by "
-                    f"subcontext_len, got {self.num_tokens} and {subcontext_len}."
+                    f"subcontext_len, got {total_tokens} and {subcontext_len}."
                 )
-            block_size = self.num_tokens // subcontext_len
-            sort_idx = torch.arange(self.num_tokens, device=device)
+            block_size = total_tokens // subcontext_len
+            sort_idx = torch.arange(total_tokens, device=device)
             sort_idx = sort_idx.view(block_size, subcontext_len).t()
             if getattr(generation_config, "subcontext_shuffle", False):
                 n_rows, n_cols = sort_idx.shape
@@ -598,7 +648,7 @@ class EsoLM(SetDLM):
                 sort_idx = torch.gather(sort_idx, 1, row_perm)
                 sort_idx = sort_idx[torch.randperm(subcontext_len, device=device)]
             sort_idx = sort_idx.flatten()
-            num_diffusion_tokens = int(self.num_tokens * self.alpha_0)
+            num_diffusion_tokens = int(total_tokens * self.alpha_0)
             unmask_k_tokens = [block_size] * int(subcontext_len * self.alpha_0)
             sort_idx[num_diffusion_tokens:] = (
                 sort_idx[num_diffusion_tokens:].sort().values
@@ -606,9 +656,152 @@ class EsoLM(SetDLM):
             sort_idx = sort_idx[None].expand(num_samples, -1)
 
         unmask_k_tokens = unmask_k_tokens + [1] * (
-            self.num_tokens - num_diffusion_tokens
+            total_tokens - num_diffusion_tokens
         )
         return unmask_k_tokens, sort_idx
+
+    def _prepare_generation_inputs(
+        self,
+        num_samples: int,
+        generation_config: SetDiffusionGenerationConfig,
+        device: torch.device,
+        prompt_input_ids: torch.LongTensor | None = None,
+        target_length: int | None = None,
+    ) -> tuple[torch.LongTensor, torch.LongTensor, list[int], int]:
+        prompt_length = 0
+        if prompt_input_ids is not None:
+            if prompt_input_ids.dim() != 2:
+                raise ValueError(
+                    "EsoLM prompt-conditioned generation expects rank-2 `inputs`."
+                )
+            if num_samples != prompt_input_ids.shape[0]:
+                raise ValueError(
+                    "EsoLM `num_samples` must match the prompt batch size when "
+                    "`prompt_input_ids` is provided."
+                )
+            prompt_input_ids = prompt_input_ids.to(device)
+            if (prompt_input_ids == self.mask_token_id).any():
+                raise NotImplementedError(
+                    "EsoLM sampling does not support infilling prompts; only "
+                    "contiguous clean prefixes are supported."
+                )
+            prompt_length = int(prompt_input_ids.shape[1])
+            if target_length is None:
+                target_length = prompt_length + self.num_tokens
+            if target_length < prompt_length:
+                raise ValueError(
+                    "EsoLM target generation length cannot be shorter than the prompt."
+                )
+            sampled_tokens = target_length - prompt_length
+            if sampled_tokens > self.num_tokens:
+                raise ValueError(
+                    "EsoLM prompt-conditioned generation samples at most "
+                    "`config.length` new tokens; received "
+                    f"{sampled_tokens} > {self.num_tokens}."
+                )
+            if sampled_tokens == 0:
+                return (
+                    prompt_input_ids.clone(),
+                    torch.arange(prompt_length, device=device)[None, :].expand(
+                        num_samples, -1
+                    ),
+                    [],
+                    prompt_length,
+                )
+            unmask_k_tokens, continuation_sort_idx = self._esolm_generation_plan(
+                num_samples=num_samples,
+                generation_config=generation_config,
+                device=device,
+                num_tokens=sampled_tokens,
+            )
+            prompt_sort_idx = torch.arange(prompt_length, device=device)[
+                None, :
+            ].expand(num_samples, -1)
+            sort_idx = torch.cat(
+                [prompt_sort_idx, prompt_length + continuation_sort_idx],
+                dim=1,
+            )
+            x = torch.full(
+                (num_samples, target_length),
+                fill_value=self.mask_token_id,
+                dtype=torch.long,
+                device=device,
+            )
+            x[:, :prompt_length] = prompt_input_ids
+            x = torch.gather(x, dim=1, index=sort_idx)
+            return x, sort_idx, unmask_k_tokens, prompt_length
+
+        target_length = self.num_tokens if target_length is None else int(target_length)
+        if target_length != self.num_tokens:
+            raise ValueError(
+                "EsoLM unconditional sampling expects `target_length == config.length`; "
+                f"received {target_length} and {self.num_tokens}."
+            )
+        unmask_k_tokens, sort_idx = self._esolm_generation_plan(
+            num_samples=num_samples,
+            generation_config=generation_config,
+            device=device,
+            num_tokens=target_length,
+        )
+        x = torch.full(
+            (num_samples, target_length),
+            fill_value=self.mask_token_id,
+            dtype=torch.long,
+            device=device,
+        )
+        x = torch.gather(x, dim=1, index=sort_idx)
+        return x, sort_idx, unmask_k_tokens, prompt_length
+
+    def _apply_stopping_criteria(
+        self,
+        samples: torch.LongTensor,
+        stopping_criteria: StoppingCriteriaList | None,
+        prompt_length: int = 0,
+    ) -> torch.LongTensor:
+        if stopping_criteria is None or len(stopping_criteria) == 0:
+            return samples
+        if samples.ndim != 2 or samples.shape[1] == 0:
+            return samples
+
+        stop_positions: list[int] = []
+        search_start = max(prompt_length + 1, 1)
+        total_length = samples.shape[1]
+        for batch_idx in range(samples.shape[0]):
+            stop_pos = total_length
+            for end in range(search_start, total_length + 1):
+                should_stop = stopping_criteria(
+                    input_ids=samples[batch_idx : batch_idx + 1, :end],
+                    scores=None,
+                )
+                if isinstance(should_stop, torch.Tensor):
+                    stop_flag = bool(should_stop.reshape(-1)[0].item())
+                else:
+                    stop_flag = bool(should_stop)
+                if stop_flag:
+                    stop_pos = end
+                    break
+            stop_positions.append(stop_pos)
+
+        if all(stop_pos == total_length for stop_pos in stop_positions):
+            return samples
+        if all(stop_pos == stop_positions[0] for stop_pos in stop_positions):
+            return samples[:, : stop_positions[0]]
+
+        pad_value = self.pad_token_id
+        if pad_value is None:
+            pad_value = self.eos_token_id
+        if pad_value is None:
+            pad_value = self.mask_token_id
+        max_stop = max(stop_positions)
+        truncated = torch.full(
+            (samples.shape[0], max_stop),
+            fill_value=pad_value,
+            dtype=samples.dtype,
+            device=samples.device,
+        )
+        for batch_idx, stop_pos in enumerate(stop_positions):
+            truncated[batch_idx, :stop_pos] = samples[batch_idx, :stop_pos]
+        return truncated
 
     def _forward_sample_step(
         self,
@@ -764,6 +957,8 @@ class EsoLM(SetDLM):
         num_steps: int | None = None,
         eps: float = 1e-5,
         generation_config: SetDiffusionGenerationConfig | None = None,
+        prompt_input_ids: torch.LongTensor | None = None,
+        target_length: int | None = None,
     ) -> tuple[torch.LongTensor, float, float]:
         # Direct transcription of `s-sahoo/Eso-LMs/algo.py::EsoLM.generate_samples`
         # (lines 513-599).
@@ -793,12 +988,6 @@ class EsoLM(SetDLM):
         parameter = next(self.parameters(), None)
         device = parameter.device if parameter is not None else torch.device("cpu")
         profile_throughput = bool(getattr(generation_config, "profile_throughput", False))
-        unmask_k_tokens, sort_idx = self._esolm_generation_plan(
-            num_samples=num_samples,
-            generation_config=generation_config,
-            device=device,
-        )
-        assert sum(unmask_k_tokens) == self.num_tokens
         if not hasattr(self.backbone, "forward_sample") or not hasattr(
             self.backbone, "reset_kv_cache"
         ):
@@ -808,13 +997,14 @@ class EsoLM(SetDLM):
                 "unsupported because their decode path is not upstream-equivalent."
             )
 
-        x = torch.full(
-            (num_samples, self.num_tokens),
-            fill_value=self.mask_token_id,
-            dtype=torch.long,
+        x, sort_idx, unmask_k_tokens, prompt_length = self._prepare_generation_inputs(
+            num_samples=num_samples,
+            generation_config=generation_config,
             device=device,
+            prompt_input_ids=prompt_input_ids,
+            target_length=target_length,
         )
-        x = torch.gather(x, dim=1, index=sort_idx)
+        assert prompt_length + sum(unmask_k_tokens) == x.shape[1]
         unmasked_tokens = 0
         self.backbone.reset_kv_cache()
         if hasattr(self.backbone, "reset_sorted_rotary_cache"):
@@ -824,14 +1014,28 @@ class EsoLM(SetDLM):
             torch.cuda.synchronize()
         start = time.perf_counter()
         nfe = 0
+        if prompt_length > 0:
+            self._forward_sample_step(
+                zt=x,
+                sort_idx=sort_idx,
+                last_k_start=0,
+                curr_k_start=prompt_length,
+                curr_k_end=prompt_length,
+            )
+            nfe += 1
         for i, k in enumerate(unmask_k_tokens):
-            last_k_start = 0 if i == 0 else unmasked_tokens - unmask_k_tokens[i - 1]
+            generation_offset = prompt_length
+            last_k_start = (
+                generation_offset
+                if i == 0
+                else generation_offset + unmasked_tokens - unmask_k_tokens[i - 1]
+            )
             logits = self._forward_sample_step(
                 zt=x,
                 sort_idx=sort_idx,
                 last_k_start=last_k_start,
-                curr_k_start=unmasked_tokens,
-                curr_k_end=unmasked_tokens + k,
+                curr_k_start=generation_offset + unmasked_tokens,
+                curr_k_end=generation_offset + unmasked_tokens + k,
             )
             nfe += 1
             if not profile_throughput:
@@ -840,7 +1044,10 @@ class EsoLM(SetDLM):
                 probs = logits.float().softmax(dim=-1)
                 if generation_config.nucleus_p < 1.0:
                     probs = self._nucleus_sample(probs, generation_config.nucleus_p)
-                indices = slice(unmasked_tokens, unmasked_tokens + k)
+                indices = slice(
+                    generation_offset + unmasked_tokens,
+                    generation_offset + unmasked_tokens + k,
+                )
                 y = self._sample_categorical(
                     probs,
                     do_sample=getattr(generation_config, "do_sample", True),
@@ -887,19 +1094,61 @@ class EsoLM(SetDLM):
                 block_size=self.num_tokens,
                 use_cache=True,
             )
-        if inputs is not None and inputs.numel() > 0:
-            raise NotImplementedError(
-                "EsoLM generation only supports unconditional sampling; the "
-                "official upstream sampler has no context/infill path."
-            )
         if logits_processor is not None and len(logits_processor) > 0:
             raise NotImplementedError(
                 "EsoLM generation does not support custom logits processors."
             )
-        if stopping_criteria is not None and len(stopping_criteria) > 0:
-            raise NotImplementedError(
-                "EsoLM generation does not support custom stopping criteria."
+
+        input_length = inputs.shape[-1] if inputs is not None else 0
+        if inputs is not None and inputs.numel() > 0:
+            if (inputs == self.mask_token_id).any():
+                raise NotImplementedError(
+                    "EsoLM generation does not support infilling prompts; pass a "
+                    "contiguous prompt prefix and `max_new_tokens` instead."
+                )
+            batch_size = inputs.shape[0]
+            _, requested_new_tokens = self._compute_sampling_lengths(
+                generation_config=generation_config,
+                input_length=input_length,
+                max_new_tokens=max_new_tokens,
+                max_length=max_length,
             )
+            requested_new_tokens = int(requested_new_tokens)
+            if requested_new_tokens < 0:
+                raise ValueError(
+                    "EsoLM prompt-conditioned generation received a negative "
+                    f"`max_new_tokens` value: {requested_new_tokens}."
+                )
+            if requested_new_tokens == 0:
+                if return_dict_in_generate:
+                    return DiffusionGenerationOutput(
+                        sequences=inputs,
+                        parallelism_factor=0.0,
+                        inf_budget=None,
+                        inf_budgets=None,
+                    )
+                return inputs
+            samples, nfe, _ = self.generate_samples(
+                num_samples=batch_size,
+                num_steps=getattr(generation_config, "num_steps", self.num_tokens),
+                eps=getattr(generation_config, "min_t", 1e-5),
+                generation_config=generation_config,
+                prompt_input_ids=inputs,
+                target_length=input_length + requested_new_tokens,
+            )
+            samples = self._apply_stopping_criteria(
+                samples=samples,
+                stopping_criteria=stopping_criteria,
+                prompt_length=input_length,
+            )
+            if return_dict_in_generate:
+                return DiffusionGenerationOutput(
+                    sequences=samples,
+                    parallelism_factor=requested_new_tokens / max(nfe, 1.0),
+                    inf_budget=None,
+                    inf_budgets=None,
+                )
+            return samples
 
         requested_length = (
             max_new_tokens
@@ -917,6 +1166,11 @@ class EsoLM(SetDLM):
             num_steps=getattr(generation_config, "num_steps", self.num_tokens),
             eps=getattr(generation_config, "min_t", 1e-5),
             generation_config=generation_config,
+        )
+        samples = self._apply_stopping_criteria(
+            samples=samples,
+            stopping_criteria=stopping_criteria,
+            prompt_length=0,
         )
         if return_dict_in_generate:
             return DiffusionGenerationOutput(

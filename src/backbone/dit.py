@@ -759,19 +759,39 @@ class DDiTBlock(nn.Module):
         self.v_cache = None
         self.num_clean_cached = 0
 
+    def _ensure_kv_cache_capacity(self, k: torch.Tensor, required_length: int) -> None:
+        current_capacity = 0 if self.k_cache is None else int(self.k_cache.shape[1])
+        if current_capacity >= required_length:
+            return
+        new_capacity = max(required_length, self.n, max(current_capacity * 2, 1))
+        head_dim = self.attn_qkv.out_features // (3 * self.n_heads)
+        new_k_cache = torch.empty(
+            k.shape[0],
+            new_capacity,
+            self.n_heads,
+            head_dim,
+            device=k.device,
+            dtype=k.dtype,
+        )
+        new_v_cache = torch.empty_like(new_k_cache)
+        if self.k_cache is not None and self.v_cache is not None and current_capacity > 0:
+            new_k_cache[:, :current_capacity] = self.k_cache[:, :current_capacity]
+            new_v_cache[:, :current_capacity] = self.v_cache[:, :current_capacity]
+        self.k_cache = new_k_cache
+        self.v_cache = new_v_cache
+
     def _process_and_update_kv(self, k, v, num_clean):
         if num_clean == 0:
+            if self.k_cache is not None and self.v_cache is not None:
+                k_so_far = self.k_cache[:, : self.num_clean_cached]
+                v_so_far = self.v_cache[:, : self.num_clean_cached]
+                return (
+                    torch.cat([k_so_far, k], dim=1),
+                    torch.cat([v_so_far, v], dim=1),
+                )
             return k, v
         if self.k_cache is None and self.v_cache is None:
-            self.k_cache = torch.empty(
-                k.shape[0],
-                self.n,
-                self.n_heads,
-                self.attn_qkv.out_features // (3 * self.n_heads),
-                device=k.device,
-                dtype=k.dtype,
-            )
-            self.v_cache = torch.empty_like(self.k_cache)
+            self._ensure_kv_cache_capacity(k=k, required_length=k.shape[1])
             num_new = k.shape[1]
             self.k_cache[:, :num_new] = k
             self.v_cache[:, :num_new] = v
@@ -780,6 +800,7 @@ class DDiTBlock(nn.Module):
 
         num_new = k.shape[1]
         num_clean_cached_and_new = self.num_clean_cached + num_new
+        self._ensure_kv_cache_capacity(k=k, required_length=num_clean_cached_and_new)
         self.k_cache[:, self.num_clean_cached : num_clean_cached_and_new] = k
         self.v_cache[:, self.num_clean_cached : num_clean_cached_and_new] = v
         self.num_clean_cached += num_clean
