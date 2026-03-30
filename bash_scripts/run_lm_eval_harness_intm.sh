@@ -72,6 +72,7 @@ echo "MODEL_PATH: ${MODEL_PATH}"
 USE_EMA=true
 OUTPUT_DIR="outputs/${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
+ESOLM_INFERENCE_ALPHA_0=null  # EsoLM-only override; set to null to use checkpoint value
 
 T=${BLOCK_SIZE}
 L=1024
@@ -93,9 +94,20 @@ echo "FIRST_HITTING: ${FIRST_HITTING}"
 echo "CONFIDENCE_BASED_NOISING: ${CONFIDENCE_BASED_NOISING}"
 echo "CONFIDENCE_MARGIN_BASED_NOISING: ${CONFIDENCE_MARGIN_BASED_NOISING}"
 echo "ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS}"
+echo "ESOLM_INFERENCE_ALPHA_0: ${ESOLM_INFERENCE_ALPHA_0}"
 
 OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_L${L}_block${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hit${FIRST_HITTING}-conf_noise${CONFIDENCE_BASED_NOISING}-conf_margin_noise${CONFIDENCE_MARGIN_BASED_NOISING}-conf_thold${CONFIDENCE_THRESHOLD}-align_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-max_window_size${MAX_WINDOW_SIZE}"
+if [ "${ESOLM_INFERENCE_ALPHA_0}" != "null" ]; then
+  OUTPUT_PATH="${OUTPUT_PATH}_esolm-alpha0${ESOLM_INFERENCE_ALPHA_0}"
+fi
 mkdir -p ${OUTPUT_PATH}
+
+MODEL_ARGS=()
+if [ "${ESOLM_INFERENCE_ALPHA_0}" != "null" ]; then
+  MODEL_ARGS+=(
+    +task.model.model_config_overrides.alpha_0=${ESOLM_INFERENCE_ALPHA_0}
+  )
+fi
 
 PORT=$((RANDOM % 10000 + 29500))
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/harness_eval_record_intm.py \
@@ -114,6 +126,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   max_length=${L} \
   max_new_tokens=${L} \
   block_size=${BLOCK_SIZE} \
+  "${MODEL_ARGS[@]}" \
   generation@generation_config=set_diffusion_generation_config \
   generation_config.do_sample=${DO_SAMPLE} \
   generation_config.sampling_strategy=${SAMPLING_STRATEGY} \

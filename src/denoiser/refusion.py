@@ -607,6 +607,48 @@ class ReFusion(AR):
             return int(model_eos_token_id)
         return None
 
+    @staticmethod
+    def _apply_stopping_criteria(
+        sequences: torch.LongTensor,
+        stopping_criteria: StoppingCriteriaList | None,
+        prompt_length: int = 0,
+        pad_token_id: int = 0,
+    ) -> torch.LongTensor:
+        if stopping_criteria is None or len(stopping_criteria) == 0:
+            return sequences
+        if sequences.ndim != 2 or sequences.shape[1] == 0:
+            return sequences
+
+        stop_positions: list[int] = []
+        search_start = max(prompt_length + 1, 1)
+        total_length = sequences.shape[1]
+        for batch_idx in range(sequences.shape[0]):
+            stop_pos = total_length
+            for end in range(search_start, total_length + 1):
+                should_stop = stopping_criteria(
+                    input_ids=sequences[batch_idx : batch_idx + 1, :end],
+                    scores=None,
+                )
+                if isinstance(should_stop, torch.Tensor):
+                    stop_flag = bool(should_stop.reshape(-1)[0].item())
+                else:
+                    stop_flag = bool(should_stop)
+                if stop_flag:
+                    stop_pos = end
+                    break
+            stop_positions.append(stop_pos)
+
+        if all(stop_pos == total_length for stop_pos in stop_positions):
+            return sequences
+        max_stop = max(stop_positions)
+        truncated = sequences.new_full(
+            (sequences.shape[0], max_stop),
+            fill_value=pad_token_id,
+        )
+        for batch_idx, stop_pos in enumerate(stop_positions):
+            truncated[batch_idx, :stop_pos] = sequences[batch_idx, :stop_pos]
+        return truncated
+
     # Upstream ReFusion source:
     # - file: generate.py
     # - symbol: generate_refusion
@@ -629,7 +671,7 @@ class ReFusion(AR):
         disable_pbar: Optional[bool] = None,
         **kwargs: Any,
     ) -> Union[GenerateOutput, torch.LongTensor]:
-        del logits_processor, stopping_criteria, batch_size, disable_pbar, kwargs
+        del logits_processor, batch_size, disable_pbar, kwargs
         if inputs is None:
             raise ValueError("ReFusion generation requires `inputs`.")
         if inputs.shape[0] != 1:
@@ -660,6 +702,7 @@ class ReFusion(AR):
                 return DiffusionGenerationOutput(
                     sequences=prompt,
                     parallelism_factor=0.0,
+                    non_ar_tokens_per_step=0.0,
                 )
             return prompt
 
@@ -702,6 +745,8 @@ class ReFusion(AR):
         past_key_values = ReFusionDynamicCache()
         sum_tpf = 0.0
         forward_count = 0
+        non_ar_tokens_committed = 0.0
+        non_ar_step_count = 0
         eos_flag = False
         block_length = padded_new_tokens // serial_num_blocks
 
@@ -855,6 +900,8 @@ class ReFusion(AR):
                         )
                         past_key_values.crop(cur_x.shape[1])
                         prefix_block_tag = True
+                        non_ar_tokens_committed += float(len(remain_indices))
+                        non_ar_step_count += 1
                         sum_tpf += slot_size * len(remain_indices) / 2
                         forward_count += 1
 
@@ -1025,6 +1072,8 @@ class ReFusion(AR):
 
                 cur_x = torch.cat((cur_x, kept_tokens), dim=1)
                 cur_pos = torch.cat((cur_pos, kept_pos_ids), dim=1)
+                non_ar_tokens_committed += float(current_speculative_blocks.shape[0])
+                non_ar_step_count += 1
 
                 if eos_found_in_loop:
                     indices_to_remove.update(
@@ -1045,10 +1094,22 @@ class ReFusion(AR):
 
         _, reorder_indices = torch.sort(cur_pos, dim=-1)
         sequences = torch.gather(cur_x, dim=-1, index=reorder_indices)
+        sequences = self._apply_stopping_criteria(
+            sequences=sequences,
+            stopping_criteria=stopping_criteria,
+            prompt_length=prompt_len,
+            pad_token_id=self.pad_token_id,
+        )
         parallelism_factor = sum_tpf / forward_count if forward_count > 0 else 0.0
+        non_ar_tokens_per_step = (
+            non_ar_tokens_committed / non_ar_step_count
+            if non_ar_step_count > 0
+            else 0.0
+        )
         if return_dict_in_generate:
             return DiffusionGenerationOutput(
                 sequences=sequences,
                 parallelism_factor=parallelism_factor,
+                non_ar_tokens_per_step=non_ar_tokens_per_step,
             )
         return sequences

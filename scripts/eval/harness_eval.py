@@ -197,6 +197,7 @@ class LMEvalHarnessModel(LM):
         tputs = []
         response_lengths = []
         parallelism_factors = []
+        non_ar_tokens_per_step_values = []
         inf_budgets = []
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
@@ -232,10 +233,16 @@ class LMEvalHarnessModel(LM):
                 parallelism_factor = generation_outputs.get("parallelism_factor", -1.0)
                 if parallelism_factor is None:
                     parallelism_factor = -1.0
+                non_ar_tokens_per_step = generation_outputs.get(
+                    "non_ar_tokens_per_step"
+                )
             else:
                 sample = generation_outputs
                 parallelism_factor = -1.0
+                non_ar_tokens_per_step = None
             parallelism_factors.append(parallelism_factor)
+            if non_ar_tokens_per_step is not None:
+                non_ar_tokens_per_step_values.append(non_ar_tokens_per_step)
             if "inf_budget" in generation_outputs:
                 inf_budget = generation_outputs["inf_budget"]
                 inf_budgets.append(inf_budget)
@@ -267,6 +274,12 @@ class LMEvalHarnessModel(LM):
                     f"Parallelism factor: {np.mean(parallelism_factors):0.2f} "
                     f"+/- {np.std(parallelism_factors):0.2f}"
                 )
+                if non_ar_tokens_per_step_values:
+                    print(
+                        "Fully parallel non-AR tokens per step: "
+                        f"{np.mean(non_ar_tokens_per_step_values):0.2f} "
+                        f"+/- {np.std(non_ar_tokens_per_step_values):0.2f}"
+                    )
                 if "inf_budget" in generation_outputs:
                     print(
                         f"Inference prediction budget: {np.mean(inf_budgets):0.2f} "
@@ -309,6 +322,9 @@ class LMEvalHarnessModel(LM):
             )
         print(f"RANK {self.rank} completed!")
         parallelism_factors = gather_results(parallelism_factors, self.world_size)
+        non_ar_tokens_per_step_values = gather_results(
+            non_ar_tokens_per_step_values, self.world_size
+        )
         throughputs = gather_results(tputs, self.world_size)
         if "inf_budget" in generation_outputs:
             inf_budgets = gather_results(inf_budgets, self.world_size)
@@ -320,6 +336,12 @@ class LMEvalHarnessModel(LM):
                 f"Parallelism factor: {np.mean(parallelism_factors):0.2f} "
                 f"+/- {np.std(parallelism_factors):0.2f}"
             )
+            if non_ar_tokens_per_step_values:
+                print(
+                    "Fully parallel non-AR tokens per step: "
+                    f"{np.mean(non_ar_tokens_per_step_values):0.2f} "
+                    f"+/- {np.std(non_ar_tokens_per_step_values):0.2f}"
+                )
             print(
                 f"Thput (tok/s): {np.mean(throughputs):0.2f} "
                 f"+/- {np.std(throughputs):0.2f}"

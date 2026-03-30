@@ -34,12 +34,19 @@ REQUIRE_REFUSION_SEMANTICS=false
 # MAX_WINDOW_SIZE=32
 # ALIGN_INPUTS_TO_BLOCKS=false
 
-# ablation w = 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_knull_maxb16_sweep_v1"
+# ablation w = 4
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_knull_maxb4_sweep_v1"
 # KV_CACHING=true
 # BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=16
+# MAX_WINDOW_SIZE=4
 # ALIGN_INPUTS_TO_BLOCKS=false
+
+# ablation w = 16
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_knull_maxb16_sweep_v1"
+KV_CACHING=true
+BLOCK_SIZE=1024
+MAX_WINDOW_SIZE=16
+ALIGN_INPUTS_TO_BLOCKS=false
 
 # ablation w = 24
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_knull_maxb24_sweep_v1"
@@ -130,7 +137,6 @@ REQUIRE_REFUSION_SEMANTICS=true
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
-
 # grad accum 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz16_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_knull_maxb32_sweep_v1"
 # BLOCK_SIZE=1024
@@ -150,12 +156,13 @@ USE_EMA=true
 OUTPUT_DIR="outputs/${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
 TOKENIZER_PATH="Qwen/Qwen3-1.7B-Base"
+ESOLM_INFERENCE_ALPHA_0=null  # EsoLM-only override; set to null to use checkpoint value
 
 REFUSION_LENGTH=null
-REFUSION_SLOT_SIZE=8
-REFUSION_SERIAL_NUM_BLOCKS=2
+REFUSION_SLOT_SIZE=32
+REFUSION_SERIAL_NUM_BLOCKS=8
 REFUSION_SLOT_THRESHOLD=0.9
-REFUSION_TOKEN_THRESHOLD=0.9
+REFUSION_TOKEN_THRESHOLD=0.4
 REFUSION_TEMPERATURE=0.0
 
 T=${BLOCK_SIZE}
@@ -165,7 +172,7 @@ SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
-CONFIDENCE_THRESHOLD=1e6 # TODO: Change as needed
+CONFIDENCE_THRESHOLD=0.8 # TODO: Change as needed
 CKPT="best"
 LINEAR_UNMASKING=true
 
@@ -180,10 +187,14 @@ echo "CONFIDENCE_MARGIN_BASED_NOISING: ${CONFIDENCE_MARGIN_BASED_NOISING}"
 echo "ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS}"
 echo "TOKENIZER_PATH: ${TOKENIZER_PATH}"
 echo "REQUIRE_REFUSION_SEMANTICS: ${REQUIRE_REFUSION_SEMANTICS}"
+echo "ESOLM_INFERENCE_ALPHA_0: ${ESOLM_INFERENCE_ALPHA_0}"
 
 OUTPUT_PATH="${OUTPUT_DIR}/ema${USE_EMA}_ckpt${CKPT}_L${L}_block${BLOCK_SIZE}-do_sample${DO_SAMPLE}-sampling_strategy${SAMPLING_STRATEGY}-T${T}_first_hit${FIRST_HITTING}-conf_noise${CONFIDENCE_BASED_NOISING}-conf_margin_noise${CONFIDENCE_MARGIN_BASED_NOISING}-conf_thold${CONFIDENCE_THRESHOLD}-align_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-max_window_size${MAX_WINDOW_SIZE}"
 if [ "${REQUIRE_REFUSION_SEMANTICS}" = true ]; then
   OUTPUT_PATH="${OUTPUT_DIR}/refusion_ema${USE_EMA}_ckpt${CKPT}_L${L}_slot${REFUSION_SLOT_SIZE}_serial${REFUSION_SERIAL_NUM_BLOCKS}_slotth${REFUSION_SLOT_THRESHOLD}_tokenth${REFUSION_TOKEN_THRESHOLD}_temp${REFUSION_TEMPERATURE}"
+fi
+if [ "${ESOLM_INFERENCE_ALPHA_0}" != "null" ]; then
+  OUTPUT_PATH="${OUTPUT_PATH}_esolm-alpha0${ESOLM_INFERENCE_ALPHA_0}"
 fi
 OUTPUT_PATH="${OUTPUT_PATH}_test"
 mkdir -p ${OUTPUT_PATH}
@@ -210,6 +221,11 @@ if [ "${REQUIRE_REFUSION_SEMANTICS}" = true ]; then
     generation_config.token_threshold=${REFUSION_TOKEN_THRESHOLD}
   )
 else
+  if [ "${ESOLM_INFERENCE_ALPHA_0}" != "null" ]; then
+    MODEL_ARGS+=(
+      +task.model.model_config_overrides.alpha_0=${ESOLM_INFERENCE_ALPHA_0}
+    )
+  fi
   GENERATION_ARGS+=(
     generation@generation_config=set_diffusion_generation_config
     generation_config.do_sample=${DO_SAMPLE}

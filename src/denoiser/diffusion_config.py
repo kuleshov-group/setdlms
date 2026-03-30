@@ -180,8 +180,11 @@ class DiffusionGenerationOutput(ModelOutput):
             Returns the model cache, used to speed up decoding. Different models have a
             different cache format, check the model's documentation.
             Usually, a [`~cache_utils.Cache`] instance.
-        parallelism_factor (float): The parallelism factor of the generation.
+        parallelism_factor (float): The heuristic parallelism factor of the generation.
             Defaults to -1.0.
+        non_ar_tokens_per_step (float): The average number of finalized tokens per
+            scheduler step that come from the fully parallel, non-AR stage of decoding.
+            Defaults to None.
     """
 
     sequences: torch.LongTensor
@@ -191,5 +194,6 @@ class DiffusionGenerationOutput(ModelOutput):
     hidden_states: Optional[tuple[tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Cache] = None
     parallelism_factor: Optional[float] = None
+    non_ar_tokens_per_step: Optional[float] = None
     inf_budget: Optional[float] = None
     inf_budgets: Optional[list[float]] = None

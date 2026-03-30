@@ -9,9 +9,12 @@ from types import SimpleNamespace
 try:
     import torch
     from torch import nn
+    from transformers import StoppingCriteria, StoppingCriteriaList
 except ModuleNotFoundError:
     torch = None
     nn = None
+    StoppingCriteria = None
+    StoppingCriteriaList = None
 
 if torch is not None:
     from src.denoiser.base import DenoiserInput
@@ -626,6 +629,51 @@ class ReFusionTests(unittest.TestCase):
             )
 
         self.assertEqual(add_gumbel_noise_mock.call_args.kwargs["temperature"], 0.7)
+
+    def test_generate_reports_non_ar_tokens_per_step(self):
+        model = _make_prefix_only_generation_model(slot_size=1, serial_num_blocks=1)
+
+        outputs = model.generate(
+            inputs=torch.tensor([[1]], dtype=torch.long),
+            generation_config=ReFusionGenerationConfig(
+                slot_size=1,
+                serial_num_blocks=1,
+                max_new_tokens=1,
+            ),
+            return_dict_in_generate=True,
+        )
+
+        self.assertEqual(outputs.non_ar_tokens_per_step, 1.0)
+
+    def test_generate_truncates_returned_sequence_with_stopping_criteria(self):
+        class _StopAfterGeneratedTokens(StoppingCriteria):
+            def __init__(self, prompt_length: int, generated_tokens: int):
+                self.target_length = prompt_length + generated_tokens
+
+            def __call__(self, input_ids, scores=None, **kwargs):
+                return torch.tensor(
+                    [input_ids.shape[1] >= self.target_length],
+                    device=input_ids.device,
+                    dtype=torch.bool,
+                )
+
+        model = _make_prefix_only_generation_model(slot_size=8, serial_num_blocks=2)
+        outputs = model.generate(
+            inputs=torch.tensor([[1]], dtype=torch.long),
+            generation_config=ReFusionGenerationConfig(
+                slot_size=8,
+                serial_num_blocks=2,
+                max_new_tokens=10,
+            ),
+            stopping_criteria=StoppingCriteriaList(
+                [_StopAfterGeneratedTokens(prompt_length=1, generated_tokens=3)]
+            ),
+        )
+
+        self.assertEqual(tuple(outputs.shape), (1, 4))
+        self.assertTrue(
+            torch.equal(outputs, torch.tensor([[1, 7, 7, 7]], dtype=torch.long))
+        )
 
     def test_refusion_generation_config_yaml_defaults_to_deterministic_temperature(self):
         config_path = os.path.join(

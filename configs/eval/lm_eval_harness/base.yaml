@@ -22,3 +22,4 @@ model:
   load_ema_weights: false
   ckpt_file: 'best-rank0.pt'  # best-rank0.pt or latest-rank0.pt
   gen_kwargs: null
+  model_config_overrides: {}
