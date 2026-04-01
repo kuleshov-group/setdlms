@@ -574,8 +574,10 @@ def generate_samples(
         else:
             model.tokenizer.bos_token = model.tokenizer.eos_token
 
-    # set stopping criteria for non-throughput run
-    if not getattr(cfg, "throughput_run", False):
+    # Throughput runs should not stop early on content-based criteria.
+    if getattr(cfg, "throughput_run", False):
+        gen_kwargs["stopping_criteria"] = None
+    else:
         bos_token_pattern = re.escape(model.tokenizer.bos_token)
         gen_kwargs["stopping_criteria"][0].pattern = rf"{bos_token_pattern}"
 
@@ -585,22 +587,25 @@ def generate_samples(
     parallelism_factors = []
     lengths = []
     entropies = []
-    # divide num_samples by world size, if rank is 0, use the remainder
-    num_samples = cfg.num_samples
+    throughput_run = bool(getattr(cfg, "throughput_run", False))
     if dist.is_available() and dist.is_initialized():
-        world_size = dist.get_world_size()
-        new_max_samples = int(num_samples // world_size)
-        if dist.get_rank() == 0:
-            new_max_samples += int(num_samples % world_size)
-        num_samples = new_max_samples
-
-    if dist.is_available() and dist.is_initialized():
-        dist.get_rank()
         world_size = dist.get_world_size()
     else:
         world_size = 1
+    # For normal runs, shard the requested sample count across ranks.
+    # For throughput runs, each rank generates an identical fixed budget and
+    # only rank 0 records tok/s to avoid mixing timings from different devices.
+    if throughput_run:
+        num_samples = int(getattr(cfg, "throughput_samples_per_rank", 200))
+    else:
+        num_samples = cfg.num_samples
+        if dist.is_available() and dist.is_initialized():
+            new_max_samples = int(num_samples // world_size)
+            if dist.get_rank() == 0:
+                new_max_samples += int(num_samples % world_size)
+            num_samples = new_max_samples
 
-    pbar = tqdm(range(num_samples), desc="Generating")
+    pbar = tqdm(range(num_samples), desc="Generating", disable=(local_rank != 0))
 
     for ind, i in enumerate(pbar):
         input_ids = torch.tensor([model.tokenizer.bos_token_id])[None, :].to(
@@ -609,18 +614,23 @@ def generate_samples(
         # Generate samples
         with torch.no_grad():
             while True:
-                start_event = torch.cuda.Event(enable_timing=True)
-                end_event = torch.cuda.Event(enable_timing=True)
-                start_event.record()
+                should_measure_tput = (not throughput_run) or local_rank == 0
+                if should_measure_tput:
+                    start_event = torch.cuda.Event(enable_timing=True)
+                    end_event = torch.cuda.Event(enable_timing=True)
+                    start_event.record()
+                else:
+                    start_event, end_event = None, None
                 generation_output = model.generate(
                     inputs=input_ids,
                     disable_pbar=True,
                     tokenizer=tokenizer,
                     **gen_kwargs,
                 )
-                end_event.record()
-                torch.cuda.synchronize()
-                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+                if should_measure_tput:
+                    end_event.record()
+                    torch.cuda.synchronize()
+                    elapsed_time_s = start_event.elapsed_time(end_event) / 1000
                 if isinstance(generation_output, ModelOutput):
                     outputs = generation_output.sequences
                     parallelism_factor = generation_output.get(
@@ -636,7 +646,8 @@ def generate_samples(
                     outputs, model.tokenizer.mask_token_id, model.tokenizer.pad_token_id
                 )
                 if (
-                    gen_kwargs["stopping_criteria"] is not None
+                    (not throughput_run)
+                    and gen_kwargs["stopping_criteria"] is not None
                     and hasattr(gen_kwargs["stopping_criteria"][0], "truncate_idx")
                     and gen_kwargs["stopping_criteria"][0].truncate_idx is not None
                 ):
@@ -652,34 +663,40 @@ def generate_samples(
             if ind % 100 == 0:
                 print(tokenizer.decode(outputs[0]))
 
-            if i >= THROUGHPUT_WARMUP:
+            if should_measure_tput and i >= THROUGHPUT_WARMUP:
                 tputs.append(length / elapsed_time_s)
-                parallelism_factors.append(parallelism_factor)
-                lengths.append(outputs.shape[1])
-                entropies.extend(entropy)
+            parallelism_factors.append(parallelism_factor)
+            lengths.append(outputs.shape[1])
+            entropies.extend(entropy)
             output_text = model.tokenizer.decode(outputs[0])
             generated_samples.append(output_text)
 
-            pbar.set_postfix(
-                tput=f"{np.mean(tputs):.2f} +/- {np.std(tputs):.2f}",
-                parallel=(
-                    f"{np.mean(parallelism_factors):.2f} "
-                    f"+/- {np.std(parallelism_factors):.2f}"
-                ),
-            )
+            if local_rank == 0:
+                postfix = {
+                    "parallel": (
+                        f"{np.mean(parallelism_factors):.2f} "
+                        f"+/- {np.std(parallelism_factors):.2f}"
+                    )
+                }
+                if tputs:
+                    postfix["tput"] = f"{np.mean(tputs):.2f} +/- {np.std(tputs):.2f}"
+                pbar.set_postfix(postfix)
 
     # gather samples across devices
     generated_samples = gather_results(generated_samples, world_size)
-    tputs = gather_results(tputs, world_size)
+    if not throughput_run:
+        tputs = gather_results(tputs, world_size)
     parallelism_factors = gather_results(parallelism_factors, world_size)
     lengths = gather_results(lengths, world_size)
     entropies = gather_results(entropies, world_size)
     gen_metrics: Optional[dict[str, Any]] = None
     if local_rank == 0:
-        print(
-            f"TPUT (tok/s) over {len(tputs)} samples: "
-            f"{np.mean(tputs)} +/- {np.std(tputs)}"
-        )
+        if tputs:
+            tput_prefix = "Rank 0 TPUT" if throughput_run else "TPUT"
+            print(
+                f"{tput_prefix} (tok/s) over {len(tputs)} samples: "
+                f"{np.mean(tputs)} +/- {np.std(tputs)}"
+            )
         print(
             f"Parallelism factor over {len(parallelism_factors)} samples: "
             f"{np.mean(parallelism_factors)} +/- {np.std(parallelism_factors)}"

@@ -1,0 +1,238 @@
+composer:
+  trainer:
+    _target_: composer.Trainer
+    run_name: gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10
+    seed: 1
+    device: gpu
+    train_subset_num_batches: -1
+    eval_subset_num_batches: -1
+    max_duration: 75000ba
+    eval_interval: 1000ba
+    progress_bar: false
+    log_to_console: true
+    console_log_interval: 10ba
+    precision: amp_bf16
+    device_train_microbatch_size: 1
+    save_folder: /share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10/checkpoints
+    save_filename: ep{epoch}-ba{batch}-rank{rank}.pt
+    save_latest_filename: latest-rank{rank}.pt
+    save_interval: 2000ba
+    save_num_checkpoints_to_keep: 1
+    save_overwrite: false
+    save_metrics: false
+    load_path: null
+    load_weights_only: false
+    autoresume: true
+    python_log_level: null
+    dist_timeout: 600.0
+  algorithms:
+    ema:
+      _target_: composer.algorithms.EMA
+      half_life: null
+      smoothing: 0.9999
+      ema_start: 0.0dur
+      update_interval: 1ba
+    gradient_clipping:
+      _target_: composer.algorithms.GradientClipping
+      clipping_type: norm
+      clipping_threshold: 1.0
+  callbacks:
+    hf_compatible_checkpointing:
+      _target_: src.custom_composer.callbacks.HuggingFaceCompatibleCheckpointing
+      folder: /share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10/checkpoints
+      filename: ep{epoch}-ba{batch}-rank{rank}.pt
+      latest_filename: latest-rank{rank}.pt
+      save_interval: 2000ba
+      num_checkpoints_to_keep: 1
+      overwrite: false
+      disable_hf: true
+      save_local: true
+      save_to_hub: true
+      hub_repo_id: kuleshov-group/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10
+    lr_monitor:
+      _target_: composer.callbacks.LRMonitor
+    runtime_estimator:
+      _target_: composer.callbacks.RuntimeEstimator
+    save_best_checkpointing:
+      _target_: src.custom_composer.callbacks.SaveBestCheckpointing
+      folder: /share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10/checkpoints
+      filename: best-rank{rank}.pt
+      num_checkpoints_to_keep: -1
+      metric_to_monitor: eval/loss
+      mode: min
+      disable_hf: true
+      save_local: true
+      save_to_hub: false
+      hub_repo_id: null
+      start: 0.0dur
+    speed_monitor:
+      _target_: composer.callbacks.SpeedMonitor
+      gpu_flops_available: null
+      window_size: 500
+    log_gradient_norms:
+      _target_: src.custom_composer.callbacks.LogGradientNorms
+      log_frequency: 1
+      include_embedding_params: false
+    log_gradient_variance:
+      _target_: src.custom_composer.callbacks.LogGradientVariance
+      accumulation_steps: 2
+      log_frequency: 1
+      include_embedding_params: false
+      log_per_param_variance: false
+  loggers:
+    _target_: composer.loggers.WandBLogger
+    project: dllm-dev
+    group: null
+    name: gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10
+    init_kwargs:
+      id: gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10
+  lr_scheduler:
+    _target_: composer.optim.scheduler.CosineAnnealingWithWarmupScheduler
+    t_warmup: 100ba
+    t_max: 75000ba
+    alpha_f: 0.5
+  optimizer:
+    _target_: composer.optim.DecoupledAdamW
+    lr: 1.0e-05
+    betas:
+    - 0.9
+    - 0.98
+    eps: 1.0e-08
+    weight_decay: 1.0e-05
+tokenizer:
+  _target_: transformers.AutoTokenizer.from_pretrained
+  pretrained_model_name_or_path: Qwen/Qwen3-1.7B-Base
+  revision: null
+  trust_remote_code: true
+  chat_template: null
+  padding_side: right
+collator:
+  _target_: src.datasets.collator.DenoisingCollator
+  global_batch_size: 1
+  padding: max_length
+  max_length: 1024
+  pad_to_multiple_of: null
+  return_tensors: pt
+  predict_padding: false
+  restricted_t_range: null
+  sampling_eps: 0.001
+  antithetic_sampling: false
+  block_size: 4
+eval_collator:
+  _target_: src.datasets.collator.DenoisingCollator
+  global_batch_size: 1
+  padding: max_length
+  max_length: 1024
+  pad_to_multiple_of: null
+  return_tensors: pt
+  predict_padding: false
+  restricted_t_range: null
+  sampling_eps: 0.001
+  antithetic_sampling: false
+  block_size: 4
+train_dataset:
+  _target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
+  dataset_path: /share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_train
+  inject_context_mask: true
+  tokenizer:
+    _target_: transformers.AutoTokenizer.from_pretrained
+    pretrained_model_name_or_path: Qwen/Qwen3-1.7B-Base
+    revision: null
+    trust_remote_code: true
+    chat_template: null
+    padding_side: right
+  token_to_split: <|im_start|>
+  split_offset: 2
+eval_dataset:
+  _target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
+  dataset_path: /share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_eval
+  inject_context_mask: true
+  tokenizer:
+    _target_: transformers.AutoTokenizer.from_pretrained
+    pretrained_model_name_or_path: Qwen/Qwen3-1.7B-Base
+    revision: null
+    trust_remote_code: true
+    chat_template: null
+    padding_side: right
+  token_to_split: <|im_start|>
+  split_offset: 2
+metrics:
+  loss:
+    _target_: src.tasks.metrics.Loss
+  nll:
+    _target_: src.tasks.metrics.NLL
+  bpd:
+    _target_: src.tasks.metrics.BPD
+  perplexity:
+    _target_: src.tasks.metrics.Perplexity
+eval_metrics:
+  loss:
+    _target_: src.tasks.metrics.Loss
+  nll:
+    _target_: src.tasks.metrics.NLL
+  bpd:
+    _target_: src.tasks.metrics.BPD
+  perplexity:
+    _target_: src.tasks.metrics.Perplexity
+model:
+  _target_: src.denoiser.diffusion.BD3LM
+  config:
+    _target_: src.denoiser.diffusion.BD3LMConfig
+    _recursive_: false
+    length: 1024
+    tokenization_config:
+      vocab_size: 151669
+      mask_token_id: 151660
+      bos_token_id: 151643
+      pad_token_id: 151643
+      eos_token_id: 151643
+      pad_vocab_size_multiple: 1
+    tokenizer_name: Qwen/Qwen3-1.7B-Base
+    attn_backend: sdpa
+    train_on_context: false
+    keep_clean_bos: true
+    block_size: 4
+    eval_block_size: 4
+    noise_config:
+      _target_: src.noise_schedule.noise_schedules.LinearNoise
+    backbone_config:
+      _target_: src.backbone.automodel.AutoModelFromPreTrained
+      automodel_cls: AutoModelForCausalLM
+      pretrained_model_name_or_path: Qwen/Qwen3-1.7B-Base
+      revision: null
+      trust_remote_code: true
+      num_layers: 28
+      keep_top_layers: false
+      reinit_model: false
+      attn_implementation: sdpa
+run_name: gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10
+seed: 1
+backend: gpu
+pretrained_model_name_or_path: Qwen/Qwen3-1.7B-Base
+block_size: 4
+eval_block_size: 4
+eval_nll: false
+train_dataloader:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 1
+  num_workers: 0
+  pin_memory: true
+eval_dataloader:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 1
+  num_workers: 0
+  pin_memory: true
+training:
+  autoresume: true
+  load_path: null
+  ema: 0.9999
+  lr: 0.0003
+  global_batch_size: 1
+  grad_accum: 1
+  antithetic_sampling: false
+  sampling_eps: 0.001
+  restricted_t_range: null
+  compile_backbone: false
+  train_on_nelbo: false
+checkpointing:
+  save_dir: /share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10/checkpoints

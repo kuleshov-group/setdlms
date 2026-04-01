@@ -758,17 +758,51 @@ class EsoLM(SetDLM):
         stopping_criteria: StoppingCriteriaList | None,
         prompt_length: int = 0,
     ) -> torch.LongTensor:
-        if stopping_criteria is None or len(stopping_criteria) == 0:
+        stop_positions = self._find_stop_positions(
+            samples=samples,
+            stopping_criteria=stopping_criteria,
+            prompt_length=prompt_length,
+            truncate_at_first_mask=False,
+        )
+        if not stop_positions:
             return samples
-        if samples.ndim != 2 or samples.shape[1] == 0:
-            return samples
-
-        stop_positions: list[int] = []
-        search_start = max(prompt_length + 1, 1)
         total_length = samples.shape[1]
+        normalized_stop_positions = [
+            total_length if stop_pos is None else stop_pos for stop_pos in stop_positions
+        ]
+        if all(stop_pos == total_length for stop_pos in normalized_stop_positions):
+            return samples
+        return self._truncate_samples(
+            samples=samples,
+            stop_positions=normalized_stop_positions,
+        )
+
+    def _find_stop_positions(
+        self,
+        samples: torch.LongTensor,
+        stopping_criteria: StoppingCriteriaList | None,
+        prompt_length: int = 0,
+        truncate_at_first_mask: bool = False,
+    ) -> list[int | None]:
+        if stopping_criteria is None or len(stopping_criteria) == 0:
+            return []
+        if samples.ndim != 2 or samples.shape[1] == 0:
+            return []
+
+        search_start = max(prompt_length + 1, 1)
+        clean_prefix_lengths = (
+            self._clean_prefix_lengths(samples=samples, prompt_length=prompt_length)
+            if truncate_at_first_mask
+            else [samples.shape[1]] * samples.shape[0]
+        )
+        stop_positions: list[int | None] = []
         for batch_idx in range(samples.shape[0]):
-            stop_pos = total_length
-            for end in range(search_start, total_length + 1):
+            search_end = clean_prefix_lengths[batch_idx]
+            if search_end < search_start:
+                stop_positions.append(None)
+                continue
+            stop_pos = None
+            for end in range(search_start, search_end + 1):
                 should_stop = stopping_criteria(
                     input_ids=samples[batch_idx : batch_idx + 1, :end],
                     scores=None,
@@ -781,8 +815,33 @@ class EsoLM(SetDLM):
                     stop_pos = end
                     break
             stop_positions.append(stop_pos)
+        return stop_positions
 
-        if all(stop_pos == total_length for stop_pos in stop_positions):
+    def _clean_prefix_lengths(
+        self,
+        samples: torch.LongTensor,
+        prompt_length: int = 0,
+    ) -> list[int]:
+        total_length = samples.shape[1]
+        clean_prefix_lengths: list[int] = []
+        for batch_idx in range(samples.shape[0]):
+            masked_positions = (
+                samples[batch_idx, prompt_length:] == self.mask_token_id
+            ).nonzero(as_tuple=False)
+            if masked_positions.numel() == 0:
+                clean_prefix_lengths.append(total_length)
+            else:
+                clean_prefix_lengths.append(
+                    prompt_length + int(masked_positions[0].item())
+                )
+        return clean_prefix_lengths
+
+    def _truncate_samples(
+        self,
+        samples: torch.LongTensor,
+        stop_positions: list[int],
+    ) -> torch.LongTensor:
+        if not stop_positions:
             return samples
         if all(stop_pos == stop_positions[0] for stop_pos in stop_positions):
             return samples[:, : stop_positions[0]]
@@ -802,6 +861,25 @@ class EsoLM(SetDLM):
         for batch_idx, stop_pos in enumerate(stop_positions):
             truncated[batch_idx, :stop_pos] = samples[batch_idx, :stop_pos]
         return truncated
+
+    def _maybe_stop_during_sampling(
+        self,
+        samples: torch.LongTensor,
+        stopping_criteria: StoppingCriteriaList | None,
+        prompt_length: int = 0,
+    ) -> torch.LongTensor | None:
+        stop_positions = self._find_stop_positions(
+            samples=samples,
+            stopping_criteria=stopping_criteria,
+            prompt_length=prompt_length,
+            truncate_at_first_mask=True,
+        )
+        if not stop_positions or any(stop_pos is None for stop_pos in stop_positions):
+            return None
+        return self._truncate_samples(
+            samples=samples,
+            stop_positions=[int(stop_pos) for stop_pos in stop_positions],
+        )
 
     def _forward_sample_step(
         self,
@@ -829,6 +907,43 @@ class EsoLM(SetDLM):
             curr_k_end=curr_k_end,
         )
         return getattr(backbone_output, "logits", backbone_output[0])
+
+    def _confidence_decode_suffix(
+        self,
+        x: torch.LongTensor,
+        sort_idx: torch.LongTensor,
+        suffix_start: int,
+        sampled_tokens: torch.LongTensor,
+        sampled_token_probs: torch.FloatTensor,
+        confidence_threshold: float,
+    ) -> int:
+        remaining_tokens = sampled_tokens.shape[1]
+        if remaining_tokens == 0:
+            return 0
+
+        # Mirror the confidence-threshold rule used by the other diffusion
+        # samplers: always decode the most confident token, then decode any
+        # additional tokens whose sampled confidence clears the threshold.
+        sorted_confidence_indices = torch.argsort(
+            sampled_token_probs, dim=-1, descending=True, stable=True
+        )
+        sorted_tokens = torch.gather(sampled_tokens, 1, sorted_confidence_indices)
+        sorted_token_probs = torch.gather(
+            sampled_token_probs, 1, sorted_confidence_indices
+        )
+        current_suffix_sort_idx = sort_idx[:, suffix_start:]
+        sort_idx[:, suffix_start:] = torch.gather(
+            current_suffix_sort_idx, 1, sorted_confidence_indices
+        )
+        decoded_count = int(
+            (sorted_token_probs >= confidence_threshold).sum(dim=-1).min().item()
+        )
+        decoded_count = max(decoded_count, 1)
+        x[:, suffix_start:] = self.mask_token_id
+        x[:, suffix_start : suffix_start + decoded_count] = sorted_tokens[
+            :, :decoded_count
+        ]
+        return decoded_count
 
     def _backbone_forward(
         self,
@@ -959,6 +1074,7 @@ class EsoLM(SetDLM):
         generation_config: SetDiffusionGenerationConfig | None = None,
         prompt_input_ids: torch.LongTensor | None = None,
         target_length: int | None = None,
+        stopping_criteria: StoppingCriteriaList | None = None,
     ) -> tuple[torch.LongTensor, float, float]:
         # Direct transcription of `s-sahoo/Eso-LMs/algo.py::EsoLM.generate_samples`
         # (lines 513-599).
@@ -968,6 +1084,10 @@ class EsoLM(SetDLM):
         # - sampling goes through the shared `GenerationConfig` surface and local
         #   `_sample_categorical` / `_nucleus_sample` helpers instead of raw
         #   Gumbel-max code, but the induced categorical distribution is the same.
+        # - standard (non-subcontext) sampling decodes the most confident pending
+        #   token each step, plus any additional tokens whose sampled confidence
+        #   exceeds `generation_config.confidence_threshold`, matching the
+        #   threshold-driven behavior used by the other diffusion samplers.
         del eps
         if generation_config is None:
             generation_config = getattr(self, "generation_config", None)
@@ -1014,7 +1134,12 @@ class EsoLM(SetDLM):
             torch.cuda.synchronize()
         start = time.perf_counter()
         nfe = 0
-        if prompt_length > 0:
+        finalized_samples = None
+        use_confidence_threshold_sampling = (
+            not profile_throughput
+            and int(getattr(generation_config, "subcontext_len", 0) or 0) == 0
+        )
+        if prompt_length > 0 and not use_confidence_threshold_sampling:
             self._forward_sample_step(
                 zt=x,
                 sort_idx=sort_idx,
@@ -1023,37 +1148,101 @@ class EsoLM(SetDLM):
                 curr_k_end=prompt_length,
             )
             nfe += 1
-        for i, k in enumerate(unmask_k_tokens):
+        if use_confidence_threshold_sampling:
             generation_offset = prompt_length
-            last_k_start = (
-                generation_offset
-                if i == 0
-                else generation_offset + unmasked_tokens - unmask_k_tokens[i - 1]
+            confidence_threshold = float(
+                getattr(generation_config, "confidence_threshold", float("inf"))
             )
-            logits = self._forward_sample_step(
-                zt=x,
-                sort_idx=sort_idx,
-                last_k_start=last_k_start,
-                curr_k_start=generation_offset + unmasked_tokens,
-                curr_k_end=generation_offset + unmasked_tokens + k,
-            )
-            nfe += 1
-            if not profile_throughput:
+            while generation_offset + unmasked_tokens < x.shape[1]:
+                curr_k_start = generation_offset + unmasked_tokens
+                logits = self._forward_sample_step(
+                    zt=x,
+                    sort_idx=sort_idx,
+                    last_k_start=0,
+                    curr_k_start=curr_k_start,
+                    curr_k_end=x.shape[1],
+                )
+                nfe += 1
                 logits = logits.clone()
                 logits[:, :, self.mask_token_id] = self.neg_infinity
                 probs = logits.float().softmax(dim=-1)
                 if generation_config.nucleus_p < 1.0:
                     probs = self._nucleus_sample(probs, generation_config.nucleus_p)
-                indices = slice(
-                    generation_offset + unmasked_tokens,
-                    generation_offset + unmasked_tokens + k,
-                )
                 y = self._sample_categorical(
                     probs,
                     do_sample=getattr(generation_config, "do_sample", True),
                 )
-                x[:, indices] = y
-            unmasked_tokens += k
+                y_probs = probs.gather(-1, y[..., None]).squeeze(dim=-1)
+                decoded_count = self._confidence_decode_suffix(
+                    x=x,
+                    sort_idx=sort_idx,
+                    suffix_start=curr_k_start,
+                    sampled_tokens=y,
+                    sampled_token_probs=y_probs,
+                    confidence_threshold=confidence_threshold,
+                )
+                unmasked_tokens += decoded_count
+                self.backbone.reset_kv_cache()
+                if hasattr(self.backbone, "reset_sorted_rotary_cache"):
+                    self.backbone.reset_sorted_rotary_cache()
+                if stopping_criteria is not None and len(stopping_criteria) > 0:
+                    current_samples = torch.gather(
+                        x,
+                        dim=1,
+                        index=self._reverse_indices(sort_idx),
+                    )
+                    finalized_samples = self._maybe_stop_during_sampling(
+                        samples=current_samples,
+                        stopping_criteria=stopping_criteria,
+                        prompt_length=prompt_length,
+                    )
+                    if finalized_samples is not None:
+                        break
+        else:
+            for i, k in enumerate(unmask_k_tokens):
+                generation_offset = prompt_length
+                last_k_start = (
+                    generation_offset
+                    if i == 0
+                    else generation_offset + unmasked_tokens - unmask_k_tokens[i - 1]
+                )
+                logits = self._forward_sample_step(
+                    zt=x,
+                    sort_idx=sort_idx,
+                    last_k_start=last_k_start,
+                    curr_k_start=generation_offset + unmasked_tokens,
+                    curr_k_end=generation_offset + unmasked_tokens + k,
+                )
+                nfe += 1
+                if not profile_throughput:
+                    logits = logits.clone()
+                    logits[:, :, self.mask_token_id] = self.neg_infinity
+                    probs = logits.float().softmax(dim=-1)
+                    if generation_config.nucleus_p < 1.0:
+                        probs = self._nucleus_sample(probs, generation_config.nucleus_p)
+                    indices = slice(
+                        generation_offset + unmasked_tokens,
+                        generation_offset + unmasked_tokens + k,
+                    )
+                    y = self._sample_categorical(
+                        probs,
+                        do_sample=getattr(generation_config, "do_sample", True),
+                    )
+                    x[:, indices] = y
+                unmasked_tokens += k
+                if stopping_criteria is not None and len(stopping_criteria) > 0:
+                    current_samples = torch.gather(
+                        x,
+                        dim=1,
+                        index=self._reverse_indices(sort_idx),
+                    )
+                    finalized_samples = self._maybe_stop_during_sampling(
+                        samples=current_samples,
+                        stopping_criteria=stopping_criteria,
+                        prompt_length=prompt_length,
+                    )
+                    if finalized_samples is not None:
+                        break
 
         if profile_throughput and device.type == "cuda":
             torch.cuda.synchronize()
@@ -1061,7 +1250,10 @@ class EsoLM(SetDLM):
         self.backbone.reset_kv_cache()
         if hasattr(self.backbone, "reset_sorted_rotary_cache"):
             self.backbone.reset_sorted_rotary_cache()
-        x = torch.gather(x, dim=1, index=self._reverse_indices(sort_idx))
+        if finalized_samples is None:
+            x = torch.gather(x, dim=1, index=self._reverse_indices(sort_idx))
+        else:
+            x = finalized_samples
         return x, float(nfe), duration
 
     @torch.no_grad()
@@ -1135,16 +1327,18 @@ class EsoLM(SetDLM):
                 generation_config=generation_config,
                 prompt_input_ids=inputs,
                 target_length=input_length + requested_new_tokens,
+                stopping_criteria=stopping_criteria,
             )
             samples = self._apply_stopping_criteria(
                 samples=samples,
                 stopping_criteria=stopping_criteria,
                 prompt_length=input_length,
             )
+            actual_new_tokens = max(samples.shape[1] - input_length, 0)
             if return_dict_in_generate:
                 return DiffusionGenerationOutput(
                     sequences=samples,
-                    parallelism_factor=requested_new_tokens / max(nfe, 1.0),
+                    parallelism_factor=actual_new_tokens / max(nfe, 1.0),
                     inf_budget=None,
                     inf_budgets=None,
                 )
@@ -1166,16 +1360,18 @@ class EsoLM(SetDLM):
             num_steps=getattr(generation_config, "num_steps", self.num_tokens),
             eps=getattr(generation_config, "min_t", 1e-5),
             generation_config=generation_config,
+            stopping_criteria=stopping_criteria,
         )
         samples = self._apply_stopping_criteria(
             samples=samples,
             stopping_criteria=stopping_criteria,
             prompt_length=0,
         )
+        actual_length = samples.shape[1]
         if return_dict_in_generate:
             return DiffusionGenerationOutput(
                 sequences=samples,
-                parallelism_factor=self.num_tokens / max(nfe, 1.0),
+                parallelism_factor=actual_length / max(nfe, 1.0),
                 inf_budget=None,
                 inf_budgets=None,
             )

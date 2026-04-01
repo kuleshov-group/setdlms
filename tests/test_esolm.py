@@ -293,8 +293,145 @@ class EsoLMRegressionTests(unittest.TestCase):
 
         self.assertTrue(torch.equal(samples, torch.tensor([[0, 1, 2, 3]])))
         self.assertEqual(nfe, 4.0)
-        self.assertEqual(model.backbone.reset_kv_cache_calls, 2)
-        self.assertEqual(model.backbone.reset_calls, 2)
+        self.assertEqual(model.backbone.reset_kv_cache_calls, 6)
+        self.assertEqual(model.backbone.reset_calls, 6)
+
+    def test_generate_samples_confidence_threshold_decodes_one_token_per_step(self):
+        class DummyBackbone(nn.Module):
+            def __init__(self, vocab_size: int):
+                super().__init__()
+                self.vocab_size = vocab_size
+                self.calls: list[dict[str, int]] = []
+                self.reset_kv_cache_calls = 0
+                self.reset_sorted_rotary_cache_calls = 0
+
+            def reset_kv_cache(self):
+                self.reset_kv_cache_calls += 1
+
+            def reset_sorted_rotary_cache(self):
+                self.reset_sorted_rotary_cache_calls += 1
+
+            def forward_sample(
+                self,
+                zt,
+                sort_idx,
+                last_k_start=None,
+                curr_k_start=None,
+                curr_k_end=None,
+            ):
+                del zt
+                assert last_k_start is not None
+                assert curr_k_start is not None
+                assert curr_k_end is not None
+                self.calls.append(
+                    {
+                        "last_k_start": last_k_start,
+                        "curr_k_start": curr_k_start,
+                        "curr_k_end": curr_k_end,
+                    }
+                )
+                num_samples = sort_idx.shape[0]
+                next_tokens = sort_idx[:, curr_k_start:curr_k_end] % self.vocab_size
+                logits = torch.full(
+                    (num_samples, next_tokens.shape[1], self.vocab_size),
+                    -100.0,
+                    dtype=torch.float32,
+                )
+                logits.scatter_(-1, next_tokens.unsqueeze(-1), 0.0)
+                return CausalLMOutputWithPast(logits=logits, past_key_values=None)
+
+        model = _make_bare_esolm(alpha_0=1.0, length=4)
+        model.backbone = DummyBackbone(vocab_size=8)
+        generation_config = SetDiffusionGenerationConfig(
+            num_steps=4,
+            block_size=4,
+            use_cache=True,
+            do_sample=False,
+            confidence_threshold=1e6,
+        )
+
+        samples, nfe, _ = model.generate_samples(
+            num_samples=1,
+            generation_config=generation_config,
+        )
+
+        self.assertTrue(torch.equal(samples, torch.tensor([[0, 1, 2, 3]])))
+        self.assertEqual(nfe, 4.0)
+        self.assertEqual(
+            model.backbone.calls,
+            [
+                {"last_k_start": 0, "curr_k_start": 0, "curr_k_end": 4},
+                {"last_k_start": 0, "curr_k_start": 1, "curr_k_end": 4},
+                {"last_k_start": 0, "curr_k_start": 2, "curr_k_end": 4},
+                {"last_k_start": 0, "curr_k_start": 3, "curr_k_end": 4},
+            ],
+        )
+        self.assertEqual(model.backbone.reset_kv_cache_calls, 6)
+        self.assertEqual(model.backbone.reset_sorted_rotary_cache_calls, 6)
+
+    def test_generate_samples_confidence_threshold_can_decode_all_remaining_tokens(self):
+        class DummyBackbone(nn.Module):
+            def __init__(self, vocab_size: int):
+                super().__init__()
+                self.vocab_size = vocab_size
+                self.calls: list[dict[str, int]] = []
+
+            def reset_kv_cache(self):
+                return None
+
+            def reset_sorted_rotary_cache(self):
+                return None
+
+            def forward_sample(
+                self,
+                zt,
+                sort_idx,
+                last_k_start=None,
+                curr_k_start=None,
+                curr_k_end=None,
+            ):
+                del zt
+                assert last_k_start is not None
+                assert curr_k_start is not None
+                assert curr_k_end is not None
+                self.calls.append(
+                    {
+                        "last_k_start": last_k_start,
+                        "curr_k_start": curr_k_start,
+                        "curr_k_end": curr_k_end,
+                    }
+                )
+                num_samples = sort_idx.shape[0]
+                next_tokens = sort_idx[:, curr_k_start:curr_k_end] % self.vocab_size
+                logits = torch.full(
+                    (num_samples, next_tokens.shape[1], self.vocab_size),
+                    -100.0,
+                    dtype=torch.float32,
+                )
+                logits.scatter_(-1, next_tokens.unsqueeze(-1), 0.0)
+                return CausalLMOutputWithPast(logits=logits, past_key_values=None)
+
+        model = _make_bare_esolm(alpha_0=1.0, length=4)
+        model.backbone = DummyBackbone(vocab_size=8)
+        generation_config = SetDiffusionGenerationConfig(
+            num_steps=4,
+            block_size=4,
+            use_cache=True,
+            do_sample=False,
+            confidence_threshold=0.0,
+        )
+
+        samples, nfe, _ = model.generate_samples(
+            num_samples=1,
+            generation_config=generation_config,
+        )
+
+        self.assertTrue(torch.equal(samples, torch.tensor([[0, 1, 2, 3]])))
+        self.assertEqual(nfe, 1.0)
+        self.assertEqual(
+            model.backbone.calls,
+            [{"last_k_start": 0, "curr_k_start": 0, "curr_k_end": 4}],
+        )
 
     def test_generate_supports_prompt_conditioned_sampling(self):
         class DummyBackbone(nn.Module):
@@ -423,6 +560,7 @@ class EsoLMRegressionTests(unittest.TestCase):
             def __init__(self, vocab_size: int):
                 super().__init__()
                 self.vocab_size = vocab_size
+                self.calls: list[dict[str, int]] = []
 
             def reset_kv_cache(self):
                 return None
@@ -441,6 +579,12 @@ class EsoLMRegressionTests(unittest.TestCase):
                 del zt, last_k_start
                 assert curr_k_start is not None
                 assert curr_k_end is not None
+                self.calls.append(
+                    {
+                        "curr_k_start": curr_k_start,
+                        "curr_k_end": curr_k_end,
+                    }
+                )
                 num_samples = sort_idx.shape[0]
                 k = curr_k_end - curr_k_start
                 logits = torch.full(
@@ -475,6 +619,13 @@ class EsoLMRegressionTests(unittest.TestCase):
         )
 
         self.assertTrue(torch.equal(outputs, torch.tensor([[10, 11, 12, 3]])))
+        self.assertEqual(
+            model.backbone.calls,
+            [
+                {"curr_k_start": 3, "curr_k_end": 3},
+                {"curr_k_start": 3, "curr_k_end": 4},
+            ],
+        )
 
     def test_prepare_diffusion_inputs_keeps_context_prefix_fixed(self):
         model = _make_bare_esolm(alpha_0=1.0, length=6, diffusion_shuffle=True)
