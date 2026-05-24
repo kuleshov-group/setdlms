@@ -53,22 +53,27 @@ class NLL(Metric):
     def update(self, output: Mapping | Tensor, target: Tensor) -> None:
         value = output[self.update_key]
         weight = output.get(self.weight_key, None)
-        if weight is not None:
-            weight = weight[:, -value.shape[1] :]  # Logit shifting may create mismatch
 
         # broadcast weight to value shape; copied from:
         # https://github.com/Lightning-AI/torchmetrics/blob/master/src/torchmetrics/aggregation.py#L501-L625  # noqa: E501
         if not isinstance(value, Tensor):
             value = torch.as_tensor(value, dtype=self.dtype, device=self.device)
+        if weight is not None and not isinstance(weight, Tensor):
+            weight = torch.as_tensor(weight, dtype=self.dtype, device=self.device)
+        if weight is not None and value.ndim >= 2 and weight.ndim >= 2:
+            weight = weight[:, -value.shape[1] :]  # Logit shifting may create mismatch
         if weight is None:
             weight = torch.ones_like(value)
-        elif not isinstance(weight, Tensor):
-            weight = torch.as_tensor(weight, dtype=self.dtype, device=self.device)
         weight = torch.broadcast_to(weight, value.shape)
 
         if value.numel() == 0:
             return
-        self.mean_nll += (value * weight).sum()
+        if value.ndim >= 2:
+            self.mean_nll += (value * weight).sum()
+        else:
+            # Scalar-style upstream metrics pass `nlls` already aggregated over
+            # `weight`, so applying the weight a second time would under/over-scale.
+            self.mean_nll += value.sum()
         if self.weight.dtype != weight.dtype:
             self.weight = self.weight.to(weight.dtype)
         self.weight += weight.sum()

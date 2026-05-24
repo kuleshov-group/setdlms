@@ -7,6 +7,9 @@ cd bash_scripts/
 comment
 
 
+WRAPPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${WRAPPER_DIR}/.." && pwd)"
+
 if [ -z "$1" ]; then
   echo "Usage: $0 script_name"
 fi
@@ -17,7 +20,7 @@ if [[ "$script_name" != *.sh ]]; then
 fi
 
 # Construct the full path
-script_full_path=$(realpath "./${script_name}")
+script_full_path=$(realpath "${WRAPPER_DIR}/${script_name}")
 
 # Check if the file exists in the directory
 if [ ! -e "${script_full_path}" ]; then
@@ -26,7 +29,7 @@ fi
 
 
 
-WATCH_FOLDER=$(realpath "../watch_folder")
+WATCH_FOLDER=$(realpath "${REPO_ROOT}/watch_folder")
 mkdir -p ${WATCH_FOLDER}
 USERNAME=$(whoami)
 export TMPDIR=/share/kuleshov/${USERNAME}/tmp
@@ -53,5 +56,5 @@ sbatch \
   --mail-type=ALL \
   --requeue \
   --exclude=nikola-compute-[01-05,11-18],goyal-compute-01,snavely-compute-02,rush-compute-02,sun-compute-01,klara,rush-compute-03,ma-compute-02,ellis-compute-02,lancer-compute-01,lil-compute-04,seo-compute-02,badfellow,joachims-compute-03 \
-  --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR}" \
+  --export="ALL,NUM_VISIBLE_DEVICES=${NUM_VISIBLE_DEVICES},RUN_DIR=${RUN_DIR},DATA_DIR=${DATA_DIR},REPO_ROOT=${REPO_ROOT}" \
   ${script_full_path} "${@:2}"

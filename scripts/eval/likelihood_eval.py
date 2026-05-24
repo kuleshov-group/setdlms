@@ -1,20 +1,28 @@
 import logging
 import os
+import random
 from numbers import Integral
 from typing import Any
 
 import hydra
+import numpy as np
 import torch
 import torch.distributed as torch_dist
 from composer.models import HuggingFaceModel
 from composer.utils import dist, reproducibility
 from omegaconf import DictConfig
 
-from scripts.eval.model_loading import load_eval_model, normalize_model_config_overrides
+from scripts.eval.model_loading import (
+    load_eval_model,
+    maybe_load_legacy_checkpoint_tokenizer,
+    normalize_model_config_overrides,
+)
 from scripts.utils import (
     maybe_add_missing_special_tokens,
     register_useful_resolvers,
 )
+from src.datasets.collator import DenoisingCollator
+from src.denoiser.esolm import EsoLM
 from src.denoiser.refusion import ReFusion
 
 log = logging.getLogger(__name__)
@@ -85,14 +93,24 @@ def main(cfg: DictConfig) -> None:
         log.info("Initializing dist")
         dist.initialize_dist(timeout=600)
     log.info("All nodes connected")
+    rank_seed = int(cfg.seed) + dist.get_global_rank()
+    torch.manual_seed(rank_seed)
+    np.random.seed(rank_seed)
+    random.seed(rank_seed)
 
     # Load tokenizer
     tokenizer = hydra.utils.instantiate(cfg.tokenizer)
-    tokenizer = maybe_add_missing_special_tokens(tokenizer)
+    checkpoint_tokenizer = maybe_load_legacy_checkpoint_tokenizer(
+        cfg.pretrained_model_name_or_path
+    )
+    if checkpoint_tokenizer is not None:
+        tokenizer = checkpoint_tokenizer
+    else:
+        tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
     # Load model
     model_config_overrides = build_likelihood_model_config_overrides(cfg)
-    model = load_eval_model(
+    loaded_model = load_eval_model(
         pretrained_model_name_or_path=cfg.pretrained_model_name_or_path,
         tokenizer=tokenizer,
         device=device,
@@ -104,20 +122,20 @@ def main(cfg: DictConfig) -> None:
         force_legacy_if_no_generate=True,
         require_explicit_refusion_length=require_refusion_semantics(cfg),
     )
-    if require_refusion_semantics(cfg) and not isinstance(model, ReFusion):
+    if require_refusion_semantics(cfg) and not isinstance(loaded_model, ReFusion):
         raise ValueError(
             "Likelihood eval requested ReFusion semantics, but loading returned a "
-            f"non-local `ReFusion` wrapper ({type(model).__name__}). Refusing "
+            f"non-local `ReFusion` wrapper ({type(loaded_model).__name__}). Refusing "
             "non-ReFusion behavior."
         )
 
     if getattr(cfg, "compile_backbone", False):
         log.info("Compiling model backbone")
-        model.backbone = torch.compile(
-            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
+        loaded_model.backbone = torch.compile(
+            loaded_model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
         )
     model = HuggingFaceModel(
-        model=model,
+        model=loaded_model,
         tokenizer=tokenizer,
         metrics=list(hydra.utils.instantiate(cfg.task.metrics).values()),
     )
@@ -134,6 +152,10 @@ def main(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         max_length=model.config.length,
     )
+    if isinstance(loaded_model, EsoLM) and isinstance(collator, DenoisingCollator):
+        # Upstream Eso-LMs samples diffusion timesteps inside `algo.nll()` from the
+        # active diffusion sub-batch. Do not inject generic collator-side `t`.
+        collator.sample_t = False
     eval_sampler = dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
 
     eval_dataloader = hydra.utils.instantiate(

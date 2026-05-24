@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 from omegaconf import DictConfig, OmegaConf
+from omegaconf.errors import OmegaConfBaseException
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 
 from scripts.utils import load_model_from_ckpt_dir_path
@@ -13,7 +14,7 @@ from src.denoiser.bd3lm import BD3LM, BD3LMConfig
 from src.denoiser.esolm import EsoLM, EsoLMConfig
 from src.denoiser.mdlm import MDLM, MDLMConfig, SEDD
 from src.denoiser.refusion import ReFusion, ReFusionConfig
-from src.noise_schedule.noise_schedules import LinearNoise
+from src.noise_schedule.noise_schedules import EsoLogLinearNoise, LinearNoise
 from src.utils import fsspec_exists
 
 REFUSION_SPECIAL_TOKEN_ATTRS = (
@@ -77,6 +78,266 @@ def _get_explicit_requested_model_type(
         if normalized is not None:
             return normalized
     return None
+
+
+def _is_esolm_model_name(pretrained_model_name_or_path: str) -> bool:
+    return "esolm" in os.path.basename(pretrained_model_name_or_path).lower()
+
+
+def _legacy_backbone_config_name(
+    pretrained_model_name_or_path: str,
+    requested_model_type: str | None,
+) -> str:
+    if requested_model_type == ReFusionConfig.model_type:
+        return "automodel_for_causal_lm.yaml"
+    if _is_esolm_model_name(pretrained_model_name_or_path):
+        # `esolm_dit.yaml` relies on Hydra defaults composition; `OmegaConf.load`
+        # would leave it as a plain dict without the inherited `_target_`.
+        # Load the base DiT config directly and apply EsoLM-specific flags below.
+        return "dit.yaml"
+    return "dit_legacy.yaml"
+
+
+def _maybe_to_plain_dict(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, DictConfig):
+        try:
+            value = OmegaConf.to_container(value, resolve=True)
+        except OmegaConfBaseException:
+            # Legacy checkpoints may reference resolvers that are not registered
+            # in this repo (for example `${device_count}` from upstream Eso-LMs).
+            # We only need a few scalar fields here, so unresolved strings in
+            # unrelated config branches are acceptable.
+            value = OmegaConf.to_container(value, resolve=False)
+    return value if isinstance(value, dict) else None
+
+
+def _extract_legacy_hyper_parameters(ckpt: dict[str, Any]) -> dict[str, Any]:
+    hyper_parameters = _maybe_to_plain_dict(ckpt.get("hyper_parameters"))
+    return hyper_parameters if hyper_parameters is not None else {}
+
+
+def _extract_legacy_checkpoint_tokenizer(ckpt: dict[str, Any]) -> Any | None:
+    hyper_parameters = _extract_legacy_hyper_parameters(ckpt)
+    return hyper_parameters.get("tokenizer")
+
+
+def _extract_legacy_checkpoint_config(ckpt: dict[str, Any]) -> dict[str, Any]:
+    hyper_parameters = _extract_legacy_hyper_parameters(ckpt)
+    config = _maybe_to_plain_dict(hyper_parameters.get("config"))
+    return config if config is not None else {}
+
+
+def _extract_tokenizer_special_token_ids(tokenizer_like: Any) -> dict[str, int]:
+    special_token_ids: dict[str, int] = {}
+    for token_attr in ("mask_token_id", "eos_token_id", "bos_token_id", "pad_token_id"):
+        token_id = getattr(tokenizer_like, token_attr, None)
+        if isinstance(token_id, int):
+            special_token_ids[token_attr] = int(token_id)
+    return special_token_ids
+
+
+def maybe_load_legacy_checkpoint_tokenizer(
+    pretrained_model_name_or_path: str,
+) -> Any | None:
+    if not (
+        _is_esolm_model_name(pretrained_model_name_or_path)
+        and os.path.isfile(pretrained_model_name_or_path)
+        and pretrained_model_name_or_path.endswith(".ckpt")
+    ):
+        return None
+    ckpt = torch.load(
+        pretrained_model_name_or_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    tokenizer = _extract_legacy_checkpoint_tokenizer(ckpt)
+    if tokenizer is None:
+        return None
+    if getattr(tokenizer, "padding_side", None) is None:
+        tokenizer.padding_side = "right"
+    return tokenizer
+
+
+def _extract_legacy_esolm_loader_defaults(ckpt: dict[str, Any]) -> dict[str, Any]:
+    hyper_parameters = _extract_legacy_hyper_parameters(ckpt)
+    config = _extract_legacy_checkpoint_config(ckpt)
+    model_cfg = _maybe_to_plain_dict(config.get("model")) or {}
+    algo_cfg = _maybe_to_plain_dict(config.get("algo")) or {}
+    training_cfg = _maybe_to_plain_dict(config.get("training")) or {}
+    eval_cfg = _maybe_to_plain_dict(config.get("eval")) or {}
+    checkpoint_tokenizer = hyper_parameters.get("tokenizer")
+    special_token_ids = _extract_tokenizer_special_token_ids(checkpoint_tokenizer)
+
+    checkpoint_vocab_size = hyper_parameters.get("vocab_size")
+    if isinstance(checkpoint_vocab_size, bool) or not isinstance(checkpoint_vocab_size, int):
+        checkpoint_vocab_size = None
+
+    mask_token_id = special_token_ids.get("mask_token_id")
+    if mask_token_id is None and checkpoint_vocab_size is not None:
+        # Upstream Eso-LMs derives `mask_index` as `tokenizer.vocab_size` when the
+        # tokenizer does not define a mask token and then increments the model vocab.
+        # That means the effective mask index is the final vocab's last id.
+        mask_token_id = checkpoint_vocab_size - 1
+
+    sampling_eps = training_cfg.get("sampling_eps", 1e-3)
+    if isinstance(sampling_eps, bool) or not isinstance(sampling_eps, (int, float)):
+        sampling_eps = 1e-3
+    sampling_eps = float(sampling_eps)
+
+    defaults: dict[str, Any] = {
+        "length": model_cfg.get("length"),
+        "vocab_size": checkpoint_vocab_size,
+        "backbone_config": {
+            "hidden_size": model_cfg.get("hidden_size"),
+            "cond_dim": model_cfg.get("cond_dim"),
+            "n_heads": model_cfg.get("n_heads"),
+            "num_layers": model_cfg.get("n_blocks"),
+            "dropout": model_cfg.get("dropout"),
+            "tie_word_embeddings": model_cfg.get("tie_word_embeddings"),
+            "causal_attention": algo_cfg.get("causal_attention"),
+            "adaln": not bool(algo_cfg.get("causal_attention", False)),
+            "is_esolm_backbone": True,
+        },
+        "denoiser_config": {
+            "alpha_0": algo_cfg.get("alpha_0"),
+            "batch_split": algo_cfg.get("batch_split"),
+            "diffusion_shuffle": algo_cfg.get("diffusion_shuffle"),
+            "diffusion_attn_mode": algo_cfg.get("diffusion_attn_mode"),
+            "sequential_shuffle": algo_cfg.get("sequential_shuffle"),
+            "sequential_attn_mode": algo_cfg.get("sequential_attn_mode"),
+            "loss_type": algo_cfg.get("loss_type"),
+            "sampling_eps": sampling_eps,
+            "antithetic_sampling": training_cfg.get("antithetic_sampling"),
+            "num_iw_orders": eval_cfg.get("num_iw_orders"),
+            "keep_clean_bos": True,
+            "mask_token_id": mask_token_id,
+            "noise_config": {
+                "_target_": "src.noise_schedule.noise_schedules.EsoLogLinearNoise",
+                "alpha_0": algo_cfg.get("alpha_0", 0.0),
+                "eps": sampling_eps,
+            },
+        }
+        | special_token_ids,
+    }
+    return defaults
+
+
+def _extract_legacy_esolm_overrides(ckpt: dict[str, Any]) -> dict[str, Any]:
+    defaults = _extract_legacy_esolm_loader_defaults(ckpt)
+    overrides = dict(defaults.get("denoiser_config", {}))
+    length = defaults.get("length")
+    if isinstance(length, int):
+        overrides["length"] = int(length)
+
+    hyper_parameters = _extract_legacy_hyper_parameters(ckpt)
+    candidate_dicts: list[dict[str, Any]] = [hyper_parameters]
+    for key in ("config", "model_config", "model", "cfg", "args", "hparams"):
+        candidate = _maybe_to_plain_dict(hyper_parameters.get(key))
+        if candidate is not None:
+            candidate_dicts.append(candidate)
+            for nested_key in ("model", "algo", "training", "eval"):
+                nested_candidate = _maybe_to_plain_dict(candidate.get(nested_key))
+                if nested_candidate is not None:
+                    candidate_dicts.append(nested_candidate)
+
+    model_cfg = _maybe_to_plain_dict(hyper_parameters.get("cfg"))
+    if model_cfg is not None:
+        nested_model = _maybe_to_plain_dict(model_cfg.get("model"))
+        if nested_model is not None:
+            candidate_dicts.append(nested_model)
+            nested_config = _maybe_to_plain_dict(nested_model.get("config"))
+            if nested_config is not None:
+                candidate_dicts.append(nested_config)
+    scalar_keys = (
+        "alpha_0",
+        "batch_split",
+        "diffusion_shuffle",
+        "diffusion_attn_mode",
+        "sequential_shuffle",
+        "sequential_attn_mode",
+        "loss_type",
+        "num_iw_orders",
+        "sampling_eps",
+        "antithetic_sampling",
+        "length",
+        "block_size",
+    )
+    for candidate in candidate_dicts:
+        for key in scalar_keys:
+            if key in candidate and key not in overrides and candidate[key] is not None:
+                overrides[key] = candidate[key]
+        noise_config = _maybe_to_plain_dict(candidate.get("noise_config"))
+        if noise_config is not None and "noise_config" not in overrides:
+            overrides["noise_config"] = noise_config
+
+    return overrides
+
+
+def _rebuild_legacy_esolm_noise_schedule(denoiser: EsoLM) -> None:
+    noise_config = _maybe_to_plain_dict(getattr(denoiser.config, "noise_config", None)) or {}
+    noise_eps = float(noise_config.get("eps", 1e-3))
+    denoiser.alpha_0 = float(getattr(denoiser.config, "alpha_0", 0.0))
+    denoiser.noise_schedule = EsoLogLinearNoise(
+        alpha_0=denoiser.alpha_0,
+        eps=noise_eps,
+    )
+    denoiser.config.noise_config = {
+        "_target_": "src.noise_schedule.noise_schedules.EsoLogLinearNoise",
+        "alpha_0": denoiser.alpha_0,
+        "eps": noise_eps,
+    }
+
+
+def _normalize_legacy_state_dict_keys(
+    state_dict: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_state_dict = dict(state_dict)
+    for key in list(normalized_state_dict.keys()):
+        new_key = key
+        if "backbone." in new_key:
+            new_key = new_key.replace("backbone.", "")
+        if "_orig_mod." in new_key:
+            new_key = new_key.replace("_orig_mod.", "")
+        if new_key != key:
+            normalized_state_dict[new_key] = normalized_state_dict.pop(key)
+
+    normalized_state_dict.pop("sampling_eps_min", None)
+    normalized_state_dict.pop("sampling_eps_max", None)
+    return normalized_state_dict
+
+
+def _maybe_load_legacy_ema_state_dict(
+    *,
+    ckpt: dict[str, Any],
+    denoiser,
+    load_ema_weights: bool,
+) -> dict[str, Any]:
+    state_dict = _normalize_legacy_state_dict_keys(ckpt["state_dict"])
+    if not load_ema_weights:
+        return state_dict
+
+    ema_state = ckpt.get("ema")
+    if not isinstance(ema_state, dict):
+        raise ValueError("EMA weights requested, but legacy checkpoint has no `ema` state.")
+    shadow_params = ema_state.get("shadow_params")
+    if not isinstance(shadow_params, list):
+        raise ValueError(
+            "EMA weights requested, but legacy checkpoint `ema.shadow_params` "
+            "is missing or malformed."
+        )
+
+    named_parameters = list(denoiser.backbone.named_parameters())
+    if len(named_parameters) != len(shadow_params):
+        raise ValueError(
+            "EMA weights requested, but the legacy checkpoint parameter count "
+            f"({len(shadow_params)}) does not match the instantiated backbone "
+            f"parameter count ({len(named_parameters)})."
+        )
+
+    ema_backbone_state_dict = dict(state_dict)
+    for (param_name, _), shadow_param in zip(named_parameters, shadow_params, strict=True):
+        ema_backbone_state_dict[param_name] = shadow_param
+    return ema_backbone_state_dict
 
 
 def _is_refusion_model(model: Any | None) -> bool:
@@ -327,11 +588,22 @@ def _load_legacy_denoiser(
     model: Any | None = None,
     model_config_overrides: dict[str, Any] | None = None,
     requested_model_type: str | None = None,
+    load_ema_weights: bool = False,
 ):
     model_config_overrides = (
         {} if model_config_overrides is None else model_config_overrides
     )
     backbone_overrides = model_config_overrides.get("backbone_config", {})
+    is_esolm = _is_esolm_model_name(pretrained_model_name_or_path)
+    legacy_ckpt = None
+    legacy_esolm_defaults: dict[str, Any] | None = None
+    if model is None and is_esolm:
+        legacy_ckpt = torch.load(
+            pretrained_model_name_or_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        legacy_esolm_defaults = _extract_legacy_esolm_loader_defaults(legacy_ckpt)
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     is_refusion = requested_model_type == ReFusionConfig.model_type
     backbone_config_path = os.path.join(
@@ -339,18 +611,25 @@ def _load_legacy_denoiser(
         "configs",
         "model",
         "backbone",
-        (
-            "automodel_for_causal_lm.yaml"
-            if is_refusion
-            else "dit_legacy.yaml"
+        _legacy_backbone_config_name(
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            requested_model_type=requested_model_type,
         ),
     )
     backbone_config = OmegaConf.load(backbone_config_path)
 
-    length = model_config_overrides.get("length", 1024)
+    length = model_config_overrides.get("length")
+    if length is None and legacy_esolm_defaults is not None:
+        length = legacy_esolm_defaults.get("length")
+    if length is None:
+        length = 1024
     block_size = model_config_overrides.get("block_size")
     backbone_config.length = length
-    backbone_config.vocab_size = len(tokenizer)
+    backbone_config.vocab_size = (
+        legacy_esolm_defaults.get("vocab_size")
+        if legacy_esolm_defaults is not None
+        else len(tokenizer)
+    )
     if is_refusion:
         special_token_ids = _get_required_refusion_special_token_ids(tokenizer)
         if model is not None:
@@ -379,12 +658,25 @@ def _load_legacy_denoiser(
         backbone_config.use_causal_mask = True
     else:
         backbone_config.block_size = block_size
-        backbone_config.pretrained_model_name_or_path = pretrained_model_name_or_path
+        # Rebuild the architecture first, then load the checkpoint/EMA explicitly
+        # below. This mirrors upstream Lightning `load_from_checkpoint()` more
+        # closely than eagerly loading weights in the backbone constructor.
+        backbone_config.pretrained_model_name_or_path = (
+            pretrained_model_name_or_path if model is not None else None
+        )
         backbone_config.num_layers = 12
         backbone_config.n_heads = 12
         backbone_config.hidden_size = 768
 
-        if "-ar-" in pretrained_model_name_or_path:
+        if is_esolm:
+            if legacy_esolm_defaults is not None:
+                for key, value in legacy_esolm_defaults.get("backbone_config", {}).items():
+                    if value is not None:
+                        setattr(backbone_config, key, value)
+            else:
+                backbone_config.adaln = True
+            backbone_config.is_esolm_backbone = True
+        elif "-ar-" in pretrained_model_name_or_path:
             backbone_config.adaln = False
             backbone_config.causal_attention = True
             backbone_config.attn_backend = "flash_attn"
@@ -411,7 +703,7 @@ def _load_legacy_denoiser(
             denoiser_config,
             tokenizer=tokenizer,
         )
-    elif "esolm-" in pretrained_model_name_or_path:
+    elif is_esolm:
         denoiser_config = EsoLMConfig(length=length)
         denoiser_config.backbone_config = OmegaConf.to_container(
             backbone_config, resolve=True
@@ -419,6 +711,13 @@ def _load_legacy_denoiser(
         denoiser_config.keep_clean_bos = True
         denoiser_config.mask_token_id = tokenizer.mask_token_id
         denoiser_config.vocab_size = len(tokenizer)
+        if legacy_esolm_defaults is not None:
+            for key, value in legacy_esolm_defaults.get("denoiser_config", {}).items():
+                if value is not None:
+                    setattr(denoiser_config, key, value)
+            checkpoint_vocab_size = legacy_esolm_defaults.get("vocab_size")
+            if isinstance(checkpoint_vocab_size, int):
+                denoiser_config.vocab_size = checkpoint_vocab_size
         denoiser = EsoLM(
             denoiser_config,
             tokenizer=tokenizer,
@@ -494,27 +793,28 @@ def _load_legacy_denoiser(
     if model is not None:
         denoiser.backbone = model.backbone if hasattr(model, "backbone") else model
     else:
-        state_dict = torch.load(
-            pretrained_model_name_or_path,
-            map_location="cpu",
-            weights_only=False,
-        )["state_dict"]
-
-        for key in list(state_dict.keys()):
-            new_key = key
-            if "backbone." in new_key:
-                new_key = new_key.replace("backbone.", "")
-            if "_orig_mod." in new_key:
-                new_key = new_key.replace("_orig_mod.", "")
-            if new_key != key:
-                state_dict[new_key] = state_dict.pop(key)
-
-        state_dict.pop("sampling_eps_min", None)
-        state_dict.pop("sampling_eps_max", None)
+        ckpt = legacy_ckpt
+        if ckpt is None:
+            ckpt = torch.load(
+                pretrained_model_name_or_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+        if is_esolm:
+            for key, value in _extract_legacy_esolm_overrides(ckpt).items():
+                setattr(denoiser.config, key, value)
+        state_dict = _maybe_load_legacy_ema_state_dict(
+            ckpt=ckpt,
+            denoiser=denoiser,
+            load_ema_weights=load_ema_weights,
+        )
         denoiser.backbone.load_state_dict(state_dict)
 
     denoiser = denoiser.to(device)
-    denoiser.noise_schedule = LinearNoise()
+    if is_esolm:
+        _rebuild_legacy_esolm_noise_schedule(denoiser)
+    else:
+        denoiser.noise_schedule = LinearNoise()
     return denoiser
 
 
@@ -627,6 +927,7 @@ def load_eval_model(
             model=model,
             model_config_overrides=model_config_overrides,
             requested_model_type=requested_model_type,
+            load_ema_weights=load_ema_weights,
         )
     if _is_refusion_model(model):
         _configure_refusion_special_token_ids(model, tokenizer)

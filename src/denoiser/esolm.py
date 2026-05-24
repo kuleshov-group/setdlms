@@ -35,6 +35,8 @@ class EsoLMConfig(BD3LMConfig):
         self,
         alpha_0: float = 0.0,
         batch_split: float = 0.0,
+        sampling_eps: float = 1e-3,
+        antithetic_sampling: bool = True,
         diffusion_shuffle: bool = False,
         diffusion_attn_mode: str = "bidirectional",
         sequential_shuffle: bool = False,
@@ -46,6 +48,8 @@ class EsoLMConfig(BD3LMConfig):
         super().__init__(**kwargs)
         self.alpha_0 = alpha_0
         self.batch_split = batch_split
+        self.sampling_eps = sampling_eps
+        self.antithetic_sampling = antithetic_sampling
         self.diffusion_shuffle = diffusion_shuffle
         self.diffusion_attn_mode = diffusion_attn_mode
         self.sequential_shuffle = sequential_shuffle
@@ -66,7 +70,7 @@ class EsoLM(SetDLM):
         **kwargs,
     ):
         super().__init__(config, tokenizer, **kwargs)
-        noise_eps = 1e-3
+        noise_eps = float(getattr(self.config, "sampling_eps", 1e-3))
         if getattr(self.config, "noise_config", None) is not None and hasattr(
             self.config.noise_config, "get"
         ):
@@ -87,6 +91,26 @@ class EsoLM(SetDLM):
             "eps": noise_eps,
         }
 
+    def _sample_eval_t(
+        self,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.FloatTensor:
+        # Direct transcription of `s-sahoo/Eso-LMs/algo.py::EsoLM._sample_t`
+        # for validation/eval (`accum_step is None`).
+        eps_t = torch.rand(batch_size, device=device)
+        if bool(getattr(self.config, "antithetic_sampling", True)):
+            offset = torch.arange(batch_size, device=device, dtype=eps_t.dtype) / batch_size
+            eps_t = (eps_t / batch_size + offset) % 1
+        sampling_eps = float(
+            getattr(
+                self.config,
+                "sampling_eps",
+                getattr(self.noise_schedule, "eps", 1e-3),
+            )
+        )
+        return (1 - sampling_eps) * eps_t + sampling_eps
+
     @staticmethod
     def _sigma_from_alpha_t(alpha_t: torch.FloatTensor) -> torch.FloatTensor:
         # Upstream source: `s-sahoo/Eso-LMs/trainer_base.py::_sigma_from_alphat`
@@ -95,11 +119,14 @@ class EsoLM(SetDLM):
 
     def _resolve_num_iw_orders(self, kwargs: dict[str, Any]) -> int:
         if "num_iw_orders" in kwargs:
-            return int(kwargs.pop("num_iw_orders"))
+            value = kwargs.pop("num_iw_orders")
+            return 0 if value is None else int(value)
         eval_config = getattr(self.config, "eval", None)
         if eval_config is not None and hasattr(eval_config, "num_iw_orders"):
-            return int(getattr(eval_config, "num_iw_orders"))
-        return int(getattr(self.config, "num_iw_orders", 0))
+            value = getattr(eval_config, "num_iw_orders")
+            return 0 if value is None else int(value)
+        value = getattr(self.config, "num_iw_orders", 0)
+        return 0 if value is None else int(value)
 
     def _create_static_mask(self) -> None:
         # Direct transcription of `s-sahoo/Eso-LMs/models/dit.py` lines 84-138
@@ -414,6 +441,19 @@ class EsoLM(SetDLM):
         alpha_t, alpha_t_prime = self.noise_schedule(t)
         alpha_t = alpha_t.reshape(input_ids.shape[0], -1)
         alpha_t_prime = alpha_t_prime.reshape(input_ids.shape[0], -1)
+        if alpha_t.shape[1] > 1 or alpha_t_prime.shape[1] > 1:
+            # The generic eval collator samples a single timestep per example and
+            # repeats it across the sequence when `block_size == max_length`.
+            # Upstream Eso-LMs expects the equivalent per-example scalar, so fold
+            # that repeated representation back down here.
+            alpha_t_ref = alpha_t[:, :1]
+            alpha_t_prime_ref = alpha_t_prime[:, :1]
+            if torch.allclose(alpha_t, alpha_t_ref.expand_as(alpha_t)) and torch.allclose(
+                alpha_t_prime,
+                alpha_t_prime_ref.expand_as(alpha_t_prime),
+            ):
+                alpha_t = alpha_t_ref
+                alpha_t_prime = alpha_t_prime_ref
         if alpha_t.shape[1] != 1 or alpha_t_prime.shape[1] != 1:
             raise ValueError(
                 "EsoLM diffusion expects per-example alpha_t and alpha_t_prime "
@@ -1471,13 +1511,23 @@ class EsoLM(SetDLM):
         other_loss_terms: dict[str, Any] = {}
         denoiser_output = None
         backbone_output = None
+        diffusion_num_tokens = None
+        sequential_num_tokens = None
 
         if do_diffusion:
+            diffusion_t = None
+            if self.training:
+                diffusion_t = t[:split_batch] if t is not None and t.ndim > 0 else None
+            else:
+                diffusion_t = self._sample_eval_t(
+                    batch_size=split_batch,
+                    device=input_ids.device,
+                )
             diffusion_inputs = self._prepare_diffusion_inputs(
                 input_ids=input_ids[:split_batch],
                 attention_mask=attention_mask[:split_batch],
                 context_mask=context_mask[:split_batch],
-                t=t[:split_batch] if t is not None and t.ndim > 0 else None,
+                t=diffusion_t,
             )
             diffusion_backbone = self._backbone_forward(diffusion_inputs, **kwargs)
             diffusion_logits = getattr(diffusion_backbone, "logits", diffusion_backbone[0])
@@ -1489,6 +1539,7 @@ class EsoLM(SetDLM):
             losses.append(diffusion_loss)
             nll_chunks.append(diffusion_nlls)
             tokens_mask_chunks.append(diffusion_inputs.tokens_mask)
+            diffusion_num_tokens = diffusion_inputs.valid_tokens.sum()
             other_loss_terms["diffusion_tokens_mask"] = diffusion_inputs.tokens_mask
             other_loss_terms["diffusion_valid_tokens"] = diffusion_inputs.valid_tokens
             denoiser_output = diffusion_output
@@ -1516,6 +1567,7 @@ class EsoLM(SetDLM):
             losses.append(sequential_loss)
             nll_chunks.append(sequential_nlls)
             tokens_mask_chunks.append(sequential_inputs.tokens_mask)
+            sequential_num_tokens = sequential_inputs.valid_tokens.sum()
             other_loss_terms["sequential_tokens_mask"] = sequential_inputs.tokens_mask
             other_loss_terms["sequential_valid_tokens"] = sequential_inputs.valid_tokens
             other_loss_terms["reconstruction_loss"] = sequential_loss
@@ -1528,8 +1580,18 @@ class EsoLM(SetDLM):
             )
 
         loss = torch.stack(losses).sum()
-        nlls = torch.cat(nll_chunks, dim=0)
-        tokens_mask = torch.cat(tokens_mask_chunks, dim=0)
+        if self.training:
+            nlls = torch.cat(nll_chunks, dim=0)
+            tokens_mask = torch.cat(tokens_mask_chunks, dim=0)
+        else:
+            metric_num_tokens = (
+                diffusion_num_tokens if diffusion_num_tokens is not None else sequential_num_tokens
+            )
+            if metric_num_tokens is None:
+                raise ValueError("EsoLM eval expected at least one active branch.")
+            nlls = (loss * metric_num_tokens).reshape(1)
+            tokens_mask = metric_num_tokens.reshape(1)
+            other_loss_terms["metric_num_tokens"] = metric_num_tokens
         return DenoiserOutput(
             denoiser_output=denoiser_output,
             logits=backbone_output,

@@ -15,10 +15,10 @@ DESIRED_BLOCK_SIZE=4
 ANNEAL_STEPS="0ba"
 
 # Hyperparameters
-LR=1e-5
+LR=1e-6
 WARMUP_DURATION="100ba"
 ALPHA_F=0.5
-BATCH_SIZE=1
+BATCH_SIZE=16
 MAX_DURATION="75000ba"
 PRECISION="amp_bf16"
 
@@ -66,7 +66,7 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   model.config.backbone_config.num_layers=${N_LAYERS} \
   model.config.backbone_config.keep_top_layers=${TOP_LAYERS} \
   training.global_batch_size=${BATCH_SIZE} \
-  training.grad_accum=2 \
+  training.grad_accum=1 \
   block_size=${BLOCK_SIZE} \
   eval_block_size=${EVAL_BLOCK_SIZE} \
   training.antithetic_sampling=false \

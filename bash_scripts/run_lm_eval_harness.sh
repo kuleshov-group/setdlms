@@ -13,7 +13,8 @@ ESOLM_INFERENCE_ALPHA_0=null  # EsoLM-only override; set to null to use checkpoi
 
 # setdlm s <= 8
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_again_v2"
-# # MODEL_PATH="kuleshov-group/setdlm-gsm8k-smax8"
+# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_distill_accum_vredo"
+# # # MODEL_PATH="kuleshov-group/setdlm-gsm8k-smax8"
 # KV_CACHING=true
 # BLOCK_SIZE=1024
 # MAX_WINDOW_SIZE=4
@@ -29,11 +30,12 @@ ESOLM_INFERENCE_ALPHA_0=null  # EsoLM-only override; set to null to use checkpoi
 
 # setdlm s <= 32
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_again_v2"
-# # MODEL_PATH="kuleshov-group/setdlm-gsm8k-smax32"
-# KV_CACHING=true
-# BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=32
-# ALIGN_INPUTS_TO_BLOCKS=false
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_distill_accum_vredo"
+# MODEL_PATH="kuleshov-group/setdlm-gsm8k-smax32"
+KV_CACHING=true
+BLOCK_SIZE=1024
+MAX_WINDOW_SIZE=16
+ALIGN_INPUTS_TO_BLOCKS=false
 
 # ablation w = 4
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_knull_maxb4_sweep_v1"
@@ -117,12 +119,12 @@ ESOLM_INFERENCE_ALPHA_0=null  # EsoLM-only override; set to null to use checkpoi
 # ALIGN_INPUTS_TO_BLOCKS=true
 
 # esolm
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.0_max-dur75000ba_amp_bf16_layers28_eso_a1.0_bsplit1.0_dshuftrue_dattncausal_sshuffalse_sattncausal_low_var_v2"
-KV_CACHING=true
-BLOCK_SIZE=1024
-MAX_WINDOW_SIZE=${BLOCK_SIZE}
-ALIGN_INPUTS_TO_BLOCKS=false
-ESOLM_INFERENCE_ALPHA_0=0.0625  # EsoLM-only override; set to null to use checkpoint value
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.0_max-dur75000ba_amp_bf16_layers28_eso_a1.0_bsplit1.0_dshuftrue_dattncausal_sshuffalse_sattncausal_low_var_v2"
+# KV_CACHING=true
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=${BLOCK_SIZE}
+# ALIGN_INPUTS_TO_BLOCKS=false
+# ESOLM_INFERENCE_ALPHA_0=0.0625  # EsoLM-only override; set to null to use checkpoint value
 
 # refusion
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_refusion_len1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_refusion_distill_v1"
@@ -132,23 +134,70 @@ ESOLM_INFERENCE_ALPHA_0=0.0625  # EsoLM-only override; set to null to use checkp
 # ALIGN_INPUTS_TO_BLOCKS=false
 # REQUIRE_REFUSION_SEMANTICS=true
 
-# grad accum 4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz4_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_knull_maxb32_sweep_v1"
+# grad accum 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz16_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_distill_accum_v1"
 # BLOCK_SIZE=1024
-# MAX_WINDOW_SIZE=16
+# MAX_WINDOW_SIZE=4
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
-# grad accum 16
 # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz16_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_knull_maxb32_sweep_v1"
 # BLOCK_SIZE=1024
 # MAX_WINDOW_SIZE=16
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz16_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_distill_accum_v1"
+# lr 1e-4
+# grad accum 1
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-4_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_distill_accum_v1"
 # BLOCK_SIZE=1024
 # MAX_WINDOW_SIZE=4
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-4_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_distill_accum_v1"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=16
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# grad accum 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-4_bsz16_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_distill_accum_v1"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=4
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-4_bsz16_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_distill_accum_v1"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=16
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# lr 1e-6
+# grad accum 1
+MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-6_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_distill_accum_v1"
+BLOCK_SIZE=1024
+MAX_WINDOW_SIZE=4
+KV_CACHING=true
+ALIGN_INPUTS_TO_BLOCKS=false
+
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-6_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_distill_accum_v1"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=16
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# grad accum 16
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-6_bsz16_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt4_distill_accum_v1"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=4
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=false
+
+# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-6_bsz16_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_setdlm_tgt16_distill_accum_v2"
+# BLOCK_SIZE=1024
+# MAX_WINDOW_SIZE=16
 # KV_CACHING=true
 # ALIGN_INPUTS_TO_BLOCKS=false
 
@@ -173,7 +222,7 @@ SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING=false
 CONFIDENCE_MARGIN_BASED_NOISING=false
-CONFIDENCE_THRESHOLD=1e6 # TODO: Change as needed
+CONFIDENCE_THRESHOLD=0.8 # TODO: Change as needed
 CKPT="best"
 LINEAR_UNMASKING=true
 

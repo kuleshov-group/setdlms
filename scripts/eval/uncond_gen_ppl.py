@@ -23,6 +23,7 @@ from transformers import (
 )
 from transformers.modeling_outputs import ModelOutput
 
+from scripts.eval.model_loading import load_eval_model
 from scripts.utils import (
     count_parameters,
     format_number,
@@ -550,10 +551,16 @@ def generate_samples(
         cfg.tokenizer.pretrained_model_name_or_path
     )
     tokenizer = maybe_add_missing_special_tokens(tokenizer)
-    # Load model: checkpoint / HF, then optionally wrap in a denoiser (legacy layouts).
-    model = _try_load_pretrained_model(cfg)
-    if model is None or not hasattr(model, "generate"):
-        model = _build_legacy_denoiser(cfg, tokenizer, model)
+    model = load_eval_model(
+        pretrained_model_name_or_path=cfg.pretrained_model_name_or_path,
+        tokenizer=tokenizer,
+        device=device,
+        pretrained_model_revision=getattr(cfg, "pretrained_model_revision", None),
+        load_ema_weights=cfg.load_ema_weights,
+        ckpt_file=cfg.ckpt_file,
+        model_config_overrides=getattr(cfg, "model_config_overrides", {}),
+        force_legacy_if_no_generate=True,
+    )
 
     if getattr(cfg, "compile_backbone", False):
         print("Compiling model backbone")
@@ -623,7 +630,7 @@ def generate_samples(
                     start_event, end_event = None, None
                 generation_output = model.generate(
                     inputs=input_ids,
-                    disable_pbar=True,
+                    disable_pbar=False,
                     tokenizer=tokenizer,
                     **gen_kwargs,
                 )

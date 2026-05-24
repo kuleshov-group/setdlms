@@ -27,6 +27,7 @@ class DenoisingCollator:
         block_size: int | None = None,
         base_collator: Callable | None = None,
         legacy_antithetic_sampling: bool = False,
+        sample_t: bool = True,
     ):
         """
         Parameters:
@@ -72,6 +73,7 @@ class DenoisingCollator:
         self.max_length = max_length
         self.block_size = block_size
         self.legacy_antithetic_sampling = legacy_antithetic_sampling
+        self.sample_t = sample_t
         # TODO: Confirm that this works on multi-node
         self._rank = rank
         self._world_size = world_size
@@ -115,20 +117,6 @@ class DenoisingCollator:
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
         context_mask = [f.pop("context_mask", None) for f in features]
         batch = self.base_collate_fn(features)
-        batch_size = batch["input_ids"].shape[0]
-        global_batch_size = self._world_size * batch_size
-        t_index = (  # index t's for the given device (used for antithetic_sampling
-            self._rank * batch_size,
-            min((self._rank + 1) * batch_size, global_batch_size),
-        )
-        t = self._sample_t(
-            global_batch_size=(
-                global_batch_size if not self.legacy_antithetic_sampling else batch_size
-            ),
-            batch_size=batch_size,
-            t_index=t_index if not self.legacy_antithetic_sampling else (0, batch_size),
-            device=batch["input_ids"].device,
-        )
         if all([c is not None for c in context_mask]):
             context_mask = torch.nn.utils.rnn.pad_sequence(
                 context_mask,  # type: ignore
@@ -143,7 +131,26 @@ class DenoisingCollator:
                 ),
             )
             batch.update({"context_mask": context_mask})
-        batch.update({"t": t})
+        if self.sample_t:
+            batch_size = batch["input_ids"].shape[0]
+            global_batch_size = self._world_size * batch_size
+            t_index = (  # index t's for the given device (used for antithetic_sampling
+                self._rank * batch_size,
+                min((self._rank + 1) * batch_size, global_batch_size),
+            )
+            t = self._sample_t(
+                global_batch_size=(
+                    global_batch_size
+                    if not self.legacy_antithetic_sampling
+                    else batch_size
+                ),
+                batch_size=batch_size,
+                t_index=(
+                    t_index if not self.legacy_antithetic_sampling else (0, batch_size)
+                ),
+                device=batch["input_ids"].device,
+            )
+            batch.update({"t": t})
 
         # Override the attention mask to attend to all tokens (including [PAD])
         if self.predict_padding:

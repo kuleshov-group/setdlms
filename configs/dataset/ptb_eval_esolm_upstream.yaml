@@ -1,0 +1,5 @@
+_target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
+# Upstream-style GPT-2 tokenization/packing for OWT-trained zero-shot eval:
+# packed to 1024, EOS inserted between packed sequences, and no BOS/EOS wrapped
+# around the final packed chunk.
+dataset_path: '/share/kuleshov/ssahoo/textdiffusion/data/ptb_validation_bs1024_wrapped_specialFalse.dat'

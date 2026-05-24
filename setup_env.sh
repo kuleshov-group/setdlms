@@ -6,7 +6,24 @@
 
 # Activate conda env
 # shellcheck source=${HOME}/.bashrc disable=SC1091
-source "${CONDA_SHELL}"
+if [ -n "${CONDA_SHELL:-}" ] && [ -f "${CONDA_SHELL}" ]; then
+    source "${CONDA_SHELL}"
+elif [ -n "${CONDA_EXE:-}" ]; then
+    _conda_root="$(dirname "$(dirname "${CONDA_EXE}")")"
+    if [ -f "${_conda_root}/etc/profile.d/conda.sh" ]; then
+        # shellcheck source=/dev/null
+        source "${_conda_root}/etc/profile.d/conda.sh"
+    fi
+elif [ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]; then
+    # shellcheck source=/dev/null
+    source "${HOME}/miniconda3/etc/profile.d/conda.sh"
+fi
+
+if ! command -v conda >/dev/null 2>&1; then
+    echo "Unable to initialize conda shell hooks." >&2
+    return 1 2>/dev/null || exit 1
+fi
+
 if [ -z "${CONDA_PREFIX}" ]; then
     conda activate dllm-dev
  elif [[ "${CONDA_PREFIX}" != *"/dllm-dev" ]]; then

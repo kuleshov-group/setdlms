@@ -1,0 +1,8 @@
+_target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
+# Matches the upstream Eso-LMs OpenWebText validation eval recipe used by
+# `scripts/esolm/eval_owt_esolmb.sh`:
+# - wrapped OpenWebText validation chunks
+# - GPT-2 tokenizer
+# - `insert_valid_special=False`
+# - default upstream `insert_valid_eos=True`
+dataset_path: '/share/kuleshov/ssahoo/textdiffusion/data/openwebtext-valid_validation_bs1024_wrapped_specialFalse.dat'

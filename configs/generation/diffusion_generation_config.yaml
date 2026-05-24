@@ -7,6 +7,7 @@ min_t: 1e-5
 block_size: ${block_size}
 first_hitting: true
 sampling_strategy: "predict_and_noise"
+noise_removal: false
 confidence_based_noising: true
 confidence_margin_based_noising: false
 confidence_threshold: 1.0

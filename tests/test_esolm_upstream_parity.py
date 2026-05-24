@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from types import SimpleNamespace
+from types import MethodType
 import unittest
 
 import torch
@@ -215,6 +216,135 @@ def _make_recording_dit(vocab_size: int = 11) -> tuple[DIT, RecordingBlock]:
 
 
 class EsoLMUpstreamParityTests(unittest.TestCase):
+    def test_resolve_num_iw_orders_treats_none_as_zero(self):
+        model = _make_bare_esolm(num_iw_orders=None)
+        model.config.eval = SimpleNamespace(num_iw_orders=None)
+
+        self.assertEqual(model._resolve_num_iw_orders({}), 0)
+        self.assertEqual(model._resolve_num_iw_orders({"num_iw_orders": None}), 0)
+
+    def test_eval_forward_reports_upstream_scalar_nll_and_weight(self):
+        model = _make_bare_esolm(alpha_0=0.5, batch_split=0.5, length=2)
+        model.training = False
+
+        diffusion_inputs = DenoiserInput(
+            xt=torch.tensor([[7, 1]]),
+            x0=torch.tensor([[1, 2]]),
+            attention_mask=torch.ones(1, 2, dtype=torch.long),
+            context_mask=torch.zeros(1, 2, dtype=torch.long),
+            valid_tokens=torch.tensor([[1.0, 1.0]]),
+            tokens_mask=torch.tensor([[1.0, 0.0]]),
+        )
+        sequential_inputs = DenoiserInput(
+            xt=torch.tensor([[7, 2, 1, 2]]),
+            x0=torch.tensor([[1, 2]]),
+            attention_mask=torch.ones(1, 4, dtype=torch.long),
+            context_mask=torch.zeros(1, 2, dtype=torch.long),
+            valid_tokens=torch.tensor([[1.0, 1.0]]),
+            tokens_mask=torch.tensor([[0.0, 1.0]]),
+        )
+
+        model._prepare_diffusion_inputs = MethodType(
+            lambda self, **kwargs: diffusion_inputs,
+            model,
+        )
+        model._prepare_sequential_inputs = MethodType(
+            lambda self, **kwargs: sequential_inputs,
+            model,
+        )
+        model._backbone_forward = MethodType(
+            lambda self, denoiser_inputs, **kwargs: CausalLMOutputWithPast(
+                logits=torch.zeros(
+                    denoiser_inputs.x0.shape[0],
+                    denoiser_inputs.x0.shape[1],
+                    4,
+                )
+            ),
+            model,
+        )
+        model._forward = MethodType(
+            lambda self, logits, denoiser_inputs, **kwargs: logits,
+            model,
+        )
+        model._compute_diffusion_loss = MethodType(
+            lambda self, model_output, denoiser_inputs: (
+                torch.tensor(2.0),
+                torch.tensor([[2.0, 0.0]]),
+            ),
+            model,
+        )
+        model._compute_sequential_loss = MethodType(
+            lambda self, model_output, denoiser_inputs: (
+                torch.tensor(3.0),
+                torch.tensor([[0.0, 3.0]]),
+            ),
+            model,
+        )
+
+        output = model.forward(
+            input_ids=torch.tensor([[1, 2], [3, 4]]),
+            attention_mask=torch.ones(2, 2, dtype=torch.long),
+            context_mask=torch.zeros(2, 2, dtype=torch.long),
+        )
+
+        self.assertTrue(torch.equal(output.nlls, torch.tensor([10.0])))
+        self.assertTrue(torch.equal(output.tokens_mask, torch.tensor([2.0])))
+
+    def test_eval_forward_ignores_collator_t_and_samples_diffusion_t_internally(self):
+        model = _make_bare_esolm(alpha_0=1.0, batch_split=1.0, length=2)
+        model.training = False
+
+        captured = {}
+
+        def _prepare_diffusion_inputs(self, input_ids, attention_mask, context_mask, t):
+            captured["t"] = t.clone()
+            return DenoiserInput(
+                xt=input_ids,
+                x0=input_ids,
+                attention_mask=attention_mask,
+                context_mask=context_mask,
+                valid_tokens=torch.ones_like(input_ids, dtype=torch.float),
+                tokens_mask=torch.ones_like(input_ids, dtype=torch.float),
+            )
+
+        model._prepare_diffusion_inputs = MethodType(
+            _prepare_diffusion_inputs,
+            model,
+        )
+        model._backbone_forward = MethodType(
+            lambda self, denoiser_inputs, **kwargs: CausalLMOutputWithPast(
+                logits=torch.zeros(
+                    denoiser_inputs.x0.shape[0],
+                    denoiser_inputs.x0.shape[1],
+                    4,
+                )
+            ),
+            model,
+        )
+        model._forward = MethodType(
+            lambda self, logits, denoiser_inputs, **kwargs: logits,
+            model,
+        )
+        model._compute_diffusion_loss = MethodType(
+            lambda self, model_output, denoiser_inputs: (
+                torch.tensor(1.0),
+                torch.tensor([[1.0, 1.0]]),
+            ),
+            model,
+        )
+
+        output = model.forward(
+            input_ids=torch.tensor([[1, 2]]),
+            attention_mask=torch.ones(1, 2, dtype=torch.long),
+            context_mask=torch.zeros(1, 2, dtype=torch.long),
+            t=torch.tensor([0.99]),
+        )
+
+        self.assertTrue(torch.equal(output.nlls, torch.tensor([2.0])))
+        self.assertTrue(torch.equal(output.tokens_mask, torch.tensor([2.0])))
+        self.assertEqual(captured["t"].shape, (1,))
+        self.assertFalse(torch.allclose(captured["t"], torch.tensor([0.99])))
+
     def test_prepare_sequential_inputs_uses_zero_sigma_and_backbone_packing(self):
         model = _make_bare_esolm(alpha_0=0.5, length=4)
         input_ids = torch.tensor([[1, 2, 3, 4]])

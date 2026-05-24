@@ -4,9 +4,6 @@ import pathlib
 import shutil
 from typing import Any, Literal
 
-import matplotlib
-
-matplotlib.use("Agg")  # Use non-interactive backend
 import numpy as np
 import torch
 import wandb
