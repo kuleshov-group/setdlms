@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import itertools
 import json
 import math
@@ -71,6 +72,32 @@ def gather_results(results, world_size):
     return all_results
 
 
+def _rank_invariant_generation_enabled() -> bool:
+    return str(os.environ.get("LM_EVAL_RANK_INVARIANT_SEED", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+
+def _stable_generation_seed(base_seed: int, *parts: object) -> int:
+    payload = [str(int(base_seed))]
+    payload.extend(str(part) for part in parts)
+    digest = hashlib.blake2b(
+        "\\0".join(payload).encode("utf-8", errors="surrogatepass"),
+        digest_size=8,
+    ).digest()
+    return int.from_bytes(digest, byteorder="little", signed=False) % (2**31 - 1)
+
+
+def _seed_generation_for_example(seed: int) -> None:
+    set_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def setup_ddp() -> int:
     """Sets up torch.distributed and selects GPU.
 
@@ -133,6 +160,7 @@ def extract_infill_output_ids(
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
     set_seed(cfg.seed)
+    os.environ.setdefault("LM_EVAL_BASE_SEED", str(int(cfg.seed)))
     local_rank = setup_ddp()
     world_size = dist.get_world_size()
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
@@ -349,6 +377,15 @@ def main(cfg: DictConfig) -> None:
                     as_tuple=True
                 )[1][0]
                 input_ids = input_ids[:, :first_mask_index]
+            if _rank_invariant_generation_enabled():
+                example_seed = _stable_generation_seed(
+                    int(os.environ.get("LM_EVAL_BASE_SEED", cfg.seed)),
+                    ex_id,
+                    elem.get("source_ids", ""),
+                    elem.get("target_ids", ""),
+                )
+                _seed_generation_for_example(example_seed)
+
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()

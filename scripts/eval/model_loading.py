@@ -14,6 +14,7 @@ from scripts.utils import (
 )
 from src.denoiser.ar import AR, ARConfig
 from src.denoiser.bd3lm import BD3LM, BD3LMConfig
+from src.denoiser.setdlm import SetDLM
 from src.denoiser.mdlm import MDLM, SEDD, MDLMConfig
 from src.noise_schedule.noise_schedules import LinearNoise
 from src.utils import fsspec_exists
@@ -80,6 +81,147 @@ def maybe_load_legacy_checkpoint_tokenizer(
         tokenizer,
         target_vocab_size=_infer_legacy_vocab_size_from_ckpt(ckpt),
     )
+
+
+def _normalize_revision(revision: str | None) -> str | None:
+    if revision is None:
+        return None
+    revision_value = str(revision).strip()
+    if revision_value.lower() in {"", "none", "null"}:
+        return None
+    return revision_value
+
+
+def _looks_like_hf_repo_id(model_path: str) -> bool:
+    return (
+        bool(model_path)
+        and "/" in model_path
+        and not model_path.startswith("/")
+        and not os.path.exists(model_path)
+    )
+
+
+def _snapshot_hf_repo_if_needed(
+    pretrained_model_name_or_path: str,
+    pretrained_model_revision: str | None = None,
+) -> str:
+    if not _looks_like_hf_repo_id(pretrained_model_name_or_path):
+        return pretrained_model_name_or_path
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception:
+        return pretrained_model_name_or_path
+
+    snapshot_kwargs: dict[str, Any] = {
+        "repo_id": pretrained_model_name_or_path,
+        "revision": _normalize_revision(pretrained_model_revision),
+    }
+    cache_dir = os.environ.get("EVAL_HF_SNAPSHOT_CACHE_DIR")
+    if cache_dir:
+        snapshot_kwargs["cache_dir"] = cache_dir
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    if token:
+        snapshot_kwargs["token"] = token
+    try:
+        return snapshot_download(**snapshot_kwargs)
+    except Exception:
+        return pretrained_model_name_or_path
+
+
+def _restore_flattened_hf_target(target: str) -> str:
+    if target.startswith("src."):
+        return target
+    if target.startswith("backbone_"):
+        return "src.backbone." + target[len("backbone_") :]
+    if target.startswith("noise_schedule_"):
+        return "src.noise_schedule." + target[len("noise_schedule_") :]
+    if target.startswith("denoiser_"):
+        return "src.denoiser." + target[len("denoiser_") :]
+    return target
+
+
+def _restore_flattened_hf_config_targets(config: Any) -> None:
+    for attr in ("backbone_config", "noise_config", "tokenization_config"):
+        value = getattr(config, attr, None)
+        if isinstance(value, dict) and isinstance(value.get("_target_"), str):
+            value["_target_"] = _restore_flattened_hf_target(value["_target_"])
+
+
+def _recursive_update_config_dict(target: Any, updates: dict[str, Any]) -> None:
+    if target is None:
+        return
+    for key, value in updates.items():
+        if isinstance(value, dict):
+            current = target.get(key) if isinstance(target, dict) else getattr(target, key, None)
+            if current is None:
+                if isinstance(target, dict):
+                    target[key] = dict(value)
+                else:
+                    setattr(target, key, dict(value))
+            else:
+                _recursive_update_config_dict(current, value)
+        elif isinstance(target, dict):
+            target[key] = value
+        else:
+            setattr(target, key, value)
+
+
+def _apply_model_config_overrides_to_hf_config(
+    config: Any,
+    model_config_overrides: dict[str, Any] | None,
+) -> None:
+    if not model_config_overrides:
+        return
+    for key, value in model_config_overrides.items():
+        if key == "backbone_config" and isinstance(value, dict):
+            _recursive_update_config_dict(getattr(config, "backbone_config", None), value)
+        elif key == "noise_config" and isinstance(value, dict):
+            _recursive_update_config_dict(getattr(config, "noise_config", None), value)
+        else:
+            setattr(config, key, value)
+
+
+def _project_hf_model_class_and_config(snapshot_path: str):
+    config_path = Path(snapshot_path) / "config.json"
+    if not config_path.exists():
+        return None, None
+    try:
+        config_json = json.loads(config_path.read_text())
+    except Exception:
+        return None, None
+    architectures = " ".join(config_json.get("architectures") or []).lower()
+    path_hint = str(snapshot_path).lower()
+    haystack = f"{architectures} {path_hint}"
+    if "setdlm" in haystack:
+        return SetDLM, BD3LMConfig
+    if "bd3lm" in haystack:
+        return BD3LM, BD3LMConfig
+    if "mdlm" in haystack:
+        return MDLM, MDLMConfig
+    if "ar" in haystack:
+        return AR, ARConfig
+    return None, None
+
+
+def _load_project_hf_model(
+    pretrained_model_name_or_path: str,
+    pretrained_model_revision: str | None = None,
+    model_config_overrides: dict[str, Any] | None = None,
+):
+    snapshot_path = _snapshot_hf_repo_if_needed(
+        pretrained_model_name_or_path,
+        pretrained_model_revision,
+    )
+    model_cls, config_cls = _project_hf_model_class_and_config(snapshot_path)
+    if model_cls is None or config_cls is None:
+        return None, None
+    try:
+        config = config_cls.from_pretrained(snapshot_path)
+        _apply_model_config_overrides_to_hf_config(config, model_config_overrides)
+        _restore_flattened_hf_config_targets(config)
+        return model_cls.from_pretrained(snapshot_path, config=config), "project_hf"
+    except Exception:
+        return None, None
 
 
 def _normalize_legacy_state_dict_keys(
@@ -177,7 +319,9 @@ def _load_hf_model(
     pretrained_model_name_or_path: str,
     pretrained_model_revision: str | None = None,
     allow_masked_lm: bool = True,
+    model_config_overrides: dict[str, Any] | None = None,
 ):
+    pretrained_model_revision = _normalize_revision(pretrained_model_revision)
     pretrained_kwargs = {
         "trust_remote_code": True,
         "revision": pretrained_model_revision,
@@ -194,18 +338,27 @@ def _load_hf_model(
             "causal_lm",
         )
     except Exception:
+        if allow_masked_lm:
+            try:
+                return (
+                    AutoModelForMaskedLM.from_pretrained(
+                        pretrained_model_name_or_path,
+                        **pretrained_kwargs,
+                    ),
+                    "masked_lm",
+                )
+            except Exception:
+                pass
+        project_model, project_model_type = _load_project_hf_model(
+            pretrained_model_name_or_path,
+            pretrained_model_revision,
+            model_config_overrides,
+        )
+        if project_model is not None:
+            return project_model, project_model_type
         if not allow_masked_lm:
             return None, "causal_lm_unavailable"
-        try:
-            return (
-                AutoModelForMaskedLM.from_pretrained(
-                    pretrained_model_name_or_path,
-                    **pretrained_kwargs,
-                ),
-                "masked_lm",
-            )
-        except Exception:
-            return None, None
+        return None, None
 
 
 def _normalize_hf_model_load_result(
@@ -357,12 +510,17 @@ def load_eval_model(
     force_legacy_if_no_generate: bool = False,
 ):
     model_config_overrides = normalize_model_config_overrides(model_config_overrides)
-    ckpt_config_path = os.path.join(pretrained_model_name_or_path, "config.yaml")
+    pretrained_model_revision = _normalize_revision(pretrained_model_revision)
+    resolved_model_path = _snapshot_hf_repo_if_needed(
+        pretrained_model_name_or_path,
+        pretrained_model_revision,
+    )
+    ckpt_config_path = os.path.join(resolved_model_path, "config.yaml")
     has_ckpt_config = fsspec_exists(ckpt_config_path)
 
     if has_ckpt_config:
         model = load_model_from_ckpt_dir_path(
-            path_to_ckpt_dir=pretrained_model_name_or_path,
+            path_to_ckpt_dir=resolved_model_path,
             load_ema_weights=load_ema_weights,
             ckpt_file=ckpt_file,
             verbose=verbose,
@@ -374,6 +532,7 @@ def load_eval_model(
             _load_hf_model(
                 pretrained_model_name_or_path=pretrained_model_name_or_path,
                 pretrained_model_revision=pretrained_model_revision,
+                model_config_overrides=model_config_overrides,
             )
         )
 
@@ -388,7 +547,7 @@ def load_eval_model(
         force_legacy_if_no_generate and not hasattr(model, "generate")
     ):
         model = _load_legacy_denoiser(
-            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            pretrained_model_name_or_path=resolved_model_path,
             tokenizer=tokenizer,
             device=device,
             model=model,

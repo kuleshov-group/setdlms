@@ -203,7 +203,12 @@ if [[ -n "${ROC_STORIES_INSERT_EOS_TOKEN}" ]]; then
   EXTRA_ARGS+=(+task.dataset.insert_eos_token=${ROC_STORIES_INSERT_EOS_TOKEN})
 fi
 if [[ -n "${ROC_STORIES_SAMPLE_INDICES}" ]]; then
-  EXTRA_ARGS+=(+task.dataset.sample_indices=${ROC_STORIES_SAMPLE_INDICES})
+  if [[ "${ROC_STORIES_SAMPLE_INDICES}" == \[* ]]; then
+    ROC_STORIES_SAMPLE_INDICES_OVERRIDE="${ROC_STORIES_SAMPLE_INDICES}"
+  else
+    ROC_STORIES_SAMPLE_INDICES_OVERRIDE="[${ROC_STORIES_SAMPLE_INDICES}]"
+  fi
+  EXTRA_ARGS+=("+task.dataset.sample_indices=${ROC_STORIES_SAMPLE_INDICES_OVERRIDE}")
 fi
 
 LOGITS_PROCESSOR_ARGS=(
@@ -238,16 +243,16 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.confidence_threshold=${CONF_THRESHOLD} \
   generation_config.use_cache=${KV_CACHING} \
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
-  generation_config.cache_full_infill_context=${CACHE_FULL_INFILL_CONTEXT} \
-  generation_config.infill_repetition_penalty_include_right_context=${INFILL_REPETITION_PENALTY_INCLUDE_RIGHT_CONTEXT} \
-  generation_config.infill_context_no_repeat_ngram_size=${INFILL_CONTEXT_NO_REPEAT_NGRAM_SIZE} \
-  generation_config.infill_context_no_repeat_ngram_diagnostic_log=${INFILL_CONTEXT_NO_REPEAT_NGRAM_DIAGNOSTIC_LOG} \
-  generation_config.setdlm_infill_diagnostic_log=${SETDLM_INFILL_DIAGNOSTIC_LOG} \
-  generation_config.setdlm_infill_first_hitting_cache_diagnostic=${SETDLM_INFILL_FIRST_HITTING_CACHE_DIAGNOSTIC} \
-  generation_config.setdlm_infill_cache_promotion_order=${SETDLM_INFILL_CACHE_PROMOTION_ORDER} \
-  generation_config.setdlm_infill_cache_promotion_trace=${SETDLM_INFILL_CACHE_PROMOTION_TRACE} \
-  generation_config.setdlm_infill_cache_promotion_trace_input_length=${SETDLM_INFILL_CACHE_PROMOTION_TRACE_INPUT_LENGTH} \
-  generation_config.setdlm_infill_cache_promotion_trace_max_steps=${SETDLM_INFILL_CACHE_PROMOTION_TRACE_MAX_STEPS} \
+  ++generation_config.cache_full_infill_context=${CACHE_FULL_INFILL_CONTEXT} \
+  ++generation_config.infill_repetition_penalty_include_right_context=${INFILL_REPETITION_PENALTY_INCLUDE_RIGHT_CONTEXT} \
+  ++generation_config.infill_context_no_repeat_ngram_size=${INFILL_CONTEXT_NO_REPEAT_NGRAM_SIZE} \
+  ++generation_config.infill_context_no_repeat_ngram_diagnostic_log=${INFILL_CONTEXT_NO_REPEAT_NGRAM_DIAGNOSTIC_LOG} \
+  ++generation_config.setdlm_infill_diagnostic_log=${SETDLM_INFILL_DIAGNOSTIC_LOG} \
+  ++generation_config.setdlm_infill_first_hitting_cache_diagnostic=${SETDLM_INFILL_FIRST_HITTING_CACHE_DIAGNOSTIC} \
+  ++generation_config.setdlm_infill_cache_promotion_order=${SETDLM_INFILL_CACHE_PROMOTION_ORDER} \
+  ++generation_config.setdlm_infill_cache_promotion_trace=${SETDLM_INFILL_CACHE_PROMOTION_TRACE} \
+  ++generation_config.setdlm_infill_cache_promotion_trace_input_length=${SETDLM_INFILL_CACHE_PROMOTION_TRACE_INPUT_LENGTH} \
+  ++generation_config.setdlm_infill_cache_promotion_trace_max_steps=${SETDLM_INFILL_CACHE_PROMOTION_TRACE_MAX_STEPS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
   generation_config.linear_unmasking=true \
   "${STOPPING_ARGS[@]}" \

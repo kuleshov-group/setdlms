@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import logging
 import math
@@ -38,6 +39,33 @@ log = logging.getLogger(__name__)
 
 
 THROUGHPUT_WARMUP = 0
+
+
+def _rank_invariant_generation_enabled() -> bool:
+    return str(os.environ.get("LM_EVAL_RANK_INVARIANT_SEED", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+
+def _stable_generation_seed(base_seed: int, *parts: object) -> int:
+    payload = [str(int(base_seed))]
+    payload.extend(str(part) for part in parts)
+    digest = hashlib.blake2b(
+        "\\0".join(payload).encode("utf-8", errors="surrogatepass"),
+        digest_size=8,
+    ).digest()
+    return int.from_bytes(digest, byteorder="little", signed=False) % (2**31 - 1)
+
+
+def _seed_generation_for_example(seed: int) -> None:
+    set_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 
 
@@ -504,6 +532,13 @@ def generate_samples(
         # Generate samples
         with torch.no_grad():
             while True:
+                if _rank_invariant_generation_enabled():
+                    example_seed = _stable_generation_seed(
+                        int(os.environ.get("LM_EVAL_BASE_SEED", cfg.seed)),
+                        i,
+                    )
+                    _seed_generation_for_example(example_seed)
+
                 start_event = torch.cuda.Event(enable_timing=True)
                 end_event = torch.cuda.Event(enable_timing=True)
                 start_event.record()
@@ -946,6 +981,7 @@ def compute_mauve_metrics(
 def main(cfg: DictConfig) -> None:
     local_rank = setup_ddp()
     set_seed(cfg.seed + local_rank)
+    os.environ.setdefault("LM_EVAL_BASE_SEED", str(int(cfg.seed)))
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     if not os.path.exists(cfg.generated_samples_output_path):
         if local_rank == 0:
