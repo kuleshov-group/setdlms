@@ -7,7 +7,11 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 
-from scripts.utils import load_model_from_ckpt_dir_path
+from scripts.utils import (
+    get_tokenizer_special_token_id,
+    load_model_from_ckpt_dir_path,
+    maybe_add_missing_special_tokens,
+)
 from src.denoiser.ar import AR, ARConfig
 from src.denoiser.bd3lm import BD3LM, BD3LMConfig
 from src.denoiser.mdlm import MDLM, SEDD, MDLMConfig
@@ -72,7 +76,10 @@ def maybe_load_legacy_checkpoint_tokenizer(
         return None
     if getattr(tokenizer, "padding_side", None) is None:
         tokenizer.padding_side = "right"
-    return tokenizer
+    return maybe_add_missing_special_tokens(
+        tokenizer,
+        target_vocab_size=_infer_legacy_vocab_size_from_ckpt(ckpt),
+    )
 
 
 def _normalize_legacy_state_dict_keys(
@@ -90,6 +97,27 @@ def _normalize_legacy_state_dict_keys(
     normalized_state_dict.pop("sampling_eps_min", None)
     normalized_state_dict.pop("sampling_eps_max", None)
     return normalized_state_dict
+
+
+def _infer_legacy_vocab_size_from_state_dict(state_dict: dict[str, Any]) -> int | None:
+    for key in (
+        "vocab_embed.embedding",
+        "output_layer.linear.weight",
+        "output_layer.linear.bias",
+    ):
+        value = state_dict.get(key)
+        if isinstance(value, torch.Tensor) and value.ndim > 0:
+            return int(value.shape[0])
+    return None
+
+
+def _infer_legacy_vocab_size_from_ckpt(ckpt: dict[str, Any]) -> int | None:
+    state_dict = ckpt.get("state_dict")
+    if not isinstance(state_dict, dict):
+        return None
+    return _infer_legacy_vocab_size_from_state_dict(
+        _normalize_legacy_state_dict_keys(state_dict)
+    )
 
 
 def _maybe_load_legacy_ema_state_dict(
@@ -207,6 +235,21 @@ def _load_legacy_denoiser(
     model_config_overrides = (
         {} if model_config_overrides is None else model_config_overrides
     )
+    ckpt = None
+    checkpoint_vocab_size = None
+    if model is None:
+        ckpt = torch.load(
+            pretrained_model_name_or_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        checkpoint_vocab_size = _infer_legacy_vocab_size_from_ckpt(ckpt)
+
+    tokenizer = maybe_add_missing_special_tokens(
+        tokenizer,
+        target_vocab_size=checkpoint_vocab_size,
+    )
+    vocab_size = checkpoint_vocab_size or len(tokenizer)
     backbone_overrides = model_config_overrides.get("backbone_config", {})
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     backbone_config_path = os.path.join(
@@ -221,7 +264,7 @@ def _load_legacy_denoiser(
     length = model_config_overrides.get("length") or 1024
     block_size = model_config_overrides.get("block_size")
     backbone_config.length = length
-    backbone_config.vocab_size = len(tokenizer)
+    backbone_config.vocab_size = vocab_size
     backbone_config.block_size = block_size
     backbone_config.pretrained_model_name_or_path = (
         pretrained_model_name_or_path if model is not None else None
@@ -265,8 +308,10 @@ def _load_legacy_denoiser(
         denoiser_cls = BD3LM
 
     denoiser_config.keep_clean_bos = True
-    denoiser_config.mask_token_id = tokenizer.mask_token_id
-    denoiser_config.vocab_size = len(tokenizer)
+    denoiser_config.mask_token_id = get_tokenizer_special_token_id(
+        tokenizer, "mask_token"
+    )
+    denoiser_config.vocab_size = vocab_size
     denoiser = denoiser_cls(denoiser_config, tokenizer=tokenizer)
 
     for key, value in model_config_overrides.items():
@@ -282,11 +327,12 @@ def _load_legacy_denoiser(
     if model is not None:
         denoiser.backbone = model.backbone if hasattr(model, "backbone") else model
     else:
-        ckpt = torch.load(
-            pretrained_model_name_or_path,
-            map_location="cpu",
-            weights_only=False,
-        )
+        if ckpt is None:
+            ckpt = torch.load(
+                pretrained_model_name_or_path,
+                map_location="cpu",
+                weights_only=False,
+            )
         state_dict = _maybe_load_legacy_ema_state_dict(
             ckpt=ckpt,
             denoiser=denoiser,

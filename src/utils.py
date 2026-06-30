@@ -213,6 +213,25 @@ def _state_dict_no_buffers(self, *args, **kwargs):
     return filtered_state_dict
 
 
+def _flatten_config_target_path(config) -> None:
+    if config is None:
+        return
+    try:
+        target = config.get("_target_")
+    except AttributeError:
+        try:
+            target = config["_target_"]
+        except (KeyError, TypeError):
+            return
+    if not isinstance(target, str) or not re.match(r"^src\.", target):
+        return
+    config["_target_"] = re.sub(
+        r"^([\w.]+)\.",
+        lambda m: f"{m.group(1).replace('.', '_')}.",
+        re.sub(r"^src\.", "", target),
+    )
+
+
 def save_pretrained_or_push_to_hub(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
@@ -253,19 +272,10 @@ def save_pretrained_or_push_to_hub(
             exec(f'{type(model).__name__}.register_for_auto_class("{automodel}")')
 
     # Update model config paths to remove `src` and flatten (replace `.` with `_`)
-    # in `_target_` (e.g. `src.backbone.dit` -> `backbone_dit`)
-    if re.match(r"^src\.", model.config.backbone_config["_target_"]):
-        model.config.backbone_config["_target_"] = re.sub(
-            r"^([\w.]+)\.",
-            lambda m: f"{m.group(1).replace('.', '_')}.",
-            re.sub(r"^src\.", "", model.config.backbone_config["_target_"]),
-        )
-    if re.match(r"^src\.", model.config.noise_config["_target_"]):
-        model.config.noise_config["_target_"] = re.sub(
-            r"^([\w.]+)\.",
-            lambda m: f"{m.group(1).replace('.', '_')}.",
-            re.sub(r"^src\.", "", model.config.noise_config["_target_"]),
-        )
+    # in `_target_` (e.g. `src.backbone.dit` -> `backbone_dit`). Some models,
+    # such as AR, intentionally have no noise config.
+    _flatten_config_target_path(model.config.backbone_config)
+    _flatten_config_target_path(model.config.noise_config)
     log.debug("Updated model.config:")
     log.debug(model.config)
 

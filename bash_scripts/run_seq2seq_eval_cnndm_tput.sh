@@ -25,7 +25,7 @@ source "${REPO_ROOT}/bash_scripts/eval_model_paths.sh"
 # BLOCK_SIZE=8
 # MODEL_PATH="${RUN_DIR}/<PATH_TO_BD3LM_SAVED_MODEL_DIR>"
 
-# E2D2 preset
+# SetDLM preset
 BLOCK_SIZE="${BLOCK_SIZE:-8}"
 resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-cnndm:setdlm-d8}}"
 KV_CACHING="${KV_CACHING:-true}"

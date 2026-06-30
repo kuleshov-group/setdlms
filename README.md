@@ -1,9 +1,8 @@
 # Set Diffusion: Interpolating Token Orderings between Autoregression and Diffusion for Fast and Flexible Decoding
 
 [![deploy](https://img.shields.io/badge/Paper_📃-green)](https://arxiv.org/abs/2510.22852)
-[![deploy](https://img.shields.io/badge/Blog_📝%20%20-8A2BE2)](https://m-arriola.com/e2d2)
-[![deploy](https://img.shields.io/badge/HuggingFace_🤗%20-E2D2%20-orange)](https://huggingface.co/collections/kuleshov-group/e2d2)
-
+[![deploy](https://img.shields.io/badge/Blog_📝%20%20-8A2BE2)](https://m-arriola.com/setdlms)
+[![deploy](https://img.shields.io/badge/HuggingFace_🤗%20-E2D2%20-orange)](https://huggingface.co/collections/kuleshov-group/setdlms)
 
 ## 0. Setup
 
@@ -189,9 +188,9 @@ The GSM8K SetDLM release ids are:
 - `kuleshov-group/setdlm-gsm8k-smax16`
 - `kuleshov-group/setdlm-gsm8k-smax32`
 
-Other evaluated checkpoints use the `kuleshov-group/e2d2-<dataset>-<model>` naming
-scheme, for example `kuleshov-group/e2d2-cnndm-setdlm-d8` and
-`kuleshov-group/e2d2-owt-bd3lm-s16`. The resolver accepts either these HF ids or compact
+Other evaluated checkpoints use the `kuleshov-group/<dataset>-<model>` naming
+scheme, for example `kuleshov-group/cnndm-setdlm-d8` and
+`kuleshov-group/owt-bd3lm-s16`. The resolver accepts either these HF ids or compact
 keys such as `cnndm:setdlm-d8`, `owt:bd3lm-s16`, and `lm1b:ar`.
 
 ## Citation

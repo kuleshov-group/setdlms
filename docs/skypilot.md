@@ -132,7 +132,7 @@ run: |
   export RUN_DIR=outputs
   export DATA_DIR=data
   export NUM_VISIBLE_DEVICES=8
-  bash bash_scripts/run_train_e2d2_wmt_lambda.sh
+  bash bash_scripts/run_train_setdlm_lm1b.sh
 EOF
 
 # Run the task
