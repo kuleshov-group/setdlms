@@ -494,7 +494,13 @@ def _load_legacy_denoiser(
         denoiser.backbone.load_state_dict(state_dict)
 
     denoiser = denoiser.to(device)
-    denoiser.noise_schedule = LinearNoise()
+    noise_block_size = getattr(denoiser.config, "eval_block_size", None)
+    if noise_block_size is None:
+        noise_block_size = getattr(denoiser.config, "block_size", None)
+    denoiser.noise_schedule = LinearNoise(
+        block_size=noise_block_size,
+        length=getattr(denoiser.config, "length", None),
+    )
     return denoiser
 
 
