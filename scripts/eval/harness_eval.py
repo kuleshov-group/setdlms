@@ -2,7 +2,9 @@
 This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 """
 
+import hashlib
 import json
+import os
 import re
 import sys
 from datetime import timedelta
@@ -88,6 +90,29 @@ def _optional_bool(value: Any) -> bool | None:
         if lowered in {"0", "false", "no", "n"}:
             return False
     return bool(value)
+
+
+def _stable_generation_seed(base_seed: int, prefix_text: str, target: Any) -> int:
+    """Return a deterministic per-example seed independent of DDP rank/world size."""
+    if isinstance(target, dict):
+        target_payload = json.dumps(target, sort_keys=True, default=str)
+    else:
+        target_payload = str(target)
+    payload = (
+        str(int(base_seed)).encode("utf-8")
+        + b"\\0"
+        + prefix_text.encode("utf-8", errors="surrogatepass")
+        + b"\\0"
+        + target_payload.encode("utf-8", errors="surrogatepass")
+    )
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="little", signed=False) % (2**31 - 1)
+
+
+def _seed_generation_for_example(seed: int) -> None:
+    set_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 class LMEvalHarnessModel(LM):
@@ -195,6 +220,17 @@ class LMEvalHarnessModel(LM):
         self.throughput_samples = throughput_samples
         self.throughput_global_measurements = throughput_global_measurements
         self.stop_on_im_end = bool(_optional_bool(stop_on_im_end))
+        self.rank_invariant_generation_seed = bool(
+            _optional_bool(os.environ.get("LM_EVAL_RANK_INVARIANT_SEED", False))
+        )
+        self.rank_invariant_base_seed = int(
+            os.environ.get("LM_EVAL_BASE_SEED", os.environ.get("SEED", "0"))
+        )
+        if self.rank_invariant_generation_seed and self.rank == 0:
+            print(
+                "LM_EVAL_RANK_INVARIANT_SEED=true "
+                f"base={self.rank_invariant_base_seed}"
+            )
 
     @property
     def rank(self):
@@ -463,6 +499,14 @@ class LMEvalHarnessModel(LM):
                     dist.barrier()
                     dist.destroy_process_group()
                 sys.exit(0)
+            if self.rank_invariant_generation_seed:
+                example_seed = _stable_generation_seed(
+                    base_seed=self.rank_invariant_base_seed,
+                    prefix_text=str(elem["prefix_text"]),
+                    target=elem["target"],
+                )
+                _seed_generation_for_example(example_seed)
+
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()
@@ -631,6 +675,7 @@ def main(cfg: DictConfig) -> None:
     accelerator = accelerate.Accelerator(kwargs_handlers=[ipg])
     accelerator = accelerator if accelerator.num_processes > 1 else None
     set_seed(cfg.seed)
+    os.environ.setdefault("LM_EVAL_BASE_SEED", str(int(cfg.seed)))
     model = hydra.utils.instantiate(cfg.task.model, accelerator=accelerator)
     results = hydra.utils.call(cfg.task, model=model)
     if results is not None and (

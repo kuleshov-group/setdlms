@@ -222,6 +222,7 @@ class SetDLM(BD3LM):
     """Denoiser class for SetDLM models."""
 
     _KV_CACHE_POSITION_IDS_KEY = "_setdlm_kv_cache_position_ids"
+    _KV_CACHE_SEMANTICALLY_CROPPED_KEY = "_setdlm_kv_cache_semantically_cropped"
 
     def __init__(
         self,
@@ -243,7 +244,11 @@ class SetDLM(BD3LM):
         return {
             k: v
             for k, v in cache.items()
-            if k != SetDLM._KV_CACHE_POSITION_IDS_KEY
+            if k
+            not in {
+                SetDLM._KV_CACHE_POSITION_IDS_KEY,
+                SetDLM._KV_CACHE_SEMANTICALLY_CROPPED_KEY,
+            }
         }
 
     @staticmethod
@@ -728,6 +733,21 @@ class SetDLM(BD3LM):
         patched[:, -seq_len:] = mask_pair
         return torch.where(patched, edit, base)
 
+    def _semantic_attention_base(
+        self,
+        *,
+        query_position_ids: torch.LongTensor,
+        key_position_ids: torch.LongTensor,
+        seq_length: int,
+    ) -> torch.Tensor:
+        return self._block_mask(
+            b=None,
+            h=None,
+            q_idx=query_position_ids[0, :, None],
+            kv_idx=key_position_ids[0, None, :],
+            seq_length=seq_length,
+        )
+
     def _prepare_inputs_inference(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -759,6 +779,9 @@ class SetDLM(BD3LM):
             getattr(self.config, "setdlm_fht_cache_order", False)
             and first_hitting_times is not None
         )
+        if fht_permuted_cache_order and cache_position_ids is None and cache_len == 0:
+            cache_position_ids = position_ids[:, :0]
+            cache[self._KV_CACHE_POSITION_IDS_KEY] = cache_position_ids
         # crop KV cache if we would exceed model context
         if full_seq_length > self.config.length:
             overflow = full_seq_length - self.config.length
@@ -783,6 +806,7 @@ class SetDLM(BD3LM):
                     index=keep_indices.to(device=cache_position_ids.device),
                 )
                 cache[self._KV_CACHE_POSITION_IDS_KEY] = cache_position_ids
+                cache[self._KV_CACHE_SEMANTICALLY_CROPPED_KEY] = True
             else:
                 past_key_values = self._crop_kv_cache_left(past_key_values, overflow)
                 if cache_position_ids is not None:
@@ -807,13 +831,25 @@ class SetDLM(BD3LM):
             cache_flag = (input_ids != self.mask_token_id).float()
             perm_indices = cache_flag.argsort(dim=-1, stable=True, descending=True)
         if return_updated_cache:
-            # create a view of attention mask to prevent rematerialization
-            base = self.static_attention_mask[
-                cache_len : cache_len + seq_len, : cache_len + seq_len
-            ]
-
             position_ids = torch.gather(position_ids, dim=-1, index=perm_indices)
             input_ids = torch.gather(input_ids, dim=-1, index=perm_indices)
+            if cache.get(self._KV_CACHE_SEMANTICALLY_CROPPED_KEY, False):
+                if cache_position_ids is None:
+                    raise ValueError(
+                        "setdlm_fht_cache_order requires a KV cache position ledger "
+                        "before building the decode attention mask."
+                    )
+                key_position_ids = torch.cat((cache_position_ids, position_ids), dim=-1)
+                base = self._semantic_attention_base(
+                    query_position_ids=position_ids,
+                    key_position_ids=key_position_ids,
+                    seq_length=self.config.length,
+                )
+            else:
+                # create a view of attention mask to prevent rematerialization
+                base = self.static_attention_mask[
+                    cache_len : cache_len + seq_len, : cache_len + seq_len
+                ]
 
             if fast_attention_mask_kwargs is None:
                 input_mask = input_ids == self.mask_token_id
@@ -864,17 +900,33 @@ class SetDLM(BD3LM):
                 )
         else:
             full_possible_len = self.static_attention_mask.shape[-1] // 2
-            valid_attn_indices = torch.cat(
-                (
-                    torch.arange(cache_len, device=device),
-                    torch.arange(cache_len, cache_len + seq_len, device=device)
-                    + full_possible_len,
+            if cache.get(self._KV_CACHE_SEMANTICALLY_CROPPED_KEY, False):
+                if cache_position_ids is None:
+                    raise ValueError(
+                        "setdlm_fht_cache_order requires a KV cache position ledger "
+                        "before building the decode attention mask."
+                    )
+                key_position_ids = torch.cat(
+                    (cache_position_ids, position_ids + full_possible_len),
+                    dim=-1,
                 )
-            )
-            base = self.static_attention_mask[
-                cache_len : cache_len + seq_len,
-                valid_attn_indices,
-            ]
+                base = self._semantic_attention_base(
+                    query_position_ids=position_ids,
+                    key_position_ids=key_position_ids,
+                    seq_length=full_possible_len,
+                )
+            else:
+                valid_attn_indices = torch.cat(
+                    (
+                        torch.arange(cache_len, device=device),
+                        torch.arange(cache_len, cache_len + seq_len, device=device)
+                        + full_possible_len,
+                    )
+                )
+                base = self.static_attention_mask[
+                    cache_len : cache_len + seq_len,
+                    valid_attn_indices,
+                ]
 
             row = torch.arange(seq_len, device=device)
             col = cache_len + row

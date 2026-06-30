@@ -948,7 +948,11 @@ class MDLM(Denoiser):
         backbone_cache = {
             k: v
             for k, v in cache.items()
-            if k != "_setdlm_kv_cache_position_ids"
+            if k
+            not in {
+                "_setdlm_kv_cache_position_ids",
+                "_setdlm_kv_cache_semantically_cropped",
+            }
         }
         backbone_output = self._backbone_forward(
             denoiser_inputs,
