@@ -81,7 +81,6 @@ class CustomQwen3Attention(Qwen3Attention):
         )
 
         attention_interface: Callable = eager_attention_forward
-        # EsoLM relies on explicit dense 4D masks for non-causal orderings.
         # Keep those on the eager path because alternative attention backends may
         # reject or reinterpret custom masks.
         use_dense_mask = attention_mask is not None and attention_mask.ndim == 4
@@ -145,7 +144,6 @@ class CustomQwen3DecoderLayer(Qwen3DecoderLayer):
             **kwargs,
         )
         hidden_states = residual + hidden_states
-        # return hidden_states
 
         # Fully Connected
         residual = hidden_states
@@ -163,7 +161,6 @@ class CustomQwen3DecoderLayer(Qwen3DecoderLayer):
 class CustomQwen3Model(Qwen3Model):
     def __init__(self, config: Qwen3Config):
         super().__init__(config)
-        self.is_esolm_backbone = False
         self.layers = nn.ModuleList(
             [
                 CustomQwen3DecoderLayer(config, layer_idx)
@@ -177,14 +174,8 @@ class CustomQwen3Model(Qwen3Model):
 class CustomQwen3ForCausalLM(Qwen3ForCausalLM):
     def __init__(self, config: Qwen3Config):
         super().__init__(config)
-        self.is_esolm_backbone = False
         # Initialize a new model with custom layers
         self.model = CustomQwen3Model(config)
 
         # Initialize weights and apply final processing
         self.post_init()
-
-    def set_esolm_backbone(self, enabled: bool) -> None:
-        self.is_esolm_backbone = enabled
-        if hasattr(self, "model"):
-            self.model.is_esolm_backbone = enabled

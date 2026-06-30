@@ -1,2 +1,2 @@
 _target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
-dataset_path: '/share/kuleshov/ma2238/dllm-data/gpt2_tokenizer/openwebtext-train_train_bs1024_wrapped_specialFalse.dat'
+dataset_path: '${oc.env:DLLM_DATA_DIR,data}/gpt2_tokenizer/openwebtext-train_train_bs1024_wrapped_specialFalse.dat'

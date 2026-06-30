@@ -4,15 +4,15 @@ from unittest.mock import MagicMock, patch
 
 try:
     import torch
-    from torch import nn
     from omegaconf import OmegaConf
+    from torch import nn
+
     from scripts.eval.mcqa_eval import (
         MCQAScorer,
         load_mcqa_model,
         pad_option_batch,
         resolve_max_length,
     )
-    from src.denoiser.refusion import ReFusion
 except ModuleNotFoundError:
     torch = None
     nn = None
@@ -20,12 +20,10 @@ except ModuleNotFoundError:
     load_mcqa_model = None
     pad_option_batch = None
     resolve_max_length = None
-    ReFusion = None
 
 
 def _make_cfg(
     *,
-    require_refusion_semantics: bool = False,
     max_length: int | None = None,
     model_config_overrides: dict | None = None,
 ):
@@ -37,22 +35,12 @@ def _make_cfg(
             "max_length": max_length,
             "model_config_overrides": model_config_overrides or {},
             "task": {
-                "require_refusion_semantics": require_refusion_semantics,
                 "load_ema_weights": False,
                 "ckpt_file": "best-rank0.pt",
             },
         }
     )
 
-
-def _make_local_refusion(length: int | None):
-    assert ReFusion is not None
-    assert nn is not None
-    model = object.__new__(ReFusion)
-    nn.Module.__init__(model)
-    model.config = SimpleNamespace(length=length)
-    model.to = MagicMock(side_effect=lambda device: model)
-    return model
 
 @unittest.skipIf(
     torch is None or pad_option_batch is None,
@@ -82,9 +70,7 @@ class PadOptionBatchTests(unittest.TestCase):
         self.assertTrue(
             torch.equal(batch["attention_mask"][1], torch.tensor([1, 1, 0]))
         )
-        self.assertTrue(
-            torch.equal(batch["context_mask"][1], torch.tensor([1, 0, 1]))
-        )
+        self.assertTrue(torch.equal(batch["context_mask"][1], torch.tensor([1, 0, 1])))
 
     def test_can_pad_to_fixed_model_context_length(self):
         batch = pad_option_batch(
@@ -151,51 +137,15 @@ class PadOptionBatchTests(unittest.TestCase):
     "MCQA eval dependencies are unavailable",
 )
 class MCQAGuardrailTests(unittest.TestCase):
-    def test_refusion_semantics_force_refusion_model_type_and_reject_non_wrapper(self):
-        cfg = _make_cfg(require_refusion_semantics=True, max_length=256)
-        plain_model = SimpleNamespace(config=SimpleNamespace(length=256))
-
-        with patch("scripts.eval.mcqa_eval.load_eval_model", return_value=plain_model) as load_model_mock:
-            with self.assertRaisesRegex(
-                ValueError,
-                "ReFusion semantics.*non-ReFusion behavior",
-            ):
-                load_mcqa_model(cfg, tokenizer=SimpleNamespace(), device=torch.device("cpu"))
-
-        self.assertEqual(
-            load_model_mock.call_args.kwargs["model_config_overrides"]["model_type"],
-            "refusion",
-        )
-        self.assertEqual(
-            load_model_mock.call_args.kwargs["model_config_overrides"]["length"],
-            256,
-        )
-        self.assertTrue(
-            load_model_mock.call_args.kwargs["require_explicit_refusion_length"]
-        )
-
-    def test_refusion_semantics_require_explicit_usable_sequence_length(self):
-        cfg = _make_cfg(require_refusion_semantics=True, max_length=None)
-        model = _make_local_refusion(length=None)
-
-        with self.assertRaisesRegex(
-            ValueError,
-            "ReFusion semantics.*explicit usable sequence length.*non-ReFusion behavior",
-        ):
-            resolve_max_length(
-                cfg,
-                model,
-                SimpleNamespace(model_max_length=4096),
-            )
-
-    def test_plain_causal_path_is_unchanged_without_refusion_flag(self):
+    def test_plain_causal_path_is_unchanged(self):
         cfg = _make_cfg(
-            require_refusion_semantics=False,
             model_config_overrides={"length": 128},
         )
         plain_model = SimpleNamespace(config=SimpleNamespace(length=128))
 
-        with patch("scripts.eval.mcqa_eval.load_eval_model", return_value=plain_model) as load_model_mock:
+        with patch(
+            "scripts.eval.mcqa_eval.load_eval_model", return_value=plain_model
+        ) as load_model_mock:
             loaded_model = load_mcqa_model(
                 cfg,
                 tokenizer=SimpleNamespace(),
@@ -206,9 +156,6 @@ class MCQAGuardrailTests(unittest.TestCase):
         self.assertEqual(
             load_model_mock.call_args.kwargs["model_config_overrides"],
             {"length": 128},
-        )
-        self.assertFalse(
-            load_model_mock.call_args.kwargs["require_explicit_refusion_length"]
         )
         self.assertEqual(
             resolve_max_length(
@@ -290,9 +237,7 @@ class MCQACausalScoringTests(unittest.TestCase):
                 },
             }
         )
-        model = _make_local_refusion(length=32)
-        model.config.block_size = None
-        model.config.eval_block_size = None
+        model = SimpleNamespace(config=SimpleNamespace(length=32, block_size=None, eval_block_size=None))
         scorer = MCQAScorer(
             cfg=cfg,
             model=model,

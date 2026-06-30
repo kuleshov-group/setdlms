@@ -3,7 +3,6 @@ This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 """
 
 import json
-import os
 import re
 import sys
 from datetime import timedelta
@@ -25,6 +24,7 @@ from transformers.modeling_outputs import ModelOutput
 
 from datasets import Dataset
 from scripts.eval.model_loading import (
+    configure_rank_local_torchinductor_cache,
     load_eval_model,
     normalize_model_config_overrides,
 )
@@ -51,6 +51,45 @@ def gather_results(results, world_size):
     return all_results
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 0:
+            return None
+        value = value.detach().float().mean().item()
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return None
+        value = float(np.mean(value))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _numeric_summary(values: list[float]) -> tuple[float | None, float | None]:
+    if not values:
+        return None, None
+    return float(np.mean(values)), float(np.std(values))
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"", "none", "null", "auto"}:
+            return None
+        if lowered in {"1", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "n"}:
+            return False
+    return bool(value)
+
+
 class LMEvalHarnessModel(LM):
     def __init__(
         self,
@@ -65,6 +104,11 @@ class LMEvalHarnessModel(LM):
         throughput_run: bool = False,
         throughput_samples: int = 100,
         throughput_warmup: int = 100,
+        throughput_global_measurements: bool = False,
+        stop_on_im_end: bool | str = False,
+        compile_backbone: bool = False,
+        compile_mode: str | None = None,
+        compile_dynamic: bool | None = None,
         model_config_overrides: dict[str, Any] | None = None,
     ):
         """
@@ -111,11 +155,46 @@ class LMEvalHarnessModel(LM):
             ckpt_file=ckpt_file,
             model_config_overrides=model_config_overrides,
         )
+        is_setdlm = self.model.__class__.__name__ == "SetDLM"
+        self.compile_backbone = bool(compile_backbone)
+        self.compile_supported = bool(hasattr(self.model, "backbone"))
+        if compile_mode in ("", "none", "None", "null", "default"):
+            compile_mode = None
+        if compile_mode is None and not is_setdlm:
+            compile_mode = "max-autotune-no-cudagraphs"
+        compile_dynamic_value = _optional_bool(compile_dynamic)
+        if compile_dynamic_value is None:
+            compile_dynamic_value = True if is_setdlm else False
+        self.compile_mode = compile_mode or "default"
+        self.compile_dynamic = compile_dynamic_value
+        if self.compile_backbone:
+            if not self.compile_supported:
+                print(
+                    "COMPILE_BACKBONE=true requested, but this model has no "
+                    "backbone; running uncompiled."
+                )
+            else:
+                cache_dir = configure_rank_local_torchinductor_cache()
+                if cache_dir:
+                    print(f"Using rank-local TorchInductor cache: {cache_dir}")
+                compile_kwargs = {"dynamic": compile_dynamic_value}
+                if compile_mode is not None:
+                    compile_kwargs["mode"] = compile_mode
+                print(f"Compiling model backbone with torch.compile({compile_kwargs})")
+                self.model.backbone = torch.compile(self.model.backbone, **compile_kwargs)
+        print(
+            "Compile settings: "
+            f"requested={self.compile_backbone}, "
+            f"supported={self.compile_supported}, "
+            f"mode={self.compile_mode}, dynamic={self.compile_dynamic}"
+        )
         self.model.eval()
         self.gen_kwargs = gen_kwargs
         self.throughput_run = throughput_run
         self.throughput_warmup = throughput_warmup
         self.throughput_samples = throughput_samples
+        self.throughput_global_measurements = throughput_global_measurements
+        self.stop_on_im_end = bool(_optional_bool(stop_on_im_end))
 
     @property
     def rank(self):
@@ -135,17 +214,175 @@ class LMEvalHarnessModel(LM):
     def tokenizer_name(self):
         return self.tokenizer.name_or_path
 
+    def _generation_config_value(self, name: str, default: Any = None) -> Any:
+        gen_kwargs = self.gen_kwargs or {}
+        try:
+            generation_config = gen_kwargs.get("generation_config")
+        except AttributeError:
+            generation_config = getattr(gen_kwargs, "generation_config", None)
+        if generation_config is None:
+            return default
+        if isinstance(generation_config, dict):
+            return generation_config.get(name, default)
+        return getattr(generation_config, name, default)
+
+    def _write_throughput_outputs(
+        self,
+        tputs: list[float],
+        latencies: list[float],
+        response_lengths: list[float],
+        parallelism_factors: list[float],
+        non_ar_tokens_per_step_values: list[float],
+        inf_budgets: list[float],
+        local_measurement_target: int,
+    ) -> None:
+        rank_summary = {
+            "throughput_mean": _numeric_summary(tputs)[0],
+            "throughput_std": _numeric_summary(tputs)[1],
+            "throughput_all": tputs,
+            "latency_mean": _numeric_summary(latencies)[0],
+            "latency_std": _numeric_summary(latencies)[1],
+            "latency_all": latencies,
+            "warmup_examples_per_rank": self.throughput_warmup,
+            "measured_examples": len(tputs),
+            "requested_measured_examples": self.throughput_samples,
+            "local_measurement_target": local_measurement_target,
+            "throughput_global_measurements": self.throughput_global_measurements,
+            "world_size": self.world_size,
+        }
+        with open(
+            f"{self.generated_samples_output_path}/throughput-rank{self.rank}.json",
+            "w",
+        ) as f:
+            json.dump(rank_summary, f, indent=2)
+
+        all_tputs = gather_results(tputs, self.world_size)
+        all_latencies = gather_results(latencies, self.world_size)
+        all_response_lengths = gather_results(response_lengths, self.world_size)
+        all_parallelism_factors = gather_results(parallelism_factors, self.world_size)
+        all_non_ar_tokens_per_step_values = gather_results(
+            non_ar_tokens_per_step_values, self.world_size
+        )
+        all_inf_budgets = gather_results(inf_budgets, self.world_size)
+
+        if self.throughput_global_measurements:
+            limit = self.throughput_samples
+            all_tputs = all_tputs[:limit]
+            all_latencies = all_latencies[:limit]
+            all_response_lengths = all_response_lengths[:limit]
+            all_parallelism_factors = all_parallelism_factors[:limit]
+            all_non_ar_tokens_per_step_values = all_non_ar_tokens_per_step_values[
+                :limit
+            ]
+            all_inf_budgets = all_inf_budgets[:limit]
+
+        output_lengths_from_timing = [
+            float(throughput) * float(latency)
+            for throughput, latency in zip(all_tputs, all_latencies)
+        ]
+        valid_parallelism_factors = [
+            float(x) for x in all_parallelism_factors if x is not None and x >= 0
+        ]
+        nfe = self._generation_config_value("num_steps")
+        tput_mean, tput_std = _numeric_summary(all_tputs)
+        latency_mean, latency_std = _numeric_summary(all_latencies)
+        out_len_mean, out_len_std = _numeric_summary(output_lengths_from_timing)
+        resp_len_mean, resp_len_std = _numeric_summary(all_response_lengths)
+        pf_mean, pf_std = _numeric_summary(valid_parallelism_factors)
+        non_ar_mean, non_ar_std = _numeric_summary(all_non_ar_tokens_per_step_values)
+        inf_budget_mean, inf_budget_std = _numeric_summary(all_inf_budgets)
+        zero_frac = (
+            float(np.mean([1.0 if length <= 0 else 0.0 for length in all_response_lengths]))
+            if all_response_lengths
+            else None
+        )
+        if self.rank == 0:
+            summary = {
+                "throughput_mean": tput_mean,
+                "throughput_std": tput_std,
+                "throughput_all": [float(x) for x in all_tputs],
+                "latency_mean": latency_mean,
+                "latency_std": latency_std,
+                "latency_all": [float(x) for x in all_latencies],
+                "output_length_from_tput_latency_mean": out_len_mean,
+                "output_length_from_tput_latency_std": out_len_std,
+                "response_length_mean": resp_len_mean,
+                "response_length_std": resp_len_std,
+                "response_length_all": [float(x) for x in all_response_lengths],
+                "zero_frac": zero_frac,
+                "parallelism_factor_mean": pf_mean,
+                "parallelism_factor_std": pf_std,
+                "parallelism_factor_all": valid_parallelism_factors,
+                "non_ar_tokens_per_step_mean": non_ar_mean,
+                "non_ar_tokens_per_step_std": non_ar_std,
+                "inf_budget_mean": inf_budget_mean,
+                "inf_budget_std": inf_budget_std,
+                "warmup_examples_per_rank": self.throughput_warmup,
+                "measured_examples": len(all_tputs),
+                "requested_measured_examples": self.throughput_samples,
+                "local_measurement_target": local_measurement_target,
+                "throughput_global_measurements": self.throughput_global_measurements,
+                "world_size": self.world_size,
+                "nfe": int(nfe) if nfe is not None else None,
+                "confidence_threshold": self._generation_config_value(
+                    "confidence_threshold"
+                ),
+                "confidence_based_noising": self._generation_config_value(
+                    "confidence_based_noising"
+                ),
+                "confidence_margin_based_noising": self._generation_config_value(
+                    "confidence_margin_based_noising"
+                ),
+                "compile_backbone": self.compile_backbone,
+                "compile_supported": self.compile_supported,
+                "compile_mode": self.compile_mode,
+                "compile_dynamic": self.compile_dynamic,
+                "setdlm_fast_inference": self._generation_config_value(
+                    "setdlm_fast_inference"
+                ),
+                "setdlm_dynamic_active_logits": self._generation_config_value(
+                    "setdlm_dynamic_active_logits"
+                ),
+                "setdlm_deterministic_sampler_fastpath": self._generation_config_value(
+                    "setdlm_deterministic_sampler_fastpath"
+                ),
+                "setdlm_vectorized_repetition_penalty": self._generation_config_value(
+                    "setdlm_vectorized_repetition_penalty"
+                ),
+                "setdlm_dynamic_tensor_attention_mask": self._generation_config_value(
+                    "setdlm_dynamic_tensor_attention_mask"
+                ),
+                "setdlm_dynamic_full_window_fastpath": self._generation_config_value(
+                    "setdlm_dynamic_full_window_fastpath"
+                ),
+            }
+            with open(
+                f"{self.generated_samples_output_path}/throughput-all.json", "w"
+            ) as f:
+                json.dump(summary, f, indent=2)
+
     def apply_chat_template(
         self, chat_history: List[Dict[str, str]], add_generation_prompt: bool = True
     ):
-        return self.tokenizer.apply_chat_template(
-            chat_history,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
-        )
+        chat_template_kwargs = {
+            "tokenize": False,
+            "add_generation_prompt": add_generation_prompt,
+        }
+        try:
+            return self.tokenizer.apply_chat_template(
+                chat_history,
+                enable_thinking=True,
+                **chat_template_kwargs,
+            )
+        except TypeError as exc:
+            if "enable_thinking" not in str(exc):
+                raise
+            return self.tokenizer.apply_chat_template(
+                chat_history,
+                **chat_template_kwargs,
+            )
 
     def generate_until(self, requests, **generation_kwargs):
-        # TODO: Move this to utils file / perhaps use chat template
         def _tokenize(
             e,
             prefix_text: str | None = (
@@ -199,33 +436,39 @@ class LMEvalHarnessModel(LM):
         parallelism_factors = []
         non_ar_tokens_per_step_values = []
         inf_budgets = []
+        latencies = []
+        measured_parallelism_factors = []
+        measured_non_ar_tokens_per_step_values = []
+        measured_inf_budgets = []
+        if self.throughput_global_measurements:
+            local_measurement_target = int(
+                np.ceil(self.throughput_samples / max(self.world_size, 1))
+            )
+        else:
+            local_measurement_target = self.throughput_samples
         for i, elem in tqdm(
             enumerate(ds), desc="Generating", total=len(ds), disable=(self.rank != 0)
         ):
-            if (
-                self.throughput_run
-                and i >= self.throughput_samples + self.throughput_warmup
-            ):
-                tputs_path = (
-                    f"{self.generated_samples_output_path}/throughput-rank{self.rank}"
+            if self.throughput_run and len(tputs) >= local_measurement_target:
+                self._write_throughput_outputs(
+                    tputs=tputs,
+                    latencies=latencies,
+                    response_lengths=response_lengths,
+                    parallelism_factors=measured_parallelism_factors,
+                    non_ar_tokens_per_step_values=measured_non_ar_tokens_per_step_values,
+                    inf_budgets=measured_inf_budgets,
+                    local_measurement_target=local_measurement_target,
                 )
-                with open(f"{tputs_path}.json", "w") as f:
-                    json.dump(
-                        {
-                            "throughput_mean": np.mean(tputs),
-                            "throughput_std": np.std(tputs),
-                            "throughput_all": tputs,
-                        },
-                        f,  # type: ignore
-                        indent=2,
-                    )
+                if dist.is_initialized():
+                    dist.barrier()
+                    dist.destroy_process_group()
                 sys.exit(0)
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()
             generation_outputs = self.model.generate(
                 inputs=elem["prefix"][None, ...].to(self.device),
-                tokenizer=self.tokenizer,  # Uncomment for debugging
+                tokenizer=self.tokenizer,
                 **self.gen_kwargs,
             )
             if isinstance(generation_outputs, ModelOutput):
@@ -236,30 +479,54 @@ class LMEvalHarnessModel(LM):
                 non_ar_tokens_per_step = generation_outputs.get(
                     "non_ar_tokens_per_step"
                 )
+                inf_budget = generation_outputs.get("inf_budget")
             else:
                 sample = generation_outputs
                 parallelism_factor = -1.0
                 non_ar_tokens_per_step = None
-            parallelism_factors.append(parallelism_factor)
+                inf_budget = None
+            parallelism_factor_value = _as_float(parallelism_factor)
+            parallelism_factors.append(
+                parallelism_factor_value if parallelism_factor_value is not None else -1.0
+            )
             if non_ar_tokens_per_step is not None:
-                non_ar_tokens_per_step_values.append(non_ar_tokens_per_step)
-            if "inf_budget" in generation_outputs:
-                inf_budget = generation_outputs["inf_budget"]
-                inf_budgets.append(inf_budget)
+                non_ar_tokens_per_step_value = _as_float(non_ar_tokens_per_step)
+                if non_ar_tokens_per_step_value is not None:
+                    non_ar_tokens_per_step_values.append(non_ar_tokens_per_step_value)
+            if inf_budget is not None:
+                inf_budget_value = _as_float(inf_budget)
+                if inf_budget_value is not None:
+                    inf_budgets.append(inf_budget_value)
             end_event.record()
             torch.cuda.synchronize()
             elapsed_time_s = start_event.elapsed_time(end_event) / 1000
             tput = (sample.numel() - elem["prefix"].numel()) / elapsed_time_s
             response_length = sample.numel() - elem["prefix"].numel()
             if i >= self.throughput_warmup:
-                tputs.append(tput)
-                response_lengths.append(response_length)
+                tputs.append(float(tput))
+                latencies.append(float(elapsed_time_s))
+                response_lengths.append(float(response_length))
+                if parallelism_factor_value is not None:
+                    measured_parallelism_factors.append(parallelism_factor_value)
+                if non_ar_tokens_per_step is not None:
+                    non_ar_tokens_per_step_value = _as_float(non_ar_tokens_per_step)
+                    if non_ar_tokens_per_step_value is not None:
+                        measured_non_ar_tokens_per_step_values.append(
+                            non_ar_tokens_per_step_value
+                        )
+                if inf_budget is not None:
+                    inf_budget_value = _as_float(inf_budget)
+                    if inf_budget_value is not None:
+                        measured_inf_budgets.append(inf_budget_value)
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
-            for until in elem["target"]["until"] + [
-                "<|eot_id|>",
-                self.tokenizer.eos_token,
-            ]:
-                result = result.split(until)[0]
+            stop_strings = list(elem["target"]["until"]) + ["<|eot_id|>"]
+            if self.stop_on_im_end:
+                stop_strings.append("<|im_end|>")
+            if self.tokenizer.eos_token is not None:
+                stop_strings.append(self.tokenizer.eos_token)
+            for until in stop_strings:
+                if until:
+                    result = result.split(until)[0]
             predicted_ans = None
             if "boxed{" in result:
                 predicted_ans = result.split("boxed{")[1].split("}")[0]
@@ -280,7 +547,7 @@ class LMEvalHarnessModel(LM):
                         f"{np.mean(non_ar_tokens_per_step_values):0.2f} "
                         f"+/- {np.std(non_ar_tokens_per_step_values):0.2f}"
                     )
-                if "inf_budget" in generation_outputs:
+                if inf_budget is not None:
                     print(
                         f"Inference prediction budget: {np.mean(inf_budgets):0.2f} "
                         f"+/- {np.std(inf_budgets):0.2f}"
@@ -299,12 +566,12 @@ class LMEvalHarnessModel(LM):
                     "result": result,
                 }
             )
-            # torch.cuda.empty_cache()
             if self.rank == 0:
                 print(f"\nAccuracy: {correct}/{total} = {correct / total:.2%}\n")
                 if i >= self.throughput_warmup:
                     print(
-                        f"Thput (tok/s): {np.mean(tputs):0.2f} +/- {np.std(tputs):0.2f}"
+                        f"Thput (tok/s): {np.mean(tputs):0.2f} "
+                        f"+/- {np.std(tputs):0.2f}"
                     )
                     print(
                         f"Response length: {np.mean(response_lengths):0.2f} "
@@ -326,7 +593,7 @@ class LMEvalHarnessModel(LM):
             non_ar_tokens_per_step_values, self.world_size
         )
         throughputs = gather_results(tputs, self.world_size)
-        if "inf_budget" in generation_outputs:
+        if inf_budgets:
             inf_budgets = gather_results(inf_budgets, self.world_size)
         response_lengths = gather_results(response_lengths, self.world_size)
         if self.rank == 0:
@@ -350,7 +617,7 @@ class LMEvalHarnessModel(LM):
                 f"Response length: {np.mean(response_lengths):0.2f} "
                 f"+/- {np.std(response_lengths):0.2f}"
             )
-            if "inf_budget" in generation_outputs:
+            if inf_budgets:
                 print(
                     f"Inference prediction budget: {np.mean(inf_budgets):0.2f} "
                     f"+/- {np.std(inf_budgets):0.2f}"

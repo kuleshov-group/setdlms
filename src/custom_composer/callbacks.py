@@ -62,7 +62,7 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
             )
         self.saved_hf_checkpoints: list[str] = []
         self.all_saved_hf_checkpoints_to_timestamp: dict[str, Timestamp] = {}
-        # TODO: Leads to OSError device is busy when using tmpdir in /share/kuleshov
+        # Avoid network filesystems here; some clusters raise OSError device busy.
 
     def fit_start(self, state: State, logger: Logger) -> None:
         super().fit_start(state, logger)
@@ -101,9 +101,6 @@ class HuggingFaceCompatibleCheckpointing(CheckpointSaver):
         Copied / adapted from composer.callbacks.CheckpointSaver._save_checkpoint
             for HF compatibility.
         """
-        # TODO: Check that HF saving works with state.fsdp_sharded_state_dict_enabled
-        #  (or if we can ignore this scenario).
-        # TODO: Do we need to implement HF uploading for remote uploading too?
         if self.disable_hf:
             super()._save_checkpoint(state, logger)  # Perform standard checkpointing
             return

@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# Setup environment
-cd ../ || exit  # Go to the root directory of the repo
-source setup_env.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+cd "${REPO_ROOT}" || exit
+source "${REPO_ROOT}/setup_env.sh"
 
 # Model arch
 BLOCK_SIZE=1024
@@ -25,12 +26,11 @@ BATCH_SIZE=1
 MAX_DURATION="75000ba"
 PRECISION="amp_bf16"
 
-# Debug: Limit training/eval samples per epoch (set to null or remove to use full dataset)
-MAX_TRAIN_SAMPLES=null  # Set to null or remove this line to use full dataset
-MAX_EVAL_SAMPLES=null  # Set to null or remove this line to use full dataset
+# Optional dataset subsampling; null uses the full dataset.
+MAX_TRAIN_SAMPLES=null
+MAX_EVAL_SAMPLES=null
 
 PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-1.7B-Base
-# PRETRAINED_MODEL_NAME_OR_PATH=Qwen/Qwen3-0.6B-Base
 NUM_SHOT=0
 
 TAG="setdlm_tgt${DESIRED_BLOCK_SIZE}_distill_k${K}_maxblock${MAX_BLOCK_SIZE}_sweep_v1"

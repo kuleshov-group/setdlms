@@ -1,3 +1,4 @@
+import logging
 import math
 import typing
 
@@ -46,6 +47,8 @@ try:
     from transformers.cache_utils import DynamicCache
 except ImportError:
     DynamicCache = None
+
+log = logging.getLogger(__name__)
 
 # Flags required to enable jit fusion kernels
 torch._C._jit_set_profiling_mode(False)
@@ -184,33 +187,52 @@ class Rotary(torch.nn.Module):
 
 
 class RotaryAllowPermutations(torch.nn.Module):
-    def __init__(self, dim, base=10_000):
+    def __init__(self, dim, base=10_000, max_positions=16_384):
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
+        self.max_positions = max_positions
+
+        positions = torch.arange(max_positions, dtype=inv_freq.dtype)
+        freqs = torch.einsum("s,d->sd", positions, inv_freq)
+        emb = torch.cat([freqs, freqs], dim=-1)
+
+        cos = emb.cos()[:, None, None, :].repeat(1, 3, 1, 1)
+        sin = emb.sin()[:, None, None, :].repeat(1, 3, 1, 1)
+        cos[:, 2, :, :].fill_(1.0)
+        sin[:, 2, :, :].fill_(0.0)
+        self.register_buffer("cos_cached", cos, persistent=False)
+        self.register_buffer("sin_cached", sin, persistent=False)
 
     def forward(self, position_ids):
         """
-        position_ids: (batch, seq_len) — arbitrary / permuted allowed
+        position_ids: (batch, seq_len) — arbitrary / permuted allowed.
+
+        Rotary values depend only on absolute position, not on decode state. Keeping a
+        fixed table avoids recomputing einsum/cos/sin inside every small SetDLM decode
+        call and gives torch.compile a simpler graph. The table lookup is deterministic
+        and consumes no RNG, so sampling reproducibility is preserved.
         """
+        if torch._dynamo.is_compiling():
+            flat_position_ids = position_ids.reshape(-1).to(torch.long)
+        else:
+            if position_ids.numel() > 0:
+                max_position = int(position_ids.max().item())
+                min_position = int(position_ids.min().item())
+                if min_position < 0 or max_position >= self.max_positions:
+                    raise ValueError(
+                        "position_ids must be in [0, "
+                        f"{self.max_positions}); got min={min_position}, "
+                        f"max={max_position}."
+                    )
+            flat_position_ids = position_ids.reshape(-1).to(torch.long)
 
-        # (batch, seq_len, dim/2)
-        freqs = torch.einsum(
-            "bs,d->bsd", position_ids.type_as(self.inv_freq), self.inv_freq
+        cos = self.cos_cached.index_select(0, flat_position_ids)
+        sin = self.sin_cached.index_select(0, flat_position_ids)
+        return (
+            cos.view(*position_ids.shape, 3, 1, -1),
+            sin.view(*position_ids.shape, 3, 1, -1),
         )
-
-        # (batch, seq_len, dim)
-        emb = torch.cat([freqs, freqs], dim=-1)
-
-        # (batch, seq_len, 3, 1, dim)
-        cos = emb.cos()[:, :, None, None, :].repeat(1, 1, 3, 1, 1)
-        sin = emb.sin()[:, :, None, None, :].repeat(1, 1, 3, 1, 1)
-
-        # Make V an identity transform
-        cos[:, :, 2, :, :].fill_(1.0)
-        sin[:, :, 2, :, :].fill_(0.0)
-
-        return cos, sin
 
 
 def rotate_half(x):
@@ -239,7 +261,7 @@ def regular_attention_multi_headed(q, k, v):
         dropout_p=0.0,
         is_causal=False,
     )
-    # [batch_size, seq_len, num_heads, head_dim]
+    # Restore the sequence-major head layout before flattening heads.
     attention_output = attention_output.transpose(1, 2)
     return einops.rearrange(attention_output, "b s h d -> b s (h d)")
 
@@ -326,8 +348,6 @@ class LabelEmbedder(nn.Module):
         super().__init__()
         self.embedding_table = nn.Embedding(num_classes + 1, cond_size)
         self.num_classes = num_classes
-
-        # TODO think of initializing with 0.02 std deviation like in original DiT paper
 
     def forward(self, labels):
         embeddings = self.embedding_table(labels)
@@ -505,28 +525,29 @@ class DDiTBlockCausal(nn.Module):
 
             # past_key_values.update returns full K/V (cached + new)
             # Transpose back to [batch, seq_len, n_heads, head_dim]
+            cache_causal = causal and q.shape[1] == k.shape[-2]
             k = k.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
             v = v.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
 
-            # # Use Q (current seq), K (full seq), V (full seq) for attention
+            # Use Q (current seq), K (full seq), V (full seq) for attention
             if self.attn_backend == "flash_attn":
                 q_fa = q.contiguous().to(torch.bfloat16)
                 k_fa = k.contiguous().to(torch.bfloat16)
                 v_fa = v.contiguous().to(torch.bfloat16)
 
-                # returns [B, q_len, H, D]
+                # Returns batch x query_len x heads x head_dim.
                 attn = flash_attn.flash_attn_interface.flash_attn_func(
                     q_fa,
                     k_fa,
                     v_fa,
                     dropout_p=0.0,
-                    causal=causal,
+                    causal=cache_causal,
                 )
 
                 # back to [B, q_len, H*D] (match rest of block)
                 x = rearrange(attn, "b s h d -> b s (h d)")
             else:
-                x = self.cross_attn_with_cache(q, k, v, causal=True, mask=mask)
+                x = self.cross_attn_with_cache(q, k, v, causal=cache_causal, mask=mask)
         else:
             # No caching, use original QKV tensor
             if self.attn_backend == "flash_attn":
@@ -768,29 +789,13 @@ class DDiTBlock(nn.Module):
             cache_kwargs = {}
             if cache_position is not None:
                 cache_kwargs["cache_position"] = cache_position
-            # For DynamicCache, sin/cos are optional and used for position tracking
-            # Since we've already applied rotary embeddings, we can pass them
-            # for reference
-            # if rotary_cos_sin is not None:
-            #   cos, sin = rotary_cos_sin
-            #   # Extract cos/sin for K (index 1 in QKV)
-            #   # cos/sin shape: [batch, seq_len, 3, 1, dim] or [batch, seq_len, dim]
-            #   if cos.dim() == 5:
-            #     # Extract for K (index 1) and squeeze: [batch, seq_len, dim]
-            #     cos_k = cos[:, :, 1, 0, :]
-            #     sin_k = sin[:, :, 1, 0, :]
-            #   else:
-            #     cos_k = cos
-            #     sin_k = sin
-            #   cache_kwargs["sin"] = sin_k
-            #   cache_kwargs["cos"] = cos_k
-
             k, v = past_key_values.update(k, v, layer_idx, cache_kwargs)
 
             # past_key_values.update returns full K/V (cached + new)
             # Transpose back to [batch, seq_len, n_heads, head_dim]
             k = k.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
             v = v.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
+            cache_causal = causal and q.shape[1] == k.shape[1]
 
             # Use Q (current seq), K (full seq), V (full seq) for attention
             # For non-causal attention with mask, we need to handle mask properly
@@ -799,9 +804,9 @@ class DDiTBlock(nn.Module):
                 # Reconstruct QKV tensor but with different seq lengths;
                 # not directly supported
                 # Fall back to cross_attn_with_cache
-                x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=causal)
+                x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=cache_causal)
             else:
-                x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=causal)
+                x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=cache_causal)
         else:
             # No caching, use original QKV tensor
             if self.attn_backend == "flash_attn" and mask is None:
@@ -891,10 +896,8 @@ class DITLegacy(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         block_size: int,
         attn_backend: str,
         pretrained_model_name_or_path: str,
-        is_esolm_backbone: bool = False,
     ):
         super().__init__()
-        self.is_esolm_backbone = is_esolm_backbone
         self.causal = causal_attention
         self.n = length
         self.adaLN = adaln
@@ -961,8 +964,10 @@ class DITLegacy(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 del state_dict
                 self.load_state_dict(new_state_dict, strict=False)
             else:
-                print(f"Pretrained model {pretrained_model_name_or_path} not found")
-        print(self)
+                log.warning(
+                    "Pretrained model %s not found", pretrained_model_name_or_path
+                )
+        log.info("%s", self)
 
     def _get_bias_dropout_scale(self):
         if self.training:

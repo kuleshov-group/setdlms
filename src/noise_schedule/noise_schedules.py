@@ -73,7 +73,6 @@ class LinearNoise(Noise):
         for i in range(length, 0, -1):
             eps = torch.finfo(dtype).tiny
             u = torch.rand(batch_size, device=device).clamp_min(eps)
-            # next_t = timesteps[:, -1] * u ** (1 / i)
             next_t = timesteps[:, -1] * torch.exp(torch.log(u) / i)
             timesteps = torch.cat((timesteps, next_t), dim=0)
         return timesteps[1:].to(device, dtype=dtype)  # type: ignore
@@ -106,83 +105,6 @@ class LinearNoise(Noise):
         ).to(device)
         perm_indices = perm_indices.reshape(batch_size, num_blocks * block_size)
         return perm_indices
-
-
-class EsoLogLinearNoise(Noise):
-    """Eso-LMs log-linear schedule from `trainer_base.py::LogLinear`."""
-
-    def __init__(self, alpha_0: float = 1.0, eps: float = 1e-3):
-        super().__init__()
-        self.name = "esolm_loglinear"
-        self.alpha_0 = alpha_0
-        self.eps = eps
-
-    def compute_window_size(self):
-        return 1
-
-    def compute_inf_budget(self):
-        # Upstream Eso-LMs does not expose an equivalent budget helper; keep the
-        # minimal scalar expected by local generation utilities.
-        return 0.5
-
-    def __call__(self, t):
-        # Direct transcription of:
-        # `s-sahoo/Eso-LMs/trainer_base.py` lines 26-36.
-        t = t.to(torch.float32)
-        t = (1 - self.eps) * t
-        alpha_t = self.alpha_0 * (1 - t)
-        alpha_t_prime = torch.full_like(alpha_t, -self.alpha_0 * (1 - self.eps))
-        return alpha_t, alpha_t_prime
-
-    def compute_first_hitting_times(
-        self, batch_size, length, device, dtype=torch.float64
-    ):
-        # Upstream Eso-LMs does not define first-hitting times for the
-        # log-linear schedule. Sampling instead uses the dedicated discrete
-        # unmasking path in `algo.py::EsoLM._tokens_unmasked_per_step` and
-        # `algo.py::EsoLM.generate_samples` (lines 496-599 in the official repo).
-        # Failing fast here prevents the old local fallback from silently
-        # changing generation behavior.
-        del batch_size, length, device, dtype
-        raise NotImplementedError(
-            "EsoLogLinearNoise does not support first-hitting times. "
-            "Use the dedicated EsoLM sampling path instead."
-        )
-
-    def sample_permutation_order(
-        self,
-        t,
-        to_permute: torch.Tensor,
-        block_size: Optional[int] = None,
-        masked_tokens: Optional[torch.Tensor] = None,
-        **kwargs: Any,
-    ) -> torch.Tensor:
-        del t, block_size, kwargs
-        # Match the local SetDLM helper semantics: keep non-permuted prefix/suffix
-        # fixed, randomize the active interior, and optionally keep masked tokens at
-        # the end in their original order.
-        batch_size, seq_len = to_permute.shape
-        device = to_permute.device
-        to_permute = to_permute.bool()
-        ranking = torch.rand(batch_size, seq_len, device=device)
-        is_beginning = (to_permute.cumsum(-1) == 0) & (~to_permute[:, :1])
-        is_end = (to_permute.flip(-1).cumsum(-1) == 0).flip(-1) & (~to_permute[:, -1:])
-        ranking = torch.where(is_beginning, float("inf"), ranking)
-        ranking = torch.where(is_end, float("-inf"), ranking)
-        perms = torch.argsort(ranking.cpu(), dim=-1, descending=True, stable=True).to(
-            device
-        )
-        if masked_tokens is not None:
-            masked_tokens = masked_tokens.bool()
-            for b in range(batch_size):
-                masked_indices = masked_tokens[b].nonzero(as_tuple=True)[0]
-                if masked_indices.numel() == 0:
-                    continue
-                masked_assign = torch.isin(perms[b], masked_indices)
-                perms[b] = torch.cat(
-                    [perms[b][~masked_assign], perms[b][masked_assign]], dim=-1
-                )
-        return perms
 
 
 class StaggeredNoise(Noise):
@@ -242,7 +164,7 @@ class StaggeredNoise(Noise):
         else:
             self.k = 1.0
             self.b = desired_area * (self.k + 1) / self.k
-            
+
         assert self.b <= 1.0, f"b {self.b} must be less than or equal to 1.0"
         cur_area = self.k / (self.k + 1) * self.b
         assert abs(cur_area - desired_area) < 1e-6, (

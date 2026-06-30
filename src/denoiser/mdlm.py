@@ -6,7 +6,10 @@ import torch.nn.functional as F
 from tqdm.auto import tqdm
 from transformers import LogitsProcessorList, PreTrainedTokenizer, StoppingCriteriaList
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.generation import ExponentialDecayLengthPenalty
+from transformers.generation import (
+    ExponentialDecayLengthPenalty,
+    MinNewTokensLengthLogitsProcessor,
+)
 
 from src.denoiser.base import Denoiser, DenoiserConfig, DenoiserInput, LossAndNllOutput
 from src.denoiser.diffusion_config import (
@@ -28,18 +31,10 @@ class MDLMConfig(DenoiserConfig):
     def __init__(
         self,
         keep_clean_bos: Optional[bool] = None,  # Whether to enforce un-noised BOS token
-        papl_alpha: float = 0.0,
-        papl_tau: float = 1.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        if papl_alpha < 0:
-            raise ValueError(f"`papl_alpha` must be non-negative, got {papl_alpha}.")
-        if papl_tau <= 0:
-            raise ValueError(f"`papl_tau` must be > 0, got {papl_tau}.")
         self.keep_clean_bos = keep_clean_bos
-        self.papl_alpha = papl_alpha
-        self.papl_tau = papl_tau
 
 
 class MDLM(Denoiser):
@@ -94,7 +89,7 @@ class MDLM(Denoiser):
         """
         move_indices = torch.rand(*x0.shape, device=x0.device) < (1.0 - alpha_t)
         xt = torch.where((move_indices * (1 - mask)).bool(), self.mask_token_id, x0)
-        if self.config.keep_clean_bos:
+        if getattr(self.config, "keep_clean_bos", False):
             xt[..., 0] = x0[..., 0]
         return xt  # type: ignore
 
@@ -131,7 +126,7 @@ class MDLM(Denoiser):
             xt = self._sample_q_xt(x0=input_ids, alpha_t=1 - p, mask=noise_mask)
         else:
             xt = self._sample_q_xt(x0=input_ids, alpha_t=alpha_t, mask=noise_mask)
-        if self.config.keep_clean_bos:
+        if getattr(self.config, "keep_clean_bos", False):
             xt[..., 0] = input_ids[..., 0]
         if (
             context_mask is not None
@@ -226,16 +221,14 @@ class MDLM(Denoiser):
         log_p_theta = torch.gather(
             input=model_output, dim=-1, index=denoiser_inputs.x0[:, :, None]
         ).squeeze(-1)
-        if self.config.keep_clean_bos and not self.training:
+        if getattr(self.config, "keep_clean_bos", False) and not self.training:
             log_p_theta = log_p_theta[:, 1:]
             denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask[:, 1:]
             denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[:, 1:]
             denoiser_inputs.alpha_t = denoiser_inputs.alpha_t[:, 1:]
             denoiser_inputs.xt = denoiser_inputs.xt[:, 1:]
         block_size = getattr(self.config, "block_size", denoiser_inputs.x0.shape[-1])
-        papl_alpha = float(getattr(self.config, "papl_alpha", 0.0))
         masked_tokens = (denoiser_inputs.xt == self.mask_token_id).int()
-        masked_positions = masked_tokens.bool() & denoiser_inputs.tokens_mask.bool()
 
         # below is needed to reproduce mdlm/sedd numbers with models from sahoo et al
         # (numerical imprecision computing probs under loglinear schedule)
@@ -257,38 +250,16 @@ class MDLM(Denoiser):
         else:
             batch_nll = nlls.sum(dim=-1)
 
-        papl_active = (
-            self.training
-            and not getattr(self.config, "train_on_nelbo", False)
-            and papl_alpha > 0
-        )
         other_loss_terms = {
             "masked_tokens": masked_tokens,
             "log_p_theta": -log_p_theta * denoiser_inputs.tokens_mask,
         }
-        if papl_active:
-            token_nll, papl_metrics = self._papl_loss(
-                target_log_probs=log_p_theta,
-                masked_positions=masked_positions,
-            )
-            other_loss_terms.update(
-                {
-                    "papl_avg_n_masked": papl_metrics["avg_n_masked"],
-                    "papl_avg_planner_entropy": papl_metrics["avg_planner_entropy"],
-                    "papl_avg_correct_prob_on_masked": papl_metrics[
-                        "avg_correct_prob_on_masked"
-                    ],
-                    "papl_enabled": torch.ones((), device=log_p_theta.device, dtype=torch.int),
-                }
-            )
-        elif (
+        if (
             self.training and not getattr(self.config, "train_on_nelbo", False)
         ) or block_size == 1:
             # Average over masked tokens during training
             batch_nll = -(log_p_theta * denoiser_inputs.tokens_mask).sum(dim=-1)
-            count = masked_tokens.sum(
-                dim=-1
-            )  # override count to be masked tokens
+            count = masked_tokens.sum(dim=-1)  # override count to be masked tokens
             token_nll = torch.where(
                 count > 0, batch_nll / count, torch.zeros_like(batch_nll)
             ).mean()
@@ -302,74 +273,6 @@ class MDLM(Denoiser):
             loss=token_nll,  # type: ignore
             nlls=nlls,
             other_loss_terms=other_loss_terms,
-        )
-
-    def _papl_params(self) -> tuple[float, float]:
-        papl_alpha = float(getattr(self.config, "papl_alpha", 0.0))
-        papl_tau = float(getattr(self.config, "papl_tau", 1.0))
-        if papl_alpha < 0:
-            raise ValueError(
-                f"`papl_alpha` must be non-negative, got {papl_alpha}."
-            )
-        if papl_tau <= 0:
-            raise ValueError(f"`papl_tau` must be > 0, got {papl_tau}.")
-        return papl_alpha, papl_tau
-
-    @staticmethod
-    def _papl_metrics(
-        planner_weights: torch.FloatTensor,
-        masked_positions: torch.BoolTensor,
-        target_log_probs: torch.FloatTensor,
-        eps: float = 1e-8,
-    ) -> dict[str, torch.FloatTensor]:
-        masked_float = masked_positions.to(target_log_probs.dtype)
-        n_masked = masked_float.sum(dim=-1).clamp_min(1)
-        safe_probs = torch.where(
-            masked_positions,
-            planner_weights.clamp_min(eps),
-            torch.ones_like(planner_weights),
-        )
-        avg_planner_entropy = (
-            -(planner_weights * safe_probs.log()).sum(dim=-1)
-        ).mean()
-        if masked_positions.any():
-            avg_correct_prob_on_masked = target_log_probs.exp()[masked_positions].mean()
-        else:
-            avg_correct_prob_on_masked = target_log_probs.new_zeros(())
-        return {
-            "avg_n_masked": n_masked.mean(),
-            "avg_planner_entropy": avg_planner_entropy,
-            "avg_correct_prob_on_masked": avg_correct_prob_on_masked,
-        }
-
-    def _papl_loss(
-        self,
-        target_log_probs: torch.FloatTensor,
-        masked_positions: torch.BoolTensor,
-    ) -> tuple[torch.FloatTensor, dict[str, torch.FloatTensor]]:
-        papl_alpha, papl_tau = self._papl_params()
-        target_nll = -target_log_probs
-        masked_nll = target_nll * masked_positions.to(target_nll.dtype)
-        detached_scores = (target_log_probs.detach() / papl_tau).masked_fill(
-            ~masked_positions, float("-inf")
-        )
-        planner_weights = torch.zeros_like(target_log_probs)
-        has_masked = masked_positions.any(dim=-1)
-        if has_masked.any():
-            planner_weights[has_masked] = F.softmax(
-                detached_scores[has_masked], dim=-1
-            )
-        planner_weights = torch.where(
-            masked_positions, planner_weights, torch.zeros_like(planner_weights)
-        )
-        n_masked = masked_positions.sum(dim=-1).clamp_min(1).to(target_nll.dtype)
-        base_weight = n_masked.reciprocal().unsqueeze(-1)
-        weights = base_weight * (1.0 + papl_alpha * planner_weights)
-        loss = (weights * masked_nll).sum(dim=-1).mean()
-        return loss, self._papl_metrics(
-            planner_weights=planner_weights,
-            masked_positions=masked_positions,
-            target_log_probs=target_log_probs,
         )
 
     @torch.no_grad()
@@ -569,6 +472,449 @@ class MDLM(Denoiser):
         else:
             return filtered
 
+    def _project_backbone_hidden_states(
+        self,
+        hidden_states: torch.FloatTensor,
+        denoiser_inputs: DenoiserInput,
+        **kwargs: Any,
+    ) -> torch.FloatTensor:
+        backbone = getattr(self.backbone, "_orig_mod", self.backbone)
+        project_hidden_states = getattr(backbone, "project_hidden_states", None)
+        if project_hidden_states is None:
+            raise ValueError(
+                "Backbone does not support projecting cropped hidden states."
+            )
+        sigma = kwargs.get("sigma", denoiser_inputs.backbone_kwargs.get("sigma"))
+        return project_hidden_states(hidden_states, sigma=sigma)
+
+    @staticmethod
+    def _plain_repetition_penalty(logits_processor: Optional[LogitsProcessorList]):
+        if logits_processor is None or len(logits_processor) != 1:
+            return None
+        processor = logits_processor[0]
+        if processor.__class__.__name__ != "RepetitionPenaltyLogitsProcessor":
+            return None
+        penalty = getattr(processor, "penalty", None)
+        return None if penalty is None else float(penalty)
+
+    @staticmethod
+    def _apply_repetition_penalty_vectorized(
+        scores: torch.FloatTensor,
+        input_ids: torch.LongTensor,
+        penalty: float,
+    ) -> torch.FloatTensor:
+        if scores.dim() != 3:
+            raise ValueError(f"Expected scores dim 3, got {scores.dim()}.")
+        batch_size, decode_len, vocab_size = scores.shape
+        if input_ids.shape[0] != batch_size:
+            raise ValueError("input_ids batch size must match scores batch size.")
+
+        scores_2d = scores.reshape(batch_size * decode_len, vocab_size)
+        expanded_ids = (
+            input_ids[:, None, :]
+            .expand(batch_size, decode_len, input_ids.shape[-1])
+            .reshape(batch_size * decode_len, input_ids.shape[-1])
+        )
+        gathered = torch.gather(scores_2d, 1, expanded_ids)
+        penalized = torch.where(gathered < 0, gathered * penalty, gathered / penalty)
+        scores_2d = scores_2d.scatter(1, expanded_ids, penalized)
+        return scores_2d.view(batch_size, decode_len, vocab_size)
+
+    @staticmethod
+    def _visible_infill_context(
+        accumulated_samples: torch.LongTensor,
+        mask_token_id: int,
+        pad_token_id: Optional[int] = None,
+    ) -> torch.LongTensor:
+        visible_context_mask = accumulated_samples != int(mask_token_id)
+        if pad_token_id is not None:
+            visible_context_mask = visible_context_mask & (
+                accumulated_samples != int(pad_token_id)
+            )
+        if accumulated_samples.shape[0] == 1:
+            return accumulated_samples[visible_context_mask].view(1, -1)
+
+        visible_rows = [
+            row[row_mask] for row, row_mask in zip(accumulated_samples, visible_context_mask)
+        ]
+        max_visible = max(row.numel() for row in visible_rows)
+        fill_value = pad_token_id if pad_token_id is not None else mask_token_id
+        visible_context = accumulated_samples.new_full(
+            (accumulated_samples.shape[0], max_visible),
+            int(fill_value),
+        )
+        for row_idx, row in enumerate(visible_rows):
+            visible_context[row_idx, : row.numel()] = row
+        return visible_context
+
+    @staticmethod
+    def _apply_infill_context_no_repeat_ngram(
+        log_x_theta: torch.FloatTensor,
+        current_tokens: torch.LongTensor,
+        context_ids: torch.LongTensor,
+        ngram_size: int,
+        neg_infinity: float,
+        mask_token_id: int,
+        pad_token_id: Optional[int] = None,
+        sample_indices: Optional[torch.LongTensor] = None,
+    ) -> tuple[torch.FloatTensor, Dict[str, int]]:
+        """Block tokens that would complete n-grams from visible infill context.
+
+        This processor is intentionally simple and CPU-assisted. It is disabled
+        by default and is meant for small qualitative checks of infill
+        prefix/suffix copying rather than optimized production decoding.
+        """
+        if ngram_size <= 1 or context_ids is None:
+            return log_x_theta, {
+                "blocked_count": 0,
+                "positions_with_blocks": 0,
+                "visible_ngram_count": 0,
+                "generated_ngram_count": 0,
+            }
+        if log_x_theta.ndim != 3 or current_tokens.ndim != 2:
+            raise ValueError("Expected logits [batch, decode, vocab] and tokens [batch, decode].")
+        if log_x_theta.shape[:2] != current_tokens.shape:
+            raise ValueError("current_tokens must match logits batch/decode dimensions.")
+        if context_ids.shape[0] != log_x_theta.shape[0]:
+            if context_ids.shape[0] == 1 and log_x_theta.shape[0] > 1:
+                context_ids = context_ids.expand(log_x_theta.shape[0], -1)
+            else:
+                raise ValueError("context_ids batch size must match logits batch size.")
+
+        adjusted = log_x_theta.clone()
+        batch_size, decode_len, vocab_size = adjusted.shape
+        mask_id = int(mask_token_id)
+        pad_id = None if pad_token_id is None else int(pad_token_id)
+        context_cpu = context_ids.detach().to("cpu")
+        current_cpu = current_tokens.detach().to("cpu")
+        sample_indices_cpu = None
+        if sample_indices is not None:
+            sample_indices_cpu = sample_indices.detach().to("cpu")
+            if sample_indices_cpu.ndim == 1:
+                sample_indices_cpu = sample_indices_cpu.unsqueeze(0).expand(
+                    batch_size, -1
+                )
+            elif (
+                sample_indices_cpu.ndim == 2
+                and sample_indices_cpu.shape[0] == 1
+                and batch_size > 1
+            ):
+                sample_indices_cpu = sample_indices_cpu.expand(batch_size, -1)
+            if sample_indices_cpu.shape[:2] != current_cpu.shape:
+                sample_indices_cpu = None
+        total_blocked = 0
+        positions_with_blocks = 0
+        visible_ngram_count = 0
+        generated_ngram_count = 0
+
+        for batch_idx in range(batch_size):
+            context_row = context_cpu[batch_idx]
+            working_row = context_row.clone()
+            visible_history = []
+            for token in context_row.tolist():
+                token = int(token)
+                if token == mask_id or (pad_id is not None and token == pad_id):
+                    continue
+                visible_history.append(token)
+
+            banned: Dict[tuple[int, ...], set[int]] = {}
+            if len(visible_history) >= ngram_size:
+                for start in range(len(visible_history) - ngram_size + 1):
+                    prefix = tuple(visible_history[start : start + ngram_size - 1])
+                    next_token = int(visible_history[start + ngram_size - 1])
+                    banned.setdefault(prefix, set()).add(next_token)
+                visible_ngram_count += sum(len(tokens) for tokens in banned.values())
+
+            fallback_history = list(visible_history)
+            for decode_idx in range(decode_len):
+                token_at_position = int(current_cpu[batch_idx, decode_idx].item())
+                if token_at_position != mask_id:
+                    continue
+
+                absolute_position = None
+                if sample_indices_cpu is not None:
+                    absolute_position = int(sample_indices_cpu[batch_idx, decode_idx].item())
+                    if absolute_position < 0 or absolute_position >= working_row.shape[-1]:
+                        absolute_position = None
+
+                if absolute_position is None:
+                    prefix_history = fallback_history
+                else:
+                    prefix_history = []
+                    for token in working_row[:absolute_position].tolist():
+                        token = int(token)
+                        if token == mask_id or (pad_id is not None and token == pad_id):
+                            continue
+                        prefix_history.append(token)
+
+                banned_tokens = None
+                if len(prefix_history) >= ngram_size - 1:
+                    prefix = tuple(prefix_history[-(ngram_size - 1) :])
+                    banned_tokens = banned.get(prefix)
+
+                if banned_tokens:
+                    valid_banned = [
+                        token for token in banned_tokens if 0 <= token < vocab_size
+                    ]
+                    if valid_banned:
+                        banned_tensor = torch.tensor(
+                            valid_banned,
+                            device=adjusted.device,
+                            dtype=torch.long,
+                        )
+                        adjusted[batch_idx, decode_idx, banned_tensor] = neg_infinity
+                        total_blocked += len(valid_banned)
+                        positions_with_blocks += 1
+
+                selected_token = int(torch.argmax(adjusted[batch_idx, decode_idx]).item())
+                if selected_token == mask_id or (
+                    pad_id is not None and selected_token == pad_id
+                ):
+                    continue
+                if absolute_position is not None:
+                    working_row[absolute_position] = selected_token
+                    updated_history = prefix_history + [selected_token]
+                else:
+                    fallback_history.append(selected_token)
+                    updated_history = fallback_history
+                if len(updated_history) >= ngram_size:
+                    prefix = tuple(updated_history[-ngram_size:-1])
+                    banned.setdefault(prefix, set()).add(selected_token)
+                    generated_ngram_count += 1
+
+        finite_rows = torch.isfinite(adjusted).any(dim=-1, keepdim=True)
+        normalized = adjusted - torch.logsumexp(adjusted, dim=-1, keepdim=True)
+        adjusted = torch.where(finite_rows, normalized, log_x_theta)
+        return adjusted, {
+            "blocked_count": total_blocked,
+            "positions_with_blocks": positions_with_blocks,
+            "visible_ngram_count": visible_ngram_count,
+            "generated_ngram_count": generated_ngram_count,
+        }
+
+    @staticmethod
+    def _can_use_deterministic_predict_and_noise_fastpath(
+        generation_config: DiffusionGenerationConfig,
+    ) -> bool:
+        return (
+            bool(getattr(generation_config, "setdlm_deterministic_sampler_fastpath", False))
+            and generation_config.sampling_strategy == "predict_and_noise"
+            and not bool(getattr(generation_config, "do_sample", True))
+            and float(getattr(generation_config, "nucleus_p", 1.0)) >= 1.0
+            and not bool(getattr(generation_config, "confidence_based_noising", False))
+            and not bool(
+                getattr(generation_config, "confidence_margin_based_noising", False)
+            )
+        )
+
+    @staticmethod
+    def _length_penalty_prefix_lengths(
+        accumulated_samples: torch.LongTensor,
+        sample_indices: torch.LongTensor,
+        target_start_idx: int | torch.Tensor,
+        mask_token_id: int,
+        pad_token_id: Optional[int] = None,
+    ) -> torch.LongTensor:
+        if accumulated_samples.ndim != 2:
+            raise ValueError(
+                "accumulated_samples must have shape [batch, sequence]."
+            )
+        if sample_indices.ndim == 1:
+            candidate_indices = sample_indices.unsqueeze(0).expand(
+                accumulated_samples.shape[0], -1
+            )
+        elif sample_indices.ndim == 2:
+            candidate_indices = sample_indices
+            if candidate_indices.shape[0] == 1 and accumulated_samples.shape[0] > 1:
+                candidate_indices = candidate_indices.expand(
+                    accumulated_samples.shape[0], -1
+                )
+            elif candidate_indices.shape[0] != accumulated_samples.shape[0]:
+                raise ValueError(
+                    "sample_indices batch size must match accumulated_samples."
+                )
+        else:
+            raise ValueError("sample_indices must be rank 1 or rank 2.")
+
+        target_start = (
+            int(target_start_idx.item())
+            if hasattr(target_start_idx, "item")
+            else int(target_start_idx)
+        )
+        seq_len = accumulated_samples.shape[-1]
+        target_start = max(0, min(target_start, seq_len))
+        candidate_indices = candidate_indices.to(
+            device=accumulated_samples.device, dtype=torch.long
+        ).clamp(min=0, max=seq_len)
+
+        visible = accumulated_samples != mask_token_id
+        if pad_token_id is not None:
+            visible = visible & (accumulated_samples != pad_token_id)
+        positions = torch.arange(seq_len, device=accumulated_samples.device)
+        visible = visible & (positions.unsqueeze(0) >= target_start)
+        exclusive_prefix_counts = F.pad(visible.to(torch.long).cumsum(dim=-1), (1, 0))
+        return torch.gather(exclusive_prefix_counts, 1, candidate_indices)
+
+
+    @staticmethod
+    def _l2r_eos_frontier_mask(
+        accumulated_samples: torch.LongTensor,
+        sample_indices: torch.LongTensor,
+        target_start_idx: int | torch.Tensor,
+        mask_token_id: int,
+        pad_token_id: Optional[int] = None,
+    ) -> tuple[torch.LongTensor, torch.BoolTensor]:
+        if accumulated_samples.ndim != 2:
+            raise ValueError(
+                "accumulated_samples must have shape [batch, sequence]."
+            )
+        if sample_indices.ndim == 1:
+            candidate_indices = sample_indices.unsqueeze(0).expand(
+                accumulated_samples.shape[0], -1
+            )
+        elif sample_indices.ndim == 2:
+            candidate_indices = sample_indices
+            if candidate_indices.shape[0] == 1 and accumulated_samples.shape[0] > 1:
+                candidate_indices = candidate_indices.expand(
+                    accumulated_samples.shape[0], -1
+                )
+            elif candidate_indices.shape[0] != accumulated_samples.shape[0]:
+                raise ValueError(
+                    "sample_indices batch size must match accumulated_samples."
+                )
+        else:
+            raise ValueError("sample_indices must be rank 1 or rank 2.")
+
+        target_start = (
+            int(target_start_idx.item())
+            if hasattr(target_start_idx, "item")
+            else int(target_start_idx)
+        )
+        seq_len = accumulated_samples.shape[-1]
+        target_start = max(0, min(target_start, seq_len))
+        candidate_indices = candidate_indices.to(
+            device=accumulated_samples.device, dtype=torch.long
+        )
+
+        visible = accumulated_samples != mask_token_id
+        if pad_token_id is not None:
+            visible = visible & (accumulated_samples != pad_token_id)
+        target_visible = visible[:, target_start:]
+        if target_visible.shape[-1] == 0:
+            prefix_lengths = torch.zeros(
+                accumulated_samples.shape[0],
+                device=accumulated_samples.device,
+                dtype=torch.long,
+            )
+        else:
+            first_hidden = (~target_visible).to(torch.long).argmax(dim=-1)
+            all_visible = target_visible.all(dim=-1)
+            full_len = torch.full_like(first_hidden, target_visible.shape[-1])
+            prefix_lengths = torch.where(all_visible, full_len, first_hidden)
+
+        target_offsets = candidate_indices - target_start
+        eos_allowed = (target_offsets >= 0) & (
+            target_offsets <= prefix_lengths[:, None]
+        )
+        return prefix_lengths, eos_allowed
+
+    @staticmethod
+    def _normalize_candidate_mask(
+        candidate_mask: torch.BoolTensor,
+        target_shape: torch.Size | tuple[int, int],
+        device: torch.device,
+    ) -> torch.BoolTensor:
+        if candidate_mask.ndim == 1:
+            candidate_mask = candidate_mask.unsqueeze(0)
+        elif candidate_mask.ndim != 2:
+            raise ValueError("candidate mask must have rank 1 or rank 2.")
+        candidate_mask = candidate_mask.to(device=device, dtype=torch.bool)
+        batch_size, decode_len = int(target_shape[0]), int(target_shape[1])
+        if candidate_mask.shape[0] == 1 and batch_size > 1:
+            candidate_mask = candidate_mask.expand(batch_size, -1)
+        if candidate_mask.shape[0] != batch_size:
+            raise ValueError("candidate mask batch size must match logits batch size.")
+        if candidate_mask.shape[1] > decode_len:
+            candidate_mask = candidate_mask[..., :decode_len]
+        if candidate_mask.shape[1] != decode_len:
+            raise ValueError("candidate mask must have shape [batch, decode_len].")
+        return candidate_mask
+
+    @staticmethod
+    def _apply_eos_allowed_mask(
+        log_x_theta: torch.FloatTensor,
+        eos_allowed_mask: torch.BoolTensor,
+        eos_token_id: int,
+        neg_infinity: float,
+    ) -> tuple[torch.FloatTensor, torch.BoolTensor]:
+        eos_allowed_mask = MDLM._normalize_candidate_mask(
+            eos_allowed_mask, log_x_theta.shape[:2], log_x_theta.device
+        )
+        if eos_token_id < 0 or eos_token_id >= log_x_theta.shape[-1]:
+            return log_x_theta, eos_allowed_mask
+        eos_scores = log_x_theta[..., eos_token_id]
+        suppressed = torch.full_like(eos_scores, neg_infinity)
+        log_x_theta = log_x_theta.clone()
+        log_x_theta[..., eos_token_id] = torch.where(
+            eos_allowed_mask, eos_scores, suppressed
+        )
+        log_x_theta = log_x_theta - torch.logsumexp(
+            log_x_theta, dim=-1, keepdim=True
+        )
+        return log_x_theta, eos_allowed_mask
+
+
+    @staticmethod
+    def _relative_sample_positions(
+        sample_indices: torch.LongTensor,
+        input_indices: torch.LongTensor | tuple[int, int] | tuple[torch.Tensor, torch.Tensor],
+        local_len: int,
+    ) -> torch.LongTensor:
+        if isinstance(input_indices, tuple):
+            start = input_indices[0]
+            if hasattr(start, "item"):
+                start = int(start.item())
+            rel = sample_indices - int(start)
+        elif torch.is_tensor(input_indices):
+            flat_input_indices = input_indices.reshape(-1).to(sample_indices.device)
+            flat_sample_indices = sample_indices.reshape(-1).to(sample_indices.device)
+            if (
+                flat_input_indices.shape == flat_sample_indices.shape
+                and torch.equal(flat_input_indices, flat_sample_indices)
+            ):
+                rel = torch.arange(
+                    flat_sample_indices.numel(),
+                    device=sample_indices.device,
+                    dtype=sample_indices.dtype,
+                )
+            else:
+                rel = flat_sample_indices - flat_input_indices[0]
+                if rel.numel() and (rel.min() < 0 or rel.max() >= local_len):
+                    if flat_input_indices.numel() == 0:
+                        raise ValueError("input_indices is empty.")
+                    lookup = torch.searchsorted(flat_input_indices, flat_sample_indices)
+                    lookup = lookup.clamp(max=flat_input_indices.numel() - 1)
+                    if not torch.equal(flat_input_indices[lookup], flat_sample_indices):
+                        raise ValueError(
+                            "sample_indices are not contained in input_indices: "
+                            f"sample_min={int(flat_sample_indices.min().item())}, "
+                            f"sample_max={int(flat_sample_indices.max().item())}, "
+                            f"input_min={int(flat_input_indices.min().item())}, "
+                            f"input_max={int(flat_input_indices.max().item())}"
+                        )
+                    rel = lookup.to(sample_indices.dtype)
+        else:
+            raise TypeError(f"Unsupported input_indices type: {type(input_indices)}")
+
+        rel = rel.to(device=sample_indices.device, dtype=torch.long)
+        if rel.numel() and (rel.min() < 0 or rel.max() >= local_len):
+            raise ValueError(
+                "sample_indices fall outside the local model-output window: "
+                f"rel_min={int(rel.min().item())}, "
+                f"rel_max={int(rel.max().item())}, local_len={local_len}"
+            )
+        return rel
+
     def _generate_unconditional(
         self,
         generation_config: DiffusionGenerationConfig,
@@ -577,7 +923,13 @@ class MDLM(Denoiser):
         denoiser_inputs: Optional[DenoiserInput] = None,
         cache: Optional[Dict[str, Any]] = None,
         running_generation: Optional[torch.LongTensor] = None,
+        repetition_penalty_context: Optional[torch.LongTensor] = None,
+        infill_context_no_repeat_ngram_context: Optional[torch.LongTensor] = None,
         inputs_offset: Optional[int] = 0,
+        logits_processor_inputs_offset: Optional[int] = None,
+        length_penalty_prefix_lengths: Optional[torch.LongTensor] = None,
+        eos_allowed_mask: Optional[torch.BoolTensor] = None,
+        eos_token_id: Optional[int] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         sample_indices: Optional[Tuple[int, int]] = None,
         input_indices: Optional[Tuple[int, int]] = None,
@@ -585,54 +937,252 @@ class MDLM(Denoiser):
         cache_len: Optional[int] = None,
         window_size: int = 0,
         block_size: int = 0,
+        confidence_state: Optional[Dict[str, torch.Tensor]] = None,
+        active_decode_len: Optional[int] = None,
+        project_active_logits: bool = False,
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
+        if project_active_logits:
+            denoiser_inputs.backbone_kwargs["return_hidden_states_before_output"] = True
+        backbone_cache = {
+            k: v
+            for k, v in cache.items()
+            if k != "_setdlm_kv_cache_position_ids"
+        }
         backbone_output = self._backbone_forward(
             denoiser_inputs,
             fix_cache_length=(
                 True if not return_updated_cache else False
             ),  # Do not let kv cache grow on each forward call
-            **cache,
+            **backbone_cache,
             **kwargs,
         )
+        hidden_states = None
         if isinstance(backbone_output, torch.Tensor):
             logits = backbone_output
         else:
             backbone_output = {k: v for k, v in backbone_output.items()}
-            logits = backbone_output.pop("logits")
+            logits = backbone_output.pop("logits", None)
+            hidden_states = backbone_output.pop("last_hidden_state", None)
+            if logits is None and hidden_states is None:
+                raise ValueError("Backbone output must include logits or hidden states.")
             cache = cache | backbone_output
+        model_output = hidden_states if hidden_states is not None else logits
+        prefix_lengths_cover_full_window = (
+            length_penalty_prefix_lengths is not None
+            and length_penalty_prefix_lengths.shape[-1] == model_output.shape[1]
+        )
+        active_prefix_len = 0
         if cache_len is not None:
-            logits = logits[:, cache_len:]
-            denoiser_inputs.xt = denoiser_inputs.xt[:, cache_len:]
+            active_prefix_len = (
+                int(cache_len.item()) if hasattr(cache_len, "item") else int(cache_len)
+            )
+            model_output = model_output[:, active_prefix_len:]
+            denoiser_inputs.xt = denoiser_inputs.xt[:, active_prefix_len:]
+            if (
+                length_penalty_prefix_lengths is not None
+                and active_prefix_len > 0
+                and prefix_lengths_cover_full_window
+            ):
+                length_penalty_prefix_lengths = length_penalty_prefix_lengths[
+                    ..., active_prefix_len:
+                ]
+        elif active_decode_len is not None:
+            pass
         elif sample_indices is not None and input_indices is not None:
-            logits = logits[:, sample_indices - input_indices[0], :]
-            denoiser_inputs.xt = denoiser_inputs.xt[
-                ..., sample_indices - input_indices[0]
-            ]
+            relative_sample_indices = self._relative_sample_positions(
+                sample_indices=sample_indices,
+                input_indices=input_indices,
+                local_len=model_output.shape[1],
+            )
+            model_output = model_output[:, relative_sample_indices, :]
+            denoiser_inputs.xt = denoiser_inputs.xt[..., relative_sample_indices]
         else:
-            logits = logits[:, sample_indices - sample_indices[0], :]
+            model_output = model_output[:, sample_indices - sample_indices[0], :]
             denoiser_inputs.xt = denoiser_inputs.xt[
                 ..., sample_indices - sample_indices[0]
             ]  # truncate any extra padding tokens
 
+        if active_decode_len is not None:
+            active_decode_len = (
+                int(active_decode_len.item())
+                if hasattr(active_decode_len, "item")
+                else int(active_decode_len)
+            )
+            model_output = model_output[:, :active_decode_len]
+            denoiser_inputs.xt = denoiser_inputs.xt[..., :active_decode_len]
+            if length_penalty_prefix_lengths is not None:
+                length_penalty_prefix_lengths = length_penalty_prefix_lengths[
+                    ..., :active_decode_len
+                ]
+            active_position_len = active_prefix_len + active_decode_len
+            for key in ("position_ids", "permutation_order"):
+                value = denoiser_inputs.backbone_kwargs.get(key)
+                if value is not None and value.shape[-1] > active_position_len:
+                    denoiser_inputs.backbone_kwargs[key] = value[
+                        ..., :active_position_len
+                    ]
+        if hidden_states is not None:
+            logits = self._project_backbone_hidden_states(
+                model_output,
+                denoiser_inputs,
+                **kwargs,
+            )
+        else:
+            logits = model_output
+
         if logits_processor is not None and len(logits_processor) > 0:
             log_x_theta = logits
+            repetition_penalty = None
+            if getattr(generation_config, "setdlm_vectorized_repetition_penalty", False):
+                repetition_penalty = MDLM._plain_repetition_penalty(logits_processor)
             sample_idx = (
                 sample_indices[0] if sample_indices.ndim == 2 else sample_indices
             )
-            for lp in logits_processor:
-                for j in range(log_x_theta.shape[1]):
-                    if isinstance(lp, ExponentialDecayLengthPenalty):
-                        log_x_theta[:, j] = lp(
-                            input_ids=running_generation[..., : sample_idx[j]],
-                            scores=log_x_theta[:, j],
+            repetition_processor_input_ids = (
+                repetition_penalty_context
+                if repetition_penalty_context is not None
+                else running_generation
+            )
+            processor_running_generation = running_generation
+            length_penalty_prefix_lengths_for_processor = None
+            if length_penalty_prefix_lengths is not None:
+                length_penalty_prefix_lengths_for_processor = (
+                    length_penalty_prefix_lengths.to(
+                        device=log_x_theta.device, dtype=torch.long
+                    )
+                )
+                if length_penalty_prefix_lengths_for_processor.ndim == 1:
+                    length_penalty_prefix_lengths_for_processor = (
+                        length_penalty_prefix_lengths_for_processor.unsqueeze(0)
+                    )
+                if (
+                    length_penalty_prefix_lengths_for_processor.shape[0] == 1
+                    and log_x_theta.shape[0] > 1
+                ):
+                    length_penalty_prefix_lengths_for_processor = (
+                        length_penalty_prefix_lengths_for_processor.expand(
+                            log_x_theta.shape[0], -1
                         )
-                    else:
-                        log_x_theta[:, j] = lp(
-                            input_ids=running_generation,
-                            scores=log_x_theta[:, j],
-                        )
+                    )
+                if (
+                    length_penalty_prefix_lengths_for_processor.shape[0]
+                    == log_x_theta.shape[0]
+                    and length_penalty_prefix_lengths_for_processor.shape[1]
+                    > log_x_theta.shape[1]
+                ):
+                    length_penalty_prefix_lengths_for_processor = (
+                        length_penalty_prefix_lengths_for_processor[
+                            ..., : log_x_theta.shape[1]
+                        ]
+                    )
+                if length_penalty_prefix_lengths_for_processor.shape != log_x_theta.shape[:2]:
+                    raise ValueError(
+                        "length_penalty_prefix_lengths must have shape "
+                        "[batch, decode_len]."
+                    )
+            target_relative_sample_idx = sample_idx
+            processor_inputs_offset = (
+                inputs_offset
+                if logits_processor_inputs_offset is None
+                else logits_processor_inputs_offset
+            )
+            if processor_inputs_offset is not None:
+                inputs_offset_value = (
+                    int(processor_inputs_offset.item())
+                    if hasattr(processor_inputs_offset, "item")
+                    else int(processor_inputs_offset)
+                )
+                if inputs_offset_value > 0:
+                    target_relative_sample_idx = sample_idx - inputs_offset_value
+                    # Some callers pass the full absolute sequence as context, while
+                    # SetDLM/MDLM seq2seq pass only the target span. In both cases the
+                    # length penalty should see generated target tokens only.
+                    max_sample_idx = int(sample_idx.max().item())
+                    if processor_running_generation.shape[-1] > max_sample_idx:
+                        processor_running_generation = processor_running_generation[
+                            ..., inputs_offset_value:
+                        ]
+            if repetition_penalty is not None:
+                log_x_theta = MDLM._apply_repetition_penalty_vectorized(
+                    log_x_theta,
+                    repetition_processor_input_ids,
+                    repetition_penalty,
+                )
+            else:
+                for lp in logits_processor:
+                    if isinstance(lp, MinNewTokensLengthLogitsProcessor):
+                        eos_token_id = getattr(lp, "eos_token_id", None)
+                        if isinstance(eos_token_id, torch.Tensor):
+                            lp.eos_token_id = eos_token_id.to(
+                                device=log_x_theta.device
+                            )
+                    for j in range(log_x_theta.shape[1]):
+                        if isinstance(
+                            lp,
+                            (
+                                ExponentialDecayLengthPenalty,
+                                MinNewTokensLengthLogitsProcessor,
+                            ),
+                        ):
+                            if length_penalty_prefix_lengths_for_processor is not None:
+                                prefix_lengths = length_penalty_prefix_lengths_for_processor[
+                                    :, j
+                                ].clamp(
+                                    min=0,
+                                    max=processor_running_generation.shape[-1],
+                                )
+                                if bool(torch.all(prefix_lengths == prefix_lengths[0]).item()):
+                                    prefix_len = int(prefix_lengths[0].item())
+                                    log_x_theta[:, j] = lp(
+                                        input_ids=processor_running_generation[
+                                            ..., :prefix_len
+                                        ],
+                                        scores=log_x_theta[:, j],
+                                    )
+                                else:
+                                    row_scores = []
+                                    for row_idx, row_prefix_len in enumerate(
+                                        prefix_lengths
+                                    ):
+                                        prefix_len = int(row_prefix_len.item())
+                                        row_scores.append(
+                                            lp(
+                                                input_ids=processor_running_generation[
+                                                    row_idx : row_idx + 1, :prefix_len
+                                                ],
+                                                scores=log_x_theta[
+                                                    row_idx : row_idx + 1, j
+                                                ],
+                                            )
+                                        )
+                                    log_x_theta[:, j] = torch.cat(row_scores, dim=0)
+                            else:
+                                prefix_len = int(
+                                    target_relative_sample_idx[j]
+                                    .clamp(
+                                        min=0,
+                                        max=processor_running_generation.shape[-1],
+                                    )
+                                    .item()
+                                )
+                                log_x_theta[:, j] = lp(
+                                    input_ids=processor_running_generation[
+                                        ..., :prefix_len
+                                    ],
+                                    scores=log_x_theta[:, j],
+                                )
+                        else:
+                            lp_input_ids = (
+                                repetition_processor_input_ids
+                                if lp.__class__.__name__ == "RepetitionPenaltyLogitsProcessor"
+                                else running_generation
+                            )
+                            log_x_theta[:, j] = lp(
+                                input_ids=lp_input_ids,
+                                scores=log_x_theta[:, j],
+                            )
             # renormalize
             log_x_theta[..., self.mask_token_id] = self.neg_infinity
             log_x_theta = log_x_theta - torch.logsumexp(
@@ -641,12 +1191,82 @@ class MDLM(Denoiser):
         else:
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
 
+        confidence_updates: Dict[str, torch.Tensor] = {}
+        if eos_allowed_mask is not None and eos_token_id is not None:
+            eos_token_id = int(eos_token_id)
+            if 0 <= eos_token_id < log_x_theta.shape[-1]:
+                eos_allowed_for_processor = MDLM._normalize_candidate_mask(
+                    eos_allowed_mask, log_x_theta.shape[:2], log_x_theta.device
+                )
+                log_x_theta, eos_allowed_for_processor = (
+                    MDLM._apply_eos_allowed_mask(
+                        log_x_theta,
+                        eos_allowed_for_processor,
+                        eos_token_id,
+                        self.neg_infinity,
+                    )
+                )
+
+        infill_context_ngram_size = int(
+            getattr(generation_config, "infill_context_no_repeat_ngram_size", 0) or 0
+        )
+        if (
+            infill_context_ngram_size > 0
+            and infill_context_no_repeat_ngram_context is not None
+        ):
+            log_x_theta, _ = (
+                MDLM._apply_infill_context_no_repeat_ngram(
+                    log_x_theta=log_x_theta,
+                    current_tokens=denoiser_inputs.xt,
+                    context_ids=infill_context_no_repeat_ngram_context,
+                    ngram_size=infill_context_ngram_size,
+                    neg_infinity=self.neg_infinity,
+                    mask_token_id=self.mask_token_id,
+                    pad_token_id=self.pad_token_id,
+                    sample_indices=sample_indices,
+                )
+            )
+
+        if MDLM._can_use_deterministic_predict_and_noise_fastpath(generation_config):
+            xs = log_x_theta.argmax(dim=-1)
+            xs_log_probs = log_x_theta.gather(-1, xs[..., None]).squeeze(-1)
+            sample_confidence = xs_log_probs.exp()
+            output = xs.clone()
+
+            est_noise_indices_next = (next_t * block_size).round().to(torch.int)
+            est_noise_indices_curr = (t * block_size).round().to(torch.int)
+            num_to_decode = est_noise_indices_curr - est_noise_indices_next
+            conf = torch.where(
+                (denoiser_inputs.xt == self.mask_token_id).bool(),  # type: ignore
+                xs_log_probs,
+                torch.inf,
+            )
+            num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum(
+                -1
+            ) + num_to_decode
+            noise_indices = conf.argsort(dim=-1)[..., : -num_clean_indices[0]]
+            output[..., noise_indices] = self.mask_token_id
+            output = torch.where(
+                sample_confidence >= generation_config.confidence_threshold,
+                xs,
+                output,
+            )
+            output = torch.where(
+                denoiser_inputs.xt == self.mask_token_id, output, denoiser_inputs.xt
+            )
+            if confidence_state is not None:
+                confidence_state.clear()
+                confidence_state.update(confidence_updates)
+                confidence_state["sample_confidence"] = sample_confidence.detach()
+            return output, cache  # type: ignore
+
         x_theta = log_x_theta.exp()
 
         # nucleus sampling
         if generation_config.nucleus_p < 1.0:
             x_theta = self._nucleus_sample(x_theta, generation_config.nucleus_p)
 
+        sample_confidence = None
         sampling_strategy = generation_config.sampling_strategy
         if sampling_strategy == "posterior":
             assert t is not None and next_t is not None, (
@@ -671,6 +1291,7 @@ class MDLM(Denoiser):
             # ) < 1e-6, ("Posterior probabilities not summing to 1.")
             assert q_xs.isnan().sum().item() == 0, "NaN found in the posterior."
             xs = self._sample_categorical(q_xs, generation_config.do_sample)
+            sample_confidence = q_xs.gather(-1, xs[..., None]).squeeze(dim=-1)
             output = torch.where(
                 (denoiser_inputs.xt != self.mask_token_id).bool(),  # type: ignore
                 denoiser_inputs.xt,
@@ -680,13 +1301,13 @@ class MDLM(Denoiser):
             # Predict
             xs = self._sample_categorical(x_theta, generation_config.do_sample)
             xs_probs = x_theta.gather(-1, xs[..., None]).squeeze(dim=-1)
+            sample_confidence = xs_probs
             output = xs.clone()
 
             # Noise
             est_noise_indices_next = (next_t * block_size).round().to(torch.int)
             est_noise_indices_curr = (t * block_size).round().to(torch.int)
             num_to_decode = est_noise_indices_curr - est_noise_indices_next
-            num_noise_indices = denoiser_inputs.xt.shape[-1] - num_to_decode
             if generation_config.confidence_based_noising:
                 conf = x_theta.gather(-1, xs[..., None]).squeeze(-1)
                 conf = torch.where(  # already decoded tokens have 'inf' confidence
@@ -694,7 +1315,10 @@ class MDLM(Denoiser):
                     conf,
                     torch.inf,
                 )
-                noise_indices = conf.argsort(dim=-1)[..., :num_noise_indices]
+                num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum(
+                    -1
+                ) + num_to_decode
+                noise_indices = conf.argsort(dim=-1)[..., : -num_clean_indices[0]]
             elif generation_config.confidence_margin_based_noising:
                 top2 = torch.topk(x_theta, k=2, dim=-1).values  # shape: (B, L, 2)
                 conf = (top2[..., 0] - top2[..., 1]).abs()
@@ -730,6 +1354,11 @@ class MDLM(Denoiser):
             raise NotImplementedError(
                 f"Sampling strategy {sampling_strategy} not implemented."
             )
+        if confidence_state is not None:
+            confidence_state.clear()
+            confidence_state.update(confidence_updates)
+            if sample_confidence is not None:
+                confidence_state["sample_confidence"] = sample_confidence.detach()
         return output, cache  # type: ignore
 
     @torch.no_grad()
@@ -784,6 +1413,14 @@ class MDLM(Denoiser):
             is_infill_task=is_infill_task,
             device=device,
         )
+        accumulated_confidence = torch.full(
+            accumulated_samples.shape,
+            float("nan"),
+            dtype=torch.float32,
+            device=device,
+        )
+        accumulated_confidence[accumulated_samples != self.mask_token_id] = 1.0
+        confidence_state: Dict[str, torch.Tensor] = {}
 
         cache = None
         blocks_to_cache_flag = (
@@ -816,6 +1453,7 @@ class MDLM(Denoiser):
             inputs_offset = input_length
             first_mask_token_idx = input_length
             last_mask_token_idx = input_length + max_new_tokens
+        logits_processor_inputs_offset = first_mask_token_idx
         if generation_config.align_inputs_to_blocks:
             inputs_offset = (
                 block_size * (inputs_offset // block_size) if inputs_offset > 0 else 0
@@ -880,7 +1518,10 @@ class MDLM(Denoiser):
                     inputs_offset + (block_id * block_size) : inputs_offset
                     + ((block_id + 1) * block_size),
                 ]
-                end_sample_idx = inputs_offset + ((block_id + 1) * block_size)
+                end_sample_idx = min(
+                    inputs_offset + ((block_id + 1) * block_size),
+                    accumulated_samples.shape[-1],
+                )
                 if pad_length is not None and pad_length > 0:
                     end_sample_idx = min(
                         end_sample_idx, accumulated_samples.shape[-1] - pad_length
@@ -938,6 +1579,54 @@ class MDLM(Denoiser):
                     if i < timesteps.shape[-1] - 1
                     else timesteps[-1] * 0
                 )
+                running_generation = (
+                    accumulated_samples[:, first_mask_token_idx:last_mask_token_idx]
+                    if not is_infill_task
+                    else accumulated_samples[:, : input_indices[-1] + 1]
+                )
+                repetition_penalty_context = None
+                infill_context_no_repeat_ngram_context = None
+                infill_context_ngram_size = int(
+                    getattr(
+                        generation_config,
+                        "infill_context_no_repeat_ngram_size",
+                        0,
+                    )
+                    or 0
+                )
+                needs_visible_infill_context = is_infill_task and (
+                    getattr(
+                        generation_config,
+                        "infill_repetition_penalty_include_right_context",
+                        False,
+                    )
+                    or infill_context_ngram_size > 0
+                )
+                if needs_visible_infill_context:
+                    visible_infill_context = self._visible_infill_context(
+                        accumulated_samples=accumulated_samples,
+                        mask_token_id=self.mask_token_id,
+                        pad_token_id=self.pad_token_id,
+                    )
+                    if getattr(
+                        generation_config,
+                        "infill_repetition_penalty_include_right_context",
+                        False,
+                    ):
+                        repetition_penalty_context = visible_infill_context
+                    if infill_context_ngram_size > 0:
+                        infill_context_no_repeat_ngram_context = accumulated_samples
+
+                length_penalty_prefix_lengths = None
+                if logits_processor is not None and len(logits_processor) > 0:
+                    length_penalty_prefix_lengths = self._length_penalty_prefix_lengths(
+                        accumulated_samples=accumulated_samples,
+                        sample_indices=sample_indices,
+                        target_start_idx=first_mask_token_idx,
+                        mask_token_id=self.mask_token_id,
+                        pad_token_id=self.pad_token_id,
+                    )
+
                 generation_output = self._generate_unconditional(
                     generation_config=generation_config,
                     block_size=block_size,
@@ -945,20 +1634,22 @@ class MDLM(Denoiser):
                     next_t=next_t,
                     denoiser_inputs=denoiser_inputs,
                     cache=cache,
-                    running_generation=(
-                        accumulated_samples[:, first_mask_token_idx:last_mask_token_idx]
-                        if not is_infill_task
-                        else accumulated_samples[:, : input_indices[-1] + 1]
-                    ),  # type: ignore
+                    running_generation=running_generation,  # type: ignore
+                    repetition_penalty_context=repetition_penalty_context,
+                    infill_context_no_repeat_ngram_context=infill_context_no_repeat_ngram_context,
                     inputs_offset=inputs_offset,
+                    logits_processor_inputs_offset=logits_processor_inputs_offset,
+                    length_penalty_prefix_lengths=length_penalty_prefix_lengths,
                     logits_processor=logits_processor,
                     tokenizer=tokenizer,
                     sample_indices=sample_indices,
                     input_indices=input_indices,
+                    confidence_state=confidence_state,
                     **kwargs,
                 )
 
                 xs, cache = generation_output
+                sample_confidence = confidence_state.get("sample_confidence")
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
                     block_NFEs=block_NFEs,
@@ -970,23 +1661,56 @@ class MDLM(Denoiser):
                     inf_budget = (denoiser_inputs.xt == self.mask_token_id).sum().item()
                     inf_budget_per_step.append(inf_budget)
                 if input_indices is not None:
-                    xt[..., sample_indices - input_indices[0]] = xs
-                    if (
-                        xt[..., sample_indices - input_indices[0]] == self.mask_token_id
-                    ).sum().item() == 0:
+                    relative_sample_indices = self._relative_sample_positions(
+                        sample_indices=sample_indices,
+                        input_indices=input_indices,
+                        local_len=xt.shape[-1],
+                    )
+                    xt[..., relative_sample_indices] = xs
+                    if (xt[..., relative_sample_indices] == self.mask_token_id).sum().item() == 0:
                         break
                 else:
                     xt = xs
                 if input_indices is not None:
+                    sample_values = xt[..., relative_sample_indices]
                     accumulated_samples.scatter_(
                         dim=-1,
                         index=sample_indices[None, :],
-                        src=xt[..., sample_indices - input_indices[0]],
+                        src=sample_values,
                     )
+                    if sample_confidence is not None:
+                        confidence_values = sample_confidence.to(accumulated_confidence)
+                        confidence_values = torch.where(
+                            sample_values != self.mask_token_id,
+                            confidence_values,
+                            torch.full_like(confidence_values, float("nan")),
+                        )
+                        accumulated_confidence.scatter_(
+                            dim=-1,
+                            index=sample_indices[None, :],
+                            src=confidence_values,
+                        )
                 else:
+                    sample_values = xt[:, -sample_indices.shape[-1] :]
                     accumulated_samples.scatter_(
-                        dim=-1, index=sample_indices[None, :], src=xt[:, -block_size:]
+                        dim=-1, index=sample_indices[None, :], src=sample_values
                     )
+                    if sample_confidence is not None:
+                        confidence_values = sample_confidence.to(accumulated_confidence)
+                        if confidence_values.shape[-1] != sample_indices.shape[-1]:
+                            confidence_values = confidence_values[
+                                ..., -sample_indices.shape[-1] :
+                            ]
+                        confidence_values = torch.where(
+                            sample_values != self.mask_token_id,
+                            confidence_values,
+                            torch.full_like(confidence_values, float("nan")),
+                        )
+                        accumulated_confidence.scatter_(
+                            dim=-1,
+                            index=sample_indices[None, :],
+                            src=confidence_values,
+                        )
                 if ((xt == self.mask_token_id).sum().item() == 0) or (
                     pad_length is not None
                     and pad_length > 0
@@ -1004,6 +1728,10 @@ class MDLM(Denoiser):
                         : sample_indices[-1] + 1,
                     ],
                     scores=None,  # type: ignore
+                    token_confidence=accumulated_confidence[
+                        :,
+                        : sample_indices[-1] + 1,
+                    ],
                 )
                 if torch.any(is_done):
                     accumulated_samples = accumulated_samples[
@@ -1073,7 +1801,9 @@ class SEDD(MDLM):
         return torch.clamp(-torch.log1p(-(1 - eps) * t), max=sigma_max)
 
     @staticmethod
-    def _sedd_sample_categorical(categorical_probs: torch.FloatTensor) -> torch.LongTensor:
+    def _sedd_sample_categorical(
+        categorical_probs: torch.FloatTensor,
+    ) -> torch.LongTensor:
         """Sample categorical states using the upstream SEDD Gumbel-ratio sampler.
 
         The upstream `kuleshov-group/mdlm` analytic sampler draws from
@@ -1127,8 +1857,7 @@ class SEDD(MDLM):
             .log()
             .to(logits.dtype)
         )
-        # logits shape
-        # (batch_size, diffusion_model_input_length, vocab_size)
+        # logits has shape batch_size x diffusion_model_input_length x vocab_size.
         logits = logits - esigm1_log[..., None] - math.log(logits.shape[-1] - 1)
         # The below scatter operation sets the log score
         # for the input word to 0.
@@ -1182,7 +1911,7 @@ class SEDD(MDLM):
         denoiser_inputs: DenoiserInput,
         **kwargs: Any,
     ) -> LossAndNllOutput:
-        if self.config.keep_clean_bos and not self.training:
+        if getattr(self.config, "keep_clean_bos", False) and not self.training:
             model_output = model_output[:, 1:]
             denoiser_inputs.tokens_mask = denoiser_inputs.tokens_mask[:, 1:]
             denoiser_inputs.alpha_t_prime = denoiser_inputs.alpha_t_prime[:, 1:]
@@ -1195,8 +1924,6 @@ class SEDD(MDLM):
 
         sigma_max = _sigma_from_t(torch.tensor(1.0)).to(denoiser_inputs.alpha_t.device)
         sigma = torch.min(_sigma_from_t(1 - denoiser_inputs.alpha_t), sigma_max)
-        # sigma = - torch.log(denoiser_inputs.alpha_t)
-        # dsigma = 1 / denoiser_inputs.alpha_t
         dsigma = (1 / (1 - denoiser_inputs.alpha_t)) * torch.expm1(sigma)
         nlls = (
             dsigma
@@ -1242,7 +1969,9 @@ class SEDD(MDLM):
         filtered_sorted_probs = sorted_probs * nucleus_mask
         filtered = torch.zeros_like(p_x0)
         filtered.scatter_(-1, sorted_indices, filtered_sorted_probs)
-        filtered /= filtered.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(filtered.dtype).tiny)
+        filtered /= filtered.sum(dim=-1, keepdim=True).clamp_min(
+            torch.finfo(filtered.dtype).tiny
+        )
         return filtered
 
     def _apply_sampling_controls(
@@ -1362,7 +2091,9 @@ class SEDD(MDLM):
         align_inputs_to_blocks: bool,
     ) -> list[tuple[int, int]]:
         if block_size <= 0:
-            raise ValueError(f"`block_size` must be positive for SEDD generation, got {block_size}.")
+            raise ValueError(
+                f"`block_size` must be positive for SEDD generation, got {block_size}."
+            )
 
         start = input_length
         if align_inputs_to_blocks and input_length > 0:
@@ -1424,7 +2155,8 @@ class SEDD(MDLM):
                     batch_size = inputs.shape[0]
                 else:
                     raise ValueError(
-                        "`batch_size` must match the prompt batch size for SEDD generation."
+                        "`batch_size` must match the prompt batch size "
+                        "for SEDD generation."
                     )
         input_length = inputs.shape[-1] if inputs is not None else 0
         max_length, max_new_tokens = self._compute_sampling_lengths(
@@ -1439,11 +2171,13 @@ class SEDD(MDLM):
         if target_length > self.config.length:
             raise NotImplementedError(
                 "SEDD generation only supports sampling sequences of length "
-                f"up to `config.length={self.config.length}`; got `target_length={target_length}`."
+                f"up to `config.length={self.config.length}`; "
+                f"got `target_length={target_length}`."
             )
         if input_length > target_length:
             raise ValueError(
-                f"SEDD prompt length {input_length} exceeds target length {target_length}."
+                f"SEDD prompt length {input_length} exceeds target "
+                f"length {target_length}."
             )
         block_size = getattr(generation_config, "block_size", None)
         if block_size is None:
@@ -1452,9 +2186,6 @@ class SEDD(MDLM):
             raise ValueError(
                 f"SEDD generation requires a positive `block_size`, got {block_size}."
             )
-        has_masked_prompt = (
-            inputs is not None and bool((inputs == self.mask_token_id).any().item())
-        )
 
         x = torch.full(
             (batch_size, target_length),
@@ -1462,8 +2193,20 @@ class SEDD(MDLM):
             dtype=torch.long,
             device=device,
         )
+        fixed_prompt_mask = torch.zeros_like(x, dtype=torch.bool)
         if inputs is not None and input_length > 0:
-            x[:, :input_length] = inputs[:, :target_length]
+            prompt = inputs[:, :target_length]
+            prompt_length = prompt.shape[-1]
+            x[:, :prompt_length] = prompt
+            fixed_prompt_mask[:, :prompt_length] = prompt != self.mask_token_id
+        elif target_length > 0 and self.bos_token_id is not None:
+            x[:, 0] = self.bos_token_id
+            fixed_prompt_mask[:, 0] = True
+            input_length = 1
+
+        has_masked_prompt = inputs is not None and bool(
+            (inputs[:, :target_length] == self.mask_token_id).any().item()
+        )
         num_steps = generation_config.num_steps
         eps = getattr(generation_config, "min_t", 1e-5)
         timesteps = torch.linspace(1.0, eps, num_steps + 1, device=device)
@@ -1498,6 +2241,9 @@ class SEDD(MDLM):
         for block_start, block_end in block_iterator:
             active_mask = torch.zeros_like(x, dtype=torch.bool)
             active_mask[:, block_start:block_end] = True
+            active_mask = active_mask & ~fixed_prompt_mask
+            if not active_mask.any():
+                continue
             step_iterator = range(num_steps)
             if not disable_pbar:
                 step_iterator = tqdm(
@@ -1518,9 +2264,7 @@ class SEDD(MDLM):
                     **kwargs,
                 )
                 if stopping_criteria is not None and torch.any(
-                    stopping_criteria(
-                        input_ids=x[:, :block_end], scores=None
-                    )  # type: ignore[arg-type]
+                    stopping_criteria(input_ids=x[:, :block_end], scores=None)  # type: ignore[arg-type]
                 ):
                     break
             if getattr(generation_config, "noise_removal", True):

@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# Setup environment
-cd ../ || exit  # Go to the root directory of the repo
-source setup_env.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+cd "${REPO_ROOT}" || exit
+source "${REPO_ROOT}/setup_env.sh"
 
 # Model arch
 BLOCK_SIZE=768
@@ -12,6 +13,7 @@ INTERMEDIATE_SIZE=768
 N_LAYERS=28
 
 DESIRED_BLOCK_SIZE=16
+SETDLM_EOS_LAST_IN_TARGET_ORDER="${SETDLM_EOS_LAST_IN_TARGET_ORDER:-false}"
 
 # Hyperparameters
 LR=3e-4
@@ -67,4 +69,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/composer_scripts/train_discrete_denoi
   composer.callbacks.hf_compatible_checkpointing.disable_hf=true \
   noise@model.config.noise_config=staggered \
   model.config.noise_config.desired_block_size=${DESIRED_BLOCK_SIZE} \
+  model.config.setdlm_eos_last_in_target_order=${SETDLM_EOS_LAST_IN_TARGET_ORDER} \
   model.config.noise_config.length=768

@@ -1,6 +1,9 @@
 import datetime
+import itertools
 import json
+import math
 import os
+import re
 import sys
 from collections import OrderedDict
 
@@ -23,10 +26,36 @@ from scripts.utils import (
     set_seed,
 )
 from src.denoiser.ar import AR
-from src.noise_schedule.noise_schedules import LinearNoise
 from src.utils import fsspec_exists, fsspec_mkdirs
 
 THROUGHPUT_WARMUP = 50
+THROUGHPUT_NUM_MEASUREMENTS = 200
+
+
+def resolve_setdlm_fast_inference_mode(value) -> tuple[bool, str]:
+    if isinstance(value, str):
+        mode = value.strip().lower()
+        if mode in {"1", "true", "yes", "on", "force"}:
+            return True, "force"
+        if mode in {"0", "false", "no", "off", "none"}:
+            return False, "off"
+        if mode == "auto":
+            return False, "auto"
+        raise ValueError(
+            "setdlm_fast_inference must be a bool or one of "
+            "{true,false,force,auto}."
+        )
+    return bool(value), "force" if bool(value) else "off"
+
+
+def strip_generated_target_prompt(text: str, target_prompt_text: str | None) -> str:
+    if not target_prompt_text:
+        return text
+    prompt = target_prompt_text.rstrip()
+    stripped = text.lstrip()
+    if stripped.startswith(prompt):
+        return stripped[len(prompt) :].lstrip()
+    return text
 
 
 def gather_results(results, world_size):
@@ -52,6 +81,53 @@ def setup_ddp() -> int:
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     return local_rank
+
+
+def _find_subsequence(sequence: torch.Tensor, subsequence: torch.Tensor, start: int) -> int:
+    if subsequence.numel() == 0:
+        return start
+    max_start = sequence.numel() - subsequence.numel()
+    for idx in range(start, max_start + 1):
+        if torch.equal(sequence[idx : idx + subsequence.numel()], subsequence):
+            return idx
+    return -1
+
+
+def extract_infill_output_ids(
+    outputs: torch.Tensor,
+    input_ids: torch.Tensor,
+    mask_token_id: int,
+) -> torch.Tensor:
+    output_ids = outputs[0] if outputs.dim() == 2 else outputs
+    source_ids = input_ids[0] if input_ids.dim() == 2 else input_ids
+    source_ids = source_ids.to(output_ids.device)
+    input_mask = source_ids == mask_token_id
+
+    if output_ids.shape[-1] == source_ids.shape[-1]:
+        return output_ids[input_mask]
+
+    mask_positions = input_mask.nonzero(as_tuple=False).flatten()
+    if mask_positions.numel() == 0:
+        return output_ids
+
+    # Confidence-threshold decoding can leave some masks unresolved; generate()
+    # removes those masks, so recover the compacted middle infill span by
+    # aligning the unchanged context around the contiguous ROCStories mask span.
+    start = int(mask_positions[0].item())
+    end = int(mask_positions[-1].item()) + 1
+    prefix = source_ids[:start]
+    suffix = source_ids[end:]
+
+    cursor = 0
+    if prefix.numel() > 0 and output_ids.numel() >= prefix.numel():
+        if torch.equal(output_ids[: prefix.numel()], prefix):
+            cursor = int(prefix.numel())
+
+    suffix_start = _find_subsequence(output_ids, suffix, cursor)
+    if suffix_start >= 0:
+        return output_ids[cursor:suffix_start]
+
+    return output_ids[cursor:]
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
@@ -95,11 +171,77 @@ def main(cfg: DictConfig) -> None:
         force_legacy_if_no_generate=True,
     )
 
-    if getattr(cfg, "compile_backbone", False):
-        print("Compiling model backbone")
-        model.backbone = torch.compile(
-            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
+    is_setdlm = model.__class__.__name__ == "SetDLM"
+    setdlm_fast_requested, setdlm_fast_mode = resolve_setdlm_fast_inference_mode(
+        getattr(cfg, "setdlm_fast_inference", False)
+    )
+    setdlm_fast_inference = is_setdlm and setdlm_fast_requested
+    if is_setdlm:
+        model._setdlm_fast_inference = setdlm_fast_inference
+        model._setdlm_profile_decode = bool(
+            getattr(cfg, "setdlm_profile_decode", False)
         )
+        profile_path = getattr(cfg, "setdlm_decode_profile_path", None)
+        if model._setdlm_profile_decode and profile_path is None:
+            profile_path = f"{cfg.output_path}/setdlm_decode_profile_rank{local_rank}.jsonl"
+        model._setdlm_decode_profile_path = profile_path
+        if setdlm_fast_mode == "auto" and local_rank == 0:
+            print(
+                "SetDLM fast inference auto resolved to non-fast: calibration "
+                "did not find a no-regression fast path for this branch."
+            )
+    setdlm_max_autotune_compile = False
+    if getattr(cfg, "compile_backbone", False):
+        # SetDLM inference calls the backbone on small, variable-length decode
+        # windows. Max-autotune specializes each new window shape and can spend
+        # minutes autotuning invalid Triton GEMMs on A6000. Keep dynamic default
+        # compilation for SetDLM, but use static buckets for explicit max-autotune.
+        compile_mode = getattr(cfg, "compile_mode", None)
+        if compile_mode is None:
+            if setdlm_fast_inference:
+                compile_mode = "max-autotune-no-cudagraphs"
+            else:
+                compile_mode = "default" if is_setdlm else "max-autotune-no-cudagraphs"
+        setdlm_max_autotune_compile = is_setdlm and compile_mode in (
+            "max-autotune",
+            "max-autotune-no-cudagraphs",
+        )
+        compile_dynamic = getattr(cfg, "compile_dynamic", None)
+        if compile_dynamic is None:
+            compile_dynamic = (
+                False
+                if setdlm_fast_inference
+                else is_setdlm and not setdlm_max_autotune_compile
+            )
+        else:
+            compile_dynamic = bool(compile_dynamic)
+        compile_kwargs = {"dynamic": compile_dynamic}
+        if compile_mode not in (None, "", "default"):
+            compile_kwargs["mode"] = compile_mode
+        if is_setdlm:
+            static_compile_cache = setdlm_fast_inference or bool(
+                getattr(cfg, "setdlm_static_compile_cache", False)
+            )
+            clone_compile_cache_cfg = getattr(
+                cfg, "setdlm_clone_compile_cache", None
+            )
+            if clone_compile_cache_cfg is None:
+                use_clone_compile_cache = (
+                    compile_mode == "reduce-overhead"
+                    and not static_compile_cache
+                    and not setdlm_fast_inference
+                )
+            else:
+                use_clone_compile_cache = bool(clone_compile_cache_cfg)
+            model._setdlm_static_compile_cache = static_compile_cache
+            model._setdlm_clone_compile_cache = use_clone_compile_cache
+            print(
+                "SetDLM compile cache "
+                f"clone={use_clone_compile_cache}, static={static_compile_cache}, "
+                f"fast={setdlm_fast_inference}"
+            )
+        print(f"Compiling model backbone with torch.compile({compile_kwargs})")
+        model.backbone = torch.compile(model.backbone, **compile_kwargs)
 
     model = model.to(device)
     if local_rank == 0:
@@ -107,6 +249,28 @@ def main(cfg: DictConfig) -> None:
         print(f"Num. trainable params: {format_number(count_parameters(model))}")
     model.eval()
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
+    cnndm_generate_target_prompt = bool(
+        getattr(cfg, "cnndm_generate_target_prompt", False)
+    )
+    if setdlm_fast_inference:
+        gen_kwargs["generation_config"].setdlm_fast_inference = True
+        gen_kwargs["generation_config"].compile_stable_decode = True
+        if local_rank == 0:
+            print(
+                "Enabled SetDLM fast inference with stable decode/cache buckets."
+            )
+    if setdlm_max_autotune_compile:
+        gen_config_cfg = getattr(cfg.gen_kwargs, "generation_config", None)
+        stable_decode_explicit = (
+            gen_config_cfg is not None and "compile_stable_decode" in gen_config_cfg
+        )
+        if not stable_decode_explicit:
+            gen_kwargs["generation_config"].compile_stable_decode = True
+            if local_rank == 0:
+                print(
+                    "Enabled SetDLM compile_stable_decode for max-autotune "
+                    "inference compilation."
+                )
     gen_kwargs["generation_config"].pad_token_id = tokenizer.pad_token_id
     stop_tokens = ["<|endoftext|>"]
 
@@ -114,40 +278,64 @@ def main(cfg: DictConfig) -> None:
     example_ids = []
     generated_samples = []
     tputs = []
+    throughput_warmup = int(getattr(cfg, "throughput_warmup", THROUGHPUT_WARMUP))
+    throughput_num_measurements = int(
+        getattr(cfg, "throughput_num_measurements", THROUGHPUT_NUM_MEASUREMENTS)
+    )
+    throughput_global_measurements = bool(
+        getattr(cfg, "throughput_global_measurements", False)
+    )
+    local_throughput_num_measurements = throughput_num_measurements
+    if throughput_global_measurements and world_size > 1:
+        local_throughput_num_measurements = math.ceil(
+            throughput_num_measurements / world_size
+        )
     parallelism_factors = []
     latencies = []
+    throughput_run = bool(getattr(cfg, "throughput_run", False))
+    max_eval_samples = getattr(cfg, "max_eval_samples", None)
+    if max_eval_samples in ("", "null", "None"):
+        max_eval_samples = None
+    if max_eval_samples is not None:
+        max_eval_samples = int(max_eval_samples)
+    local_iteration_target = None
+    if throughput_run:
+        local_iteration_target = throughput_warmup + local_throughput_num_measurements
+    elif max_eval_samples is not None:
+        local_iteration_target = min(
+            len(dataloader), math.ceil(max_eval_samples / max(world_size, 1))
+        )
+    if throughput_run and local_iteration_target > len(dataloader):
+        pbar_iter = itertools.islice(
+            itertools.cycle(enumerate(dataloader)), local_iteration_target
+        )
+        pbar_total = local_iteration_target
+    elif local_iteration_target is not None:
+        pbar_iter = itertools.islice(enumerate(dataloader), local_iteration_target)
+        pbar_total = local_iteration_target
+    else:
+        pbar_iter = enumerate(dataloader)
+        pbar_total = len(dataloader)
     pbar = tqdm(
-        dataloader, desc="Generating", total=len(dataloader), disable=(local_rank != 0)
+        pbar_iter, desc="Generating", total=pbar_total, disable=(local_rank != 0)
     )
-    for elem_id, elem in enumerate(pbar):
-        ex_id = int(local_indices[elem_id])
+    for elem_id, (local_elem_id, elem) in enumerate(pbar):
+        ex_id = int(local_indices[local_elem_id])
         example_ids.append(ex_id)
-        if getattr(cfg, "throughput_run", False) and elem_id >= THROUGHPUT_WARMUP:
-            if not fsspec_exists(cfg.output_path):
-                fsspec_mkdirs(cfg.output_path)
-            tputs_path = f"{cfg.output_path}/throughput-rank{local_rank}"
-            with open(f"{tputs_path}.json", "w") as f:
-                json.dump(
-                    {
-                        "throughput_mean": np.mean(tputs),
-                        "throughput_std": np.std(tputs),
-                        "throughput_all": tputs,
-                    },
-                    f,  # type: ignore
-                    indent=2,
-                )
-            if dist.is_initialized():
-                dist.destroy_process_group()
-            sys.exit(0)
         input_ids = elem["input_ids"].to(device)  # type: ignore
+        target_prompt_text = None
         if getattr(dataset, "target_prompt_text", None) is not None:
-            prompt_ids = (
-                torch.tensor(tokenizer.encode(dataset.target_prompt_text.strip()))
-                .to(input_ids.dtype)
-                .to(input_ids.device)
-                .unsqueeze(0)
-            )
-            input_ids = torch.cat((input_ids, prompt_ids), dim=-1)
+            # Drop only trailing whitespace so the prompt boundary matches training
+            # tokenization, where that whitespace can merge into the next target token.
+            target_prompt_text = dataset.target_prompt_text.rstrip()
+            if not cnndm_generate_target_prompt:
+                prompt_ids = (
+                    torch.tensor(tokenizer.encode(target_prompt_text))
+                    .to(input_ids.dtype)
+                    .to(input_ids.device)
+                    .unsqueeze(0)
+                )
+                input_ids = torch.cat((input_ids, prompt_ids), dim=-1)
         # Generate samples
         with torch.no_grad():
             # if this is an ar model, only pass the left context to the model.
@@ -161,22 +349,26 @@ def main(cfg: DictConfig) -> None:
                     as_tuple=True
                 )[1][0]
                 input_ids = input_ids[:, :first_mask_index]
-            if local_rank == 0:
-                start_event = torch.cuda.Event(enable_timing=True)
-                end_event = torch.cuda.Event(enable_timing=True)
-                start_event.record()
-            else:
-                start_event, end_event = None, None
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            generation_config = gen_kwargs.get("generation_config")
+            if is_setdlm and generation_config is not None:
+                if (
+                    bool(getattr(generation_config, "setdlm_decode_diagnostic_log", False))
+                    or bool(getattr(generation_config, "setdlm_decode_order_trace", False))
+                    or bool(getattr(generation_config, "setdlm_decode_snapshot_log", False))
+                ):
+                    generation_config.setdlm_decode_diagnostic_example_id = int(ex_id)
             generation_outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=True,
                 tokenizer=tokenizer,
                 **gen_kwargs,
             )
-            if local_rank == 0:
-                end_event.record()
-                torch.cuda.synchronize()
-                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+            end_event.record()
+            torch.cuda.synchronize()
+            elapsed_time_s = start_event.elapsed_time(end_event) / 1000
             if isinstance(generation_outputs, ModelOutput):
                 outputs = generation_outputs.sequences
                 parallelism_factor = generation_outputs.get("parallelism_factor", -1.0)
@@ -185,6 +377,9 @@ def main(cfg: DictConfig) -> None:
             else:
                 outputs = generation_outputs
                 parallelism_factor = -1.0
+            full_outputs = outputs
+            prompt_slice_start = None
+            prompt_boundary_ids = []
             if (
                 tokenizer.mask_token_id is not None
                 and tokenizer.mask_token_id in elem["input_ids"]
@@ -192,29 +387,210 @@ def main(cfg: DictConfig) -> None:
                 if isinstance(model, AR):
                     outputs = outputs[0][first_mask_index:]
                 else:
-                    outputs = outputs[0][
-                        elem["input_ids"][0] == tokenizer.mask_token_id
-                    ]
+                    outputs = extract_infill_output_ids(
+                        outputs, elem["input_ids"], tokenizer.mask_token_id
+                    )
             else:
-                outputs = outputs[:, input_ids.shape[-1] :].squeeze(0)
+                prompt_slice_start = input_ids.shape[-1]
+                if elem_id % 100 == 0:
+                    full_output_ids = (
+                        full_outputs[0] if full_outputs.dim() == 2 else full_outputs
+                    )
+                    prompt_boundary_ids = (
+                        full_output_ids[
+                            max(0, prompt_slice_start - 8) : prompt_slice_start + 20
+                        ]
+                        .detach()
+                        .cpu()
+                        .tolist()
+                    )
+                outputs = outputs[:, prompt_slice_start:].squeeze(0)
+            raw_output_ids = outputs.detach().cpu().tolist()
+            if isinstance(raw_output_ids, int):
+                raw_output_ids = [raw_output_ids]
             parallelism_factors.append(parallelism_factor)
-            if local_rank == 0:
-                if elem_id >= THROUGHPUT_WARMUP:
-                    tputs.append(outputs.numel() / elapsed_time_s)
-                    latencies.append(elapsed_time_s)
+            local_should_stop_throughput_run = False
+            if elem_id >= throughput_warmup:
+                tputs.append(outputs.numel() / elapsed_time_s)
+                latencies.append(elapsed_time_s)
+                local_should_stop_throughput_run = (
+                    getattr(cfg, "throughput_run", False)
+                    and len(tputs) >= local_throughput_num_measurements
+                )
+            if world_size > 1:
+                stop_tensor = torch.tensor(
+                    [int(local_should_stop_throughput_run)], device=device
+                )
+                dist.all_reduce(stop_tensor, op=dist.ReduceOp.MIN)
+                should_stop_throughput_run = bool(stop_tensor.item())
+            else:
+                should_stop_throughput_run = local_should_stop_throughput_run
+            if should_stop_throughput_run:
+                if local_rank == 0 and not fsspec_exists(cfg.output_path):
+                    fsspec_mkdirs(cfg.output_path)
+                if dist.is_initialized():
+                    dist.barrier()
+                tputs_path = f"{cfg.output_path}/throughput-rank{local_rank}"
+                with open(f"{tputs_path}.json", "w") as f:
+                    json.dump(
+                        {
+                            "throughput_mean": np.mean(tputs),
+                            "throughput_std": np.std(tputs),
+                            "throughput_all": tputs,
+                            "latency_mean": np.mean(latencies),
+                            "latency_std": np.std(latencies),
+                            "latency_all": latencies,
+                            "warmup_examples": throughput_warmup,
+                            "measured_examples": len(tputs),
+                            "requested_measured_examples": throughput_num_measurements,
+                            "local_measurement_target": local_throughput_num_measurements,
+                            "throughput_global_measurements": throughput_global_measurements,
+                            "world_size": world_size,
+                        },
+                        f,  # type: ignore
+                        indent=2,
+                    )
+                gathered_tputs = [None for _ in range(world_size)]
+                gathered_latencies = [None for _ in range(world_size)]
+                gathered_parallelism = [None for _ in range(world_size)]
+                dist.all_gather_object(gathered_tputs, tputs)
+                dist.all_gather_object(gathered_latencies, latencies)
+                dist.all_gather_object(gathered_parallelism, parallelism_factors)
+                if local_rank == 0:
+                    all_tputs = [x for part in gathered_tputs for x in part]
+                    all_latencies = [x for part in gathered_latencies for x in part]
+                    all_parallelism = [x for part in gathered_parallelism for x in part]
+                    measured_throughputs = all_tputs[:throughput_num_measurements]
+                    measured_latencies = all_latencies[:throughput_num_measurements]
+                    measured_parallelism = all_parallelism[:throughput_num_measurements]
+                    with open(f"{cfg.output_path}/throughput-all.json", "w") as f:
+                        json.dump(
+                            {
+                                "throughput_mean": np.mean(measured_throughputs),
+                                "throughput_std": np.std(measured_throughputs),
+                                "throughput_all": measured_throughputs,
+                                "latency_mean": np.mean(measured_latencies),
+                                "latency_std": np.std(measured_latencies),
+                                "latency_all": measured_latencies,
+                                "parallelism_factor_mean": (
+                                    np.mean(measured_parallelism)
+                                    if measured_parallelism
+                                    else None
+                                ),
+                                "parallelism_factor_std": (
+                                    np.std(measured_parallelism)
+                                    if measured_parallelism
+                                    else None
+                                ),
+                                "parallelism_factor_all": measured_parallelism,
+                                "warmup_examples_per_rank": throughput_warmup,
+                                "measured_examples": len(measured_throughputs),
+                                "requested_measured_examples": throughput_num_measurements,
+                                "local_measurement_target": local_throughput_num_measurements,
+                                "throughput_global_measurements": throughput_global_measurements,
+                                "world_size": world_size,
+                            },
+                            f,  # type: ignore
+                            indent=2,
+                        )
+                if dist.is_initialized():
+                    dist.destroy_process_group()
+                sys.exit(0)
         pbar.set_postfix(
             tput=np.mean(tputs),
             parallel=np.mean(parallelism_factors),
             latency=np.mean(latencies),
         )
         # Decode the generated samples
-        outputs = tokenizer.decode(outputs)
+        decoded_outputs_before_postprocess = tokenizer.decode(outputs)
+        outputs = decoded_outputs_before_postprocess
         # Post-process:
         for st in stop_tokens:
             outputs = outputs.split(st)[0]
+        if cnndm_generate_target_prompt:
+            outputs = strip_generated_target_prompt(outputs, target_prompt_text)
         decoded_samples = outputs.strip()
+        if bool(getattr(cfg, "cnndm_diagnostic_log", False)):
+            raw_eos_offsets = []
+            first_eos_offset = None
+            decoded_raw_after_first_eos = ""
+            if tokenizer.eos_token_id is not None:
+                raw_eos_offsets = [
+                    offset
+                    for offset, token_id in enumerate(raw_output_ids)
+                    if token_id == tokenizer.eos_token_id
+                ]
+                if raw_eos_offsets:
+                    first_eos_offset = raw_eos_offsets[0]
+                    decoded_raw_after_first_eos = tokenizer.decode(
+                        raw_output_ids[first_eos_offset + 1 :]
+                    )[:320]
+            print(
+                "Seq2Seq CNN/DM diagnostic: "
+                + json.dumps(
+                    {
+                        "event": "example",
+                        "example_id": int(ex_id),
+                        "model_class": model.__class__.__name__,
+                        "input_length": int(input_ids.shape[-1]),
+                        "prompt_slice_start": (
+                            None if prompt_slice_start is None else int(prompt_slice_start)
+                        ),
+                        "raw_output_numel": len(raw_output_ids),
+                        "raw_eos_offsets": raw_eos_offsets,
+                        "raw_eos_count": len(raw_eos_offsets),
+                        "first_generated_eos_offset": first_eos_offset,
+                        "decoded_raw_after_first_eos": decoded_raw_after_first_eos,
+                        "generated_word_length": len(
+                            re.findall(r"\b\w+(?:['-]\w+)?\b", decoded_samples)
+                        ),
+                        "decoded_prefix": decoded_samples[:160],
+                        "use_first_hitting_order_in_decode": bool(
+                            getattr(
+                                gen_kwargs.get("generation_config"),
+                                "use_first_hitting_order_in_decode",
+                                False,
+                            )
+                        ),
+                        "cnndm_generate_target_prompt": bool(
+                            cnndm_generate_target_prompt
+                        ),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         if elem_id % 100 == 0:
+            raw_output_head = raw_output_ids[:20]
+            raw_output_head_tokens = [
+                repr(tokenizer.decode([token_id])) for token_id in raw_output_head
+            ]
+            prompt_boundary_tokens = [
+                repr(tokenizer.decode([token_id])) for token_id in prompt_boundary_ids
+            ]
             print("Input:", tokenizer.decode(elem["input_ids"][0]))
+            print("Raw output numel:", len(raw_output_ids))
+            print("Raw output first 20 ids:", raw_output_head)
+            print("Raw output first 20 tokens:", raw_output_head_tokens)
+            print(
+                "Raw output first token is eos:",
+                bool(raw_output_ids and raw_output_ids[0] == tokenizer.eos_token_id),
+            )
+            print("Raw output eos count:", raw_output_ids.count(tokenizer.eos_token_id))
+            if tokenizer.mask_token_id is not None:
+                print(
+                    "Raw output mask count:",
+                    raw_output_ids.count(tokenizer.mask_token_id),
+                )
+            if prompt_slice_start is not None:
+                print("Prompt slice start:", int(prompt_slice_start))
+                print("Full output shape:", tuple(full_outputs.shape))
+                print("Prompt boundary ids [-8:+20]:", prompt_boundary_ids)
+                print("Prompt boundary tokens [-8:+20]:", prompt_boundary_tokens)
+            print(
+                "Decoded before postprocess:",
+                repr(decoded_outputs_before_postprocess[:200]),
+            )
             print("Output:", decoded_samples)
             print("Output length:", len(tokenizer(decoded_samples)["input_ids"]))
             print("Ground truth:", dataset.target_references[ex_id])
@@ -295,21 +671,74 @@ def main(cfg: DictConfig) -> None:
 
         if not fsspec_exists(cfg.output_path):
             fsspec_mkdirs(cfg.output_path)
+        if getattr(cfg, "throughput_run", False):
+            measured_throughputs = throughputs[:throughput_num_measurements]
+            measured_latencies = latencies[:throughput_num_measurements]
+            measured_parallelism = parallelism_factors[:throughput_num_measurements]
+            with open(f"{cfg.output_path}/throughput-all.json", "w") as f:
+                json.dump(
+                    {
+                        "throughput_mean": np.mean(measured_throughputs),
+                        "throughput_std": np.std(measured_throughputs),
+                        "throughput_all": measured_throughputs,
+                        "latency_mean": np.mean(measured_latencies),
+                        "latency_std": np.std(measured_latencies),
+                        "latency_all": measured_latencies,
+                        "parallelism_factor_mean": (
+                            np.mean(measured_parallelism)
+                            if measured_parallelism
+                            else None
+                        ),
+                        "parallelism_factor_std": (
+                            np.std(measured_parallelism)
+                            if measured_parallelism
+                            else None
+                        ),
+                        "parallelism_factor_all": measured_parallelism,
+                        "warmup_examples_per_rank": throughput_warmup,
+                        "measured_examples": len(measured_throughputs),
+                        "requested_measured_examples": throughput_num_measurements,
+                        "local_measurement_target": local_throughput_num_measurements,
+                        "throughput_global_measurements": throughput_global_measurements,
+                        "world_size": world_size,
+                    },
+                    f,  # type: ignore
+                    indent=2,
+                )
         with open(f"{cfg.output_path}/all_ranks.json", "w") as f:
             json.dump(
                 res_for_json,
                 f,  # type: ignore
                 indent=2,
             )
+        metrics_for_json = {
+            "ROUGE-1": rouge_scores["rouge1"],
+            "ROUGE-2": rouge_scores["rouge2"],
+            "ROUGE-L": rouge_scores["rougeL"],
+            "BLEU": bleu_score["score"],
+            "METEOR": meteor_score["meteor"],
+            "parallelism_factor_mean": float(np.mean(parallelism_factors))
+            if parallelism_factors
+            else None,
+            "parallelism_factor_std": float(np.std(parallelism_factors))
+            if parallelism_factors
+            else None,
+            "throughput_tok_per_s_mean": float(np.mean(throughputs))
+            if throughputs
+            else None,
+            "throughput_tok_per_s_std": float(np.std(throughputs))
+            if throughputs
+            else None,
+            "latency_s_mean": float(np.mean(latencies)) if latencies else None,
+            "latency_s_std": float(np.std(latencies)) if latencies else None,
+            "throughput_measured_examples": len(throughputs),
+            "throughput_warmup_examples_per_rank": throughput_warmup,
+            "throughput_global_measurements": throughput_global_measurements,
+            "world_size": world_size,
+        }
         with open(f"{cfg.output_path}/metrics.json", "w") as f:
             json.dump(
-                {
-                    "ROUGE-1": rouge_scores["rouge1"],
-                    "ROUGE-2": rouge_scores["rouge2"],
-                    "ROUGE-L": rouge_scores["rougeL"],
-                    "BLEU": bleu_score["score"],
-                    "METEOR": meteor_score["meteor"],
-                },
+                metrics_for_json,
                 f,  # type: ignore
                 indent=2,
             )

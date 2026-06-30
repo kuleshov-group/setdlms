@@ -2,7 +2,6 @@ import datetime
 import json
 import math
 import os
-from numbers import Integral
 from collections import OrderedDict
 from typing import Any
 
@@ -10,10 +9,10 @@ import hydra
 import numpy as np
 import torch
 import torch.distributed as dist
-from datasets import Dataset, load_dataset
 from omegaconf import DictConfig
 from tqdm.auto import tqdm
 
+from datasets import Dataset, load_dataset
 from scripts.eval.model_loading import load_eval_model, normalize_model_config_overrides
 from scripts.utils import (
     count_parameters,
@@ -24,7 +23,6 @@ from scripts.utils import (
 )
 from src.denoiser.ar import AR
 from src.denoiser.base import Denoiser
-from src.denoiser.refusion import ReFusion
 from src.utils import fsspec_exists, fsspec_mkdirs
 
 
@@ -85,9 +83,7 @@ def build_hellaswag_prompt(example: dict[str, Any]) -> tuple[str, list[str], int
 def build_piqa_prompt(example: dict[str, Any]) -> tuple[str, list[str], int]:
     goal = normalize_text(example["goal"])
     prompt = (
-        "Question: Which option best accomplishes the following goal?\n"
-        f"{goal}\n"
-        "Answer:"
+        f"Question: Which option best accomplishes the following goal?\n{goal}\nAnswer:"
     )
     options = [normalize_text(example["sol1"]), normalize_text(example["sol2"])]
     return prompt, options, int(example["label"])
@@ -160,51 +156,10 @@ def maybe_subsample_benchmark_dataset(
     return dataset.select(range(min(int(max_examples), len(dataset))))
 
 
-def require_refusion_semantics(cfg: DictConfig) -> bool:
-    return bool(getattr(cfg.task, "require_refusion_semantics", False))
-
-
-def _validate_refusion_length(value: Any, source_name: str) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, Integral):
-        raise ValueError(
-            "MCQA eval requested ReFusion semantics, but "
-            f"`{source_name}` must be a positive finite integer sequence length. "
-            "Refusing non-ReFusion behavior."
-        )
-    length = int(value)
-    if length <= 0 or length >= 1_000_000:
-        raise ValueError(
-            "MCQA eval requested ReFusion semantics, but "
-            f"`{source_name}={length}` is not a usable explicit sequence length. "
-            "Refusing non-ReFusion behavior."
-        )
-    return length
-
-
-def build_mcqa_model_config_overrides(cfg: DictConfig) -> dict[str, Any]:
+def load_mcqa_model(cfg: DictConfig, tokenizer, device: torch.device):
     model_config_overrides = normalize_model_config_overrides(
         getattr(cfg, "model_config_overrides", None)
     )
-    if not require_refusion_semantics(cfg):
-        return model_config_overrides
-    model_config_overrides["model_type"] = "refusion"
-    explicit_model_length = _validate_refusion_length(
-        model_config_overrides.get("length"),
-        "model_config_overrides.length",
-    )
-    explicit_eval_length = _validate_refusion_length(
-        getattr(cfg, "max_length", None),
-        "cfg.max_length",
-    )
-    if explicit_model_length is None and explicit_eval_length is not None:
-        model_config_overrides["length"] = explicit_eval_length
-    return model_config_overrides
-
-
-def load_mcqa_model(cfg: DictConfig, tokenizer, device: torch.device):
-    model_config_overrides = build_mcqa_model_config_overrides(cfg)
     model = load_eval_model(
         pretrained_model_name_or_path=cfg.pretrained_model_name_or_path,
         tokenizer=tokenizer,
@@ -214,32 +169,11 @@ def load_mcqa_model(cfg: DictConfig, tokenizer, device: torch.device):
         ckpt_file=cfg.task.ckpt_file,
         model_config_overrides=model_config_overrides,
         force_legacy_if_no_generate=False,
-        require_explicit_refusion_length=require_refusion_semantics(cfg),
     )
-    if require_refusion_semantics(cfg) and not isinstance(model, ReFusion):
-        raise ValueError(
-            "MCQA eval requested ReFusion semantics, but loading returned a non-local "
-            f"`ReFusion` wrapper ({type(model).__name__}). Refusing non-ReFusion "
-            "behavior."
-        )
     return model
 
 
 def resolve_max_length(cfg: DictConfig, model, tokenizer) -> int:
-    if require_refusion_semantics(cfg):
-        explicit_candidates = [
-            ("cfg.max_length", getattr(cfg, "max_length", None)),
-            ("model.config.length", getattr(getattr(model, "config", None), "length", None)),
-        ]
-        for source_name, candidate in explicit_candidates:
-            resolved_length = _validate_refusion_length(candidate, source_name)
-            if resolved_length is not None:
-                return resolved_length
-        raise ValueError(
-            "MCQA eval requested ReFusion semantics, but no explicit usable sequence "
-            "length was found in `cfg.max_length` or `model.config.length`. "
-            "Refusing non-ReFusion behavior and tokenizer/default-length fallback."
-        )
     candidates = [
         getattr(cfg, "max_length", None),
         getattr(getattr(model, "config", None), "length", None),
@@ -384,10 +318,14 @@ class MCQAScorer:
         return bool(getattr(getattr(self.model, "config", None), "is_decoder", False))
 
     def _denoiser_block_size(self) -> int | None:
-        eval_block_size = getattr(getattr(self.model, "config", None), "eval_block_size", None)
+        eval_block_size = getattr(
+            getattr(self.model, "config", None), "eval_block_size", None
+        )
         if eval_block_size is not None:
             return eval_block_size
-        model_block_size = getattr(getattr(self.model, "config", None), "block_size", None)
+        model_block_size = getattr(
+            getattr(self.model, "config", None), "block_size", None
+        )
         if model_block_size is not None:
             return model_block_size
         cfg_block_size = getattr(self.cfg, "block_size", None)
@@ -399,7 +337,9 @@ class MCQAScorer:
         return None
 
     @torch.no_grad()
-    def _score_causal_batch(self, batch: dict[str, torch.Tensor]) -> list[dict[str, float]]:
+    def _score_causal_batch(
+        self, batch: dict[str, torch.Tensor]
+    ) -> list[dict[str, float]]:
         outputs = self.model(
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
@@ -414,7 +354,8 @@ class MCQAScorer:
         else:
             raise ValueError(
                 "Unexpected causal MCQA logits length. "
-                f"Got logits len {logits.shape[1]} for input len {batch['input_ids'].shape[1]}."
+                f"Got logits len {logits.shape[1]} for input len "
+                f"{batch['input_ids'].shape[1]}."
             )
         targets = batch["input_ids"][:, 1 : 1 + log_probs.shape[1]]
         target_log_probs = torch.gather(
@@ -440,7 +381,9 @@ class MCQAScorer:
         ]
 
     @torch.no_grad()
-    def _score_denoiser_batch(self, batch: dict[str, torch.Tensor]) -> list[dict[str, float]]:
+    def _score_denoiser_batch(
+        self, batch: dict[str, torch.Tensor]
+    ) -> list[dict[str, float]]:
         batch_size, seq_len = batch["input_ids"].shape
         block_size = self._denoiser_block_size()
         total_nll = torch.zeros(batch_size, device=self.device, dtype=torch.float64)
@@ -490,8 +433,10 @@ class MCQAScorer:
             input_ids = batch["input_ids"][option_index]
             attention_mask = batch["attention_mask"][option_index]
             answer_positions = (
-                (attention_mask == 1) & (batch["context_mask"][option_index] == 0)
-            ).nonzero(as_tuple=False).squeeze(-1)
+                ((attention_mask == 1) & (batch["context_mask"][option_index] == 0))
+                .nonzero(as_tuple=False)
+                .squeeze(-1)
+            )
             variants = input_ids.unsqueeze(0).repeat(answer_positions.numel(), 1)
             variants[torch.arange(answer_positions.numel()), answer_positions] = (
                 self.tokenizer.mask_token_id
@@ -522,7 +467,9 @@ class MCQAScorer:
             )
         return scores
 
-    def score_options(self, prompt: str, options: list[str]) -> tuple[list[dict[str, float]], bool]:
+    def score_options(
+        self, prompt: str, options: list[str]
+    ) -> tuple[list[dict[str, float]], bool]:
         encoded_options = encode_prompt_and_options(
             tokenizer=self.tokenizer,
             prompt=prompt,
@@ -551,7 +498,8 @@ def format_metrics_table(metrics_by_task: OrderedDict, mean_accuracy: float) -> 
     ]
     for benchmark_name, metrics in metrics_by_task.items():
         lines.append(
-            f"| {benchmark_name} | {metrics['accuracy']:.4f} | {metrics['num_examples']} |"
+            f"| {benchmark_name} | {metrics['accuracy']:.4f} | "
+            f"{metrics['num_examples']} |"
         )
     lines.append(f"| mean | {mean_accuracy:.4f} | - |")
     return "\n".join(lines)
@@ -604,9 +552,14 @@ def main(cfg: DictConfig) -> None:
         for dataset_index in pbar:
             raw_example = dataset[dataset_index]
             prompt, options, gold_label = PROMPT_BUILDERS[benchmark_name](raw_example)
-            option_scores, was_truncated = scorer.score_options(prompt=prompt, options=options)
+            option_scores, was_truncated = scorer.score_options(
+                prompt=prompt, options=options
+            )
             predicted_label = int(
-                max(range(len(option_scores)), key=lambda idx: option_scores[idx]["score"])
+                max(
+                    range(len(option_scores)),
+                    key=lambda idx: option_scores[idx]["score"],
+                )
             )
             local_results.append(
                 {

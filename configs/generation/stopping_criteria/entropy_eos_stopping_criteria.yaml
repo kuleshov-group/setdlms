@@ -4,4 +4,17 @@ entropy_eos_stopping_criteria:
   entropy_threshold: 4.0
   block_size: 128
   var_length: true
-  num_matches: 2
+  # GPT-2 uses the same token for BOS and EOS. Ignore the BOS prompt and stop
+  # on the first EOS that is actually generated.
+  ignore_prompt_eos: true
+  prompt_length: 1
+  num_matches: 1
+  # Disabled by default. Set to a probability threshold to stop after
+  # `confidence_patience` consecutive generated tokens fall below it.
+  confidence_threshold: null
+  # Accepted for backwards-compatible overrides; confidence stopping no longer
+  # uses a rolling window.
+  confidence_window: 128
+  # Shared generated-token floor for confidence, EOS, and entropy stops.
+  confidence_min_tokens: 32
+  confidence_patience: 1

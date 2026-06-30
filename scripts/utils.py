@@ -239,7 +239,7 @@ def load_model_from_ckpt_dir_path(
         for key in keys:
             if prefix in key:
                 newkey = key.replace(prefix, replacement)
-                sd[newkey] = state_dict.pop(key)
+                sd[newkey] = sd.pop(key)
 
         # also strip the prefix in metadata if any.
         if hasattr(sd, "_metadata"):
@@ -288,11 +288,11 @@ def load_model_from_ckpt_dir_path(
                 "src.backbone.dit.DIT": {"norm_type"},
                 "src.noise_schedule.noise_schedules.EaseOutPowerNoise": {
                     "plot_schedule",
-                    "int_min"
+                    "int_min",
                 },
                 "src.noise_schedule.noise_schedules.StaggeredNoise": {
                     "plot_schedule",
-                    "int_min"
+                    "int_min",
                 },
             }
             target = config_node.get("_target_")
@@ -365,23 +365,87 @@ def load_model_from_ckpt_dir_path(
             )
             print("Metric value at best checkpoint:", metric_dict)
 
-    if load_ema_weights:
-        state_dict = None
-        for alg in ckpt["state"]["algorithms"]:
-            # algorithms stored as list[tuple[str, dict]]
-            if alg[0] == "EMA":
-                state_dict = alg[1]["ema_model"]["named_parameters_dict"]
-                break
+    def _normalize_checkpoint_state_dict_keys(state_dict: dict[str, Any]) -> None:
         torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
             state_dict, "module."
         )
-        if state_dict is None:
+        _replace_in_state_dict_if_present(
+            state_dict, "_orig_mod."
+        )  # for compiled models
+        torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
+            state_dict, "model."
+        )
+
+    def _sync_ema_tied_lm_head(
+        state_dict: dict[str, Any],
+        ema_state_dict: dict[str, Any],
+    ) -> None:
+        """Use EMA embeddings for tied LM heads omitted from Composer EMA state."""
+
+        tied_weight_pairs = (
+            (
+                "backbone.model.model.embed_tokens.weight",
+                "backbone.model.lm_head.weight",
+            ),
+            (
+                "backbone.model.model.decoder.embed_tokens.weight",
+                "backbone.model.lm_head.weight",
+            ),
+            (
+                "backbone.model.transformer.wte.weight",
+                "backbone.model.lm_head.weight",
+            ),
+            ("model.embed_tokens.weight", "lm_head.weight"),
+            ("model.decoder.embed_tokens.weight", "lm_head.weight"),
+            ("transformer.wte.weight", "lm_head.weight"),
+        )
+        for embed_key, lm_head_key in tied_weight_pairs:
+            if embed_key not in ema_state_dict:
+                continue
+            if lm_head_key not in state_dict or lm_head_key in ema_state_dict:
+                continue
+            embed_weight = ema_state_dict[embed_key]
+            lm_head_weight = state_dict[lm_head_key]
+            if getattr(embed_weight, "shape", None) != getattr(
+                lm_head_weight,
+                "shape",
+                None,
+            ):
+                continue
+            state_dict[lm_head_key] = embed_weight
+            if verbose:
+                print(
+                    "Using EMA embedding weights for tied LM head omitted from "
+                    f"EMA state: {embed_key} -> {lm_head_key}"
+                )
+
+    state_dict = dict(ckpt["state"]["model"])
+    _normalize_checkpoint_state_dict_keys(state_dict)
+    if load_ema_weights:
+        ema_state_dict = None
+        for alg in ckpt["state"]["algorithms"]:
+            # algorithms stored as list[tuple[str, dict]]
+            if alg[0] == "EMA":
+                ema_state_dict = dict(alg[1]["ema_model"]["named_parameters_dict"])
+                break
+        if ema_state_dict is None:
             raise ValueError("EMA weights not found in checkpoint.")
-    else:
-        state_dict = ckpt["state"]["model"]
-    _replace_in_state_dict_if_present(state_dict, "_orig_mod.")  # for compiled models
-    torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(state_dict, "model.")
-    model.load_state_dict(state_dict, strict=False)
+        _normalize_checkpoint_state_dict_keys(ema_state_dict)
+        state_dict.update(ema_state_dict)
+        _sync_ema_tied_lm_head(state_dict, ema_state_dict)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    allowed_missing_keys = {"static_attention_mask"}
+    bad_missing_keys = [k for k in missing_keys if k not in allowed_missing_keys]
+    if any(k.endswith("lm_head.weight") for k in bad_missing_keys):
+        raise RuntimeError(
+            "Checkpoint load is missing the LM head after EMA merge: "
+            f"missing={bad_missing_keys}, unexpected={unexpected_keys}"
+        )
+    if bad_missing_keys or unexpected_keys:
+        print(
+            "Warning: checkpoint load had non-fatal key mismatch: "
+            f"missing={bad_missing_keys}, unexpected={unexpected_keys}"
+        )
     return model
 
 

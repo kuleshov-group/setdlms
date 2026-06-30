@@ -1,6 +1,6 @@
 #file: noinspection LongLine
 _target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
-dataset_path: "/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/outputs/distillation/Qwen3-32B-AWQ/gsm8k_train"
+dataset_path: "${oc.env:DLLM_DISTILL_DATA_DIR,outputs/distillation/Qwen3-32B-AWQ}/gsm8k_train"
 inject_context_mask: true
 tokenizer: ${tokenizer}
 token_to_split: "<|im_start|>"

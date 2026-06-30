@@ -1,65 +1,16 @@
 #!/bin/bash
-# Setup environment
-cd ../ || exit  # Go to the root directory of the repo
-source setup_env.sh
 
-# SetDLM s <= 8
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_vscratch"
-CKPT_FILE="ep17-ba300000-rank0.pt"
-BLOCK_SIZE=1024
-COMPILE_BACKBONE=true
-USE_EMA=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+cd "${REPO_ROOT}" || exit
+source "${REPO_ROOT}/setup_env.sh"
+source "${REPO_ROOT}/bash_scripts/eval_model_paths.sh"
 
-# SetDLM s <= 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_vscratch"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# BLOCK_SIZE=1024
-# COMPILE_BACKBONE=true
-# USE_EMA=false
-
-# SetDLM s <= 32
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# BLOCK_SIZE=1024
-# COMPILE_BACKBONE=true
-# USE_EMA=false
-
-# BD3LM s = 4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block4_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# BLOCK_SIZE=4
-# COMPILE_BACKBONE=true
-# USE_EMA=false
-
-# BD3LM s = 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block8_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# BLOCK_SIZE=8
-# COMPILE_BACKBONE=true
-# USE_EMA=false
-
-# BD3LM s = 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# BLOCK_SIZE=16
-# COMPILE_BACKBONE=true
-# USE_EMA=false
-
-# AR
-# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1"
-# CKPT_FILE="20-300000.ckpt"
-# MODEL_PATH="${MODEL_PATH}/${CKPT_FILE}"
-# BLOCK_SIZE=1
-# COMPILE_BACKBONE=true
-# USE_EMA=true
-
-# MDLM
-# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4"
-# CKPT_FILE="18-300000.ckpt"
-# MODEL_PATH="${MODEL_PATH}/${CKPT_FILE}"
-# BLOCK_SIZE=1024
-# COMPILE_BACKBONE=true
-# USE_EMA=true
+resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-}}"
+CKPT_FILE="${CKPT_FILE:-best-rank0.pt}"
+BLOCK_SIZE="${BLOCK_SIZE:-1024}"
+COMPILE_BACKBONE="${COMPILE_BACKBONE:-true}"
+USE_EMA="${USE_EMA:-false}"
 
 TOKENIZER_PATH="gpt2"
 REVISION=null
@@ -70,7 +21,6 @@ TEST_NUM_EXAMPLES_PER_BENCHMARK=32
 TEST_SHUFFLE=false
 NUM_IMPORTANCE_SAMPLES=1
 NORMALIZE_BY_ANSWER_LENGTH=true
-REQUIRE_REFUSION_SEMANTICS=false
 TASK_CONFIG="all"  # all | hellaswag | piqa | siqa
 
 echo "MODEL_PATH: ${MODEL_PATH}"
@@ -82,7 +32,6 @@ echo "TEST_NUM_EXAMPLES_PER_BENCHMARK: ${TEST_NUM_EXAMPLES_PER_BENCHMARK}"
 echo "TEST_SHUFFLE: ${TEST_SHUFFLE}"
 echo "NUM_IMPORTANCE_SAMPLES: ${NUM_IMPORTANCE_SAMPLES}"
 echo "NORMALIZE_BY_ANSWER_LENGTH: ${NORMALIZE_BY_ANSWER_LENGTH}"
-echo "REQUIRE_REFUSION_SEMANTICS: ${REQUIRE_REFUSION_SEMANTICS}"
 
 OUTPUT_DIR="outputs/${MODEL_PATH}/mcqa_eval_output"
 if [ "${TEST_MODE}" = true ]; then
@@ -94,10 +43,6 @@ fi
 OUTPUT_PATH="${OUTPUT_DIR}/task-${TASK_CONFIG}_ckpt-${CKPT_FILE}_ema-${USE_EMA}_block-${BLOCK_SIZE}_maxlen-${MAX_LENGTH}_maxexamples-${MAX_EXAMPLES}${TEST_SUFFIX}_is-${NUM_IMPORTANCE_SAMPLES}"
 mkdir -p "${OUTPUT_PATH}"
 
-REFUSION_ARGS=()
-if [ "${REQUIRE_REFUSION_SEMANTICS}" = true ]; then
-  REFUSION_ARGS+=(
-    task.require_refusion_semantics=true
   )
 fi
 
@@ -122,7 +67,6 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   task.test_shuffle=${TEST_SHUFFLE} \
   task.num_importance_samples=${NUM_IMPORTANCE_SAMPLES} \
   task.normalize_by_answer_length=${NORMALIZE_BY_ANSWER_LENGTH} \
-  "${REFUSION_ARGS[@]}" \
   +compile_backbone=${COMPILE_BACKBONE} \
   +model_config_overrides.backbone_config.attn_backend=sdpa \
   +model_config_overrides.attn_backend=sdpa \

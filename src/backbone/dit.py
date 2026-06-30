@@ -1,3 +1,4 @@
+import logging
 import math
 import typing
 
@@ -47,6 +48,8 @@ try:
 except ImportError:
     DynamicCache = None
 
+log = logging.getLogger(__name__)
+
 # Flags required to enable jit fusion kernels
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)
@@ -94,40 +97,6 @@ def block_diff_mask(b, h, q_idx, kv_idx, block_size=None, n=None):
     block_causal = (block_q >= block_kv) & (x0_flag_kv == 1) & (x0_flag_q == 1)
 
     # **4. Combine Masks **
-    return block_diagonal | offset_block_causal | block_causal
-
-
-def esolm_causal_mask(q_idx, kv_idx):
-    return q_idx >= kv_idx
-
-
-def esolm_bidirectional_mask(q_idx, kv_idx):
-    del kv_idx
-    return q_idx == q_idx
-
-
-def esolm_mixed_mask(q_idx, kv_idx, cutoffs):
-    causal = q_idx >= kv_idx
-    block_identity = q_idx >= cutoffs[:, None, None]
-    return causal | block_identity
-
-
-def esolm_mixed2_mask(q_idx, kv_idx, cutoffs):
-    causal = q_idx >= kv_idx
-    block_identity = (q_idx < cutoffs[:, None, None]) & (
-        kv_idx < cutoffs[:, None, None]
-    )
-    return causal | block_identity
-
-
-def esolm_sequential_block_mask(q_idx, kv_idx, seq_len):
-    x0_flag_q = (q_idx >= seq_len).bool()
-    x0_flag_kv = (kv_idx >= seq_len).bool()
-    q_idx = q_idx % seq_len
-    kv_idx = kv_idx % seq_len
-    block_diagonal = (q_idx == kv_idx) & (x0_flag_q == x0_flag_kv)
-    offset_block_causal = (q_idx > kv_idx) & x0_flag_kv & ~x0_flag_q
-    block_causal = (q_idx >= kv_idx) & x0_flag_kv & x0_flag_q
     return block_diagonal | offset_block_causal | block_causal
 
 
@@ -222,33 +191,52 @@ class Rotary(torch.nn.Module):
 
 
 class RotaryAllowPermutations(torch.nn.Module):
-    def __init__(self, dim, base=10_000):
+    def __init__(self, dim, base=10_000, max_positions=16_384):
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
+        self.max_positions = max_positions
+
+        positions = torch.arange(max_positions, dtype=inv_freq.dtype)
+        freqs = torch.einsum("s,d->sd", positions, inv_freq)
+        emb = torch.cat([freqs, freqs], dim=-1)
+
+        cos = emb.cos()[:, None, None, :].repeat(1, 3, 1, 1)
+        sin = emb.sin()[:, None, None, :].repeat(1, 3, 1, 1)
+        cos[:, 2, :, :].fill_(1.0)
+        sin[:, 2, :, :].fill_(0.0)
+        self.register_buffer("cos_cached", cos, persistent=False)
+        self.register_buffer("sin_cached", sin, persistent=False)
 
     def forward(self, position_ids):
         """
-        position_ids: (batch, seq_len) — arbitrary / permuted allowed
+        position_ids: (batch, seq_len) — arbitrary / permuted allowed.
+
+        Rotary values depend only on absolute position, not on decode state. Keeping a
+        fixed table avoids recomputing einsum/cos/sin inside every small SetDLM decode
+        call and gives torch.compile a simpler graph. The table lookup is deterministic
+        and consumes no RNG, so sampling reproducibility is preserved.
         """
+        if torch._dynamo.is_compiling():
+            flat_position_ids = position_ids.reshape(-1).to(torch.long)
+        else:
+            if position_ids.numel() > 0:
+                max_position = int(position_ids.max().item())
+                min_position = int(position_ids.min().item())
+                if min_position < 0 or max_position >= self.max_positions:
+                    raise ValueError(
+                        "position_ids must be in [0, "
+                        f"{self.max_positions}); got min={min_position}, "
+                        f"max={max_position}."
+                    )
+            flat_position_ids = position_ids.reshape(-1).to(torch.long)
 
-        # (batch, seq_len, dim/2)
-        freqs = torch.einsum(
-            "bs,d->bsd", position_ids.type_as(self.inv_freq), self.inv_freq
+        cos = self.cos_cached.index_select(0, flat_position_ids)
+        sin = self.sin_cached.index_select(0, flat_position_ids)
+        return (
+            cos.view(*position_ids.shape, 3, 1, -1),
+            sin.view(*position_ids.shape, 3, 1, -1),
         )
-
-        # (batch, seq_len, dim)
-        emb = torch.cat([freqs, freqs], dim=-1)
-
-        # (batch, seq_len, 3, 1, dim)
-        cos = emb.cos()[:, :, None, None, :].repeat(1, 1, 3, 1, 1)
-        sin = emb.sin()[:, :, None, None, :].repeat(1, 1, 3, 1, 1)
-
-        # Make V an identity transform
-        cos[:, :, 2, :, :].fill_(1.0)
-        sin[:, :, 2, :, :].fill_(0.0)
-
-        return cos, sin
 
 
 def rotate_half(x):
@@ -277,7 +265,7 @@ def regular_attention_multi_headed(q, k, v):
         dropout_p=0.0,
         is_causal=False,
     )
-    # [batch_size, seq_len, num_heads, head_dim]
+    # Restore the sequence-major head layout before flattening heads.
     attention_output = attention_output.transpose(1, 2)
     return einops.rearrange(attention_output, "b s h d -> b s (h d)")
 
@@ -364,8 +352,6 @@ class LabelEmbedder(nn.Module):
         super().__init__()
         self.embedding_table = nn.Embedding(num_classes + 1, cond_size)
         self.num_classes = num_classes
-
-        # TODO think of initializing with 0.02 std deviation like in original DiT paper
 
     def forward(self, labels):
         embeddings = self.embedding_table(labels)
@@ -546,28 +532,29 @@ class DDiTBlockCausal(nn.Module):
 
             # past_key_values.update returns full K/V (cached + new)
             # Transpose back to [batch, seq_len, n_heads, head_dim]
+            cache_causal = causal and q.shape[1] == k.shape[-2]
             k = k.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
             v = v.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
 
-            # # Use Q (current seq), K (full seq), V (full seq) for attention
+            # Use Q (current seq), K (full seq), V (full seq) for attention
             if self.attn_backend == "flash_attn":
                 q_fa = q.contiguous().to(torch.bfloat16)
                 k_fa = k.contiguous().to(torch.bfloat16)
                 v_fa = v.contiguous().to(torch.bfloat16)
 
-                # returns [B, q_len, H, D]
+                # Returns batch x query_len x heads x head_dim.
                 attn = flash_attn.flash_attn_interface.flash_attn_func(
                     q_fa,
                     k_fa,
                     v_fa,
                     dropout_p=0.0,
-                    causal=causal,
+                    causal=cache_causal,
                 )
 
                 # back to [B, q_len, H*D] (match rest of block)
                 x = rearrange(attn, "b s h d -> b s (h d)")
             else:
-                x = self.cross_attn_with_cache(q, k, v, causal=True, mask=mask)
+                x = self.cross_attn_with_cache(q, k, v, causal=cache_causal, mask=mask)
         else:
             # No caching, use original QKV tensor
             if self.attn_backend == "flash_attn":
@@ -774,7 +761,11 @@ class DDiTBlock(nn.Module):
             dtype=k.dtype,
         )
         new_v_cache = torch.empty_like(new_k_cache)
-        if self.k_cache is not None and self.v_cache is not None and current_capacity > 0:
+        if (
+            self.k_cache is not None
+            and self.v_cache is not None
+            and current_capacity > 0
+        ):
             new_k_cache[:, :current_capacity] = self.k_cache[:, :current_capacity]
             new_v_cache[:, :current_capacity] = self.v_cache[:, :current_capacity]
         self.k_cache = new_k_cache
@@ -908,16 +899,15 @@ class DDiTBlock(nn.Module):
 
             # Handle KV caching
             if use_cache and past_key_values is not None and DynamicCache is not None:
-            # Extract Q, K, V from QKV tensor: [batch, seq_len, 3, n_heads, head_dim]
+                # Extract Q, K, V from QKV tensor:
                 q = qkv[:, :, 0]  # [batch, seq_len, n_heads, head_dim]
                 k = qkv[:, :, 1]  # [batch, seq_len, n_heads, head_dim]
                 v = qkv[:, :, 2]  # [batch, seq_len, n_heads, head_dim]
 
-                # Transpose to [batch, n_heads, seq_len, head_dim] for cache compatibility
+                # Transpose for DynamicCache's batch x heads x sequence layout.
                 k = k.transpose(1, 2)  # [batch, n_heads, seq_len, head_dim]
                 v = v.transpose(1, 2)  # [batch, n_heads, seq_len, head_dim]
 
-                # Update cache - DynamicCache expects [batch, n_heads, seq_len, head_dim]
                 # Note: K/V already have rotary embeddings applied, so we only need
                 # cache_position
                 cache_kwargs = {}
@@ -929,6 +919,7 @@ class DDiTBlock(nn.Module):
                 # Transpose back to [batch, seq_len, n_heads, head_dim]
                 k = k.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
                 v = v.transpose(1, 2)  # [batch, full_seq_len, n_heads, head_dim]
+                cache_causal = causal and q.shape[1] == k.shape[1]
 
                 # Use Q (current seq), K (full seq), V (full seq) for attention
                 # For non-causal attention with mask, we need to handle mask properly
@@ -937,9 +928,9 @@ class DDiTBlock(nn.Module):
                     # Reconstruct QKV tensor but with different seq lengths;
                     # not directly supported
                     # Fall back to cross_attn_with_cache
-                    x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=causal)
+                    x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=cache_causal)
                 else:
-                    x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=causal)
+                    x = self.cross_attn_with_cache(q, k, v, mask=mask, causal=cache_causal)
             else:
                 # No caching, use original QKV tensor
                 if self.attn_backend == "flash_attn" and mask is None:
@@ -951,7 +942,8 @@ class DDiTBlock(nn.Module):
                         dtype=torch.int32,
                         device=qkv.device,
                     )
-                    x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
+                    flash_attn_interface = flash_attn.flash_attn_interface
+                    x = flash_attn_interface.flash_attn_varlen_qkvpacked_func(
                         qkv, cu_seqlens, seq_len, 0.0, causal=causal
                     )
                     x = rearrange(x, "(b s) h d -> b s (h d)", b=batch_size)
@@ -1029,10 +1021,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         block_size: int,
         attn_backend: str,
         pretrained_model_name_or_path: str,
-        is_esolm_backbone: bool = False,
     ):
         super().__init__()
-        self.is_esolm_backbone = is_esolm_backbone
         self.causal = causal_attention
         self.n = length
         self.adaLN = adaln
@@ -1100,8 +1090,10 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 del state_dict
                 self.load_state_dict(new_state_dict, strict=False)
             else:
-                print(f"Pretrained model {pretrained_model_name_or_path} not found")
-        print(self)
+                log.warning(
+                    "Pretrained model %s not found", pretrained_model_name_or_path
+                )
+        log.info("%s", self)
 
     def _get_bias_dropout_scale(self):
         if self.training:
@@ -1109,222 +1101,24 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         else:
             return bias_dropout_add_scale_fused_inference
 
-    def _sort_rotary_cos_sin(self, rotary_cos_sin, sort_idx):
-        cos, sin = rotary_cos_sin
-        if cos.shape[0] == 1 and sort_idx.shape[0] > 1:
-            cos = cos.expand(sort_idx.shape[0], -1, -1, -1, -1)
-            sin = sin.expand(sort_idx.shape[0], -1, -1, -1, -1)
-        gather_index = sort_idx[:, :, None, None, None].expand(
-            -1, -1, cos.shape[2], cos.shape[3], cos.shape[4]
-        )
-        cos = torch.gather(cos, dim=1, index=gather_index).contiguous()
-        sin = torch.gather(sin, dim=1, index=gather_index).contiguous()
-        return cos, sin
-
-    @staticmethod
-    def _apply_attention_mask(mask, attention_mask, repeat=1):
-        expanded = attention_mask.bool()
-        if repeat != 1:
-            expanded = expanded.repeat(1, repeat)
-        return mask & expanded[:, None, None, :] & expanded[:, None, :, None]
-
-    def _get_esolm_attention_mask(
-        self,
-        seq_len,
-        attn_mode,
-        device,
-        cutoffs=None,
-    ):
-        q_idx = torch.arange(seq_len, device=device)[None, :, None]
-        kv_idx = torch.arange(seq_len, device=device)[None, None, :]
-        if attn_mode == "causal":
-            mask = esolm_causal_mask(q_idx, kv_idx)
-        elif attn_mode == "bidirectional":
-            mask = esolm_bidirectional_mask(q_idx, kv_idx)
-        elif attn_mode == "mixed":
-            if cutoffs is None:
-                raise ValueError("EsoLM mixed attention requires cutoffs.")
-            mask = esolm_mixed_mask(q_idx, kv_idx, cutoffs)
-        elif attn_mode == "mixed2":
-            if cutoffs is None:
-                raise ValueError("EsoLM mixed2 attention requires cutoffs.")
-            mask = esolm_mixed2_mask(q_idx, kv_idx, cutoffs)
-        else:
-            raise ValueError(f"Unsupported EsoLM attention mode: {attn_mode}")
-        return mask[:, None]
-
-    def _get_esolm_sequential_attention_mask(
-        self,
-        seq_len,
-        device,
-        attn_mode,
-        cutoffs=None,
-    ):
-        q_idx = torch.arange(seq_len * 2, device=device)[None, :, None]
-        kv_idx = torch.arange(seq_len * 2, device=device)[None, None, :]
-        base_mask = esolm_sequential_block_mask(q_idx=q_idx, kv_idx=kv_idx, seq_len=seq_len)
-        if attn_mode == "causal":
-            return base_mask[:, None]
-        if attn_mode == "mixed":
-            if cutoffs is None:
-                raise ValueError("EsoLM sequential mixed attention requires cutoffs.")
-            block_prefix_lm = (
-                (seq_len <= q_idx)
-                & (q_idx < seq_len + cutoffs[:, None, None])
-                & (seq_len <= kv_idx)
-                & (kv_idx < seq_len + cutoffs[:, None, None])
-            )
-            return (base_mask | block_prefix_lm)[:, None]
-        raise ValueError(f"Unsupported EsoLM sequential attention mode: {attn_mode}")
-
-    def _diffusion_features(
-        self,
-        zt,
-        sort_idx,
-        mask_token_id,
-        attention_mask=None,
-        attn_mode="bidirectional",
-    ):
-        cutoffs = torch.sum(zt != mask_token_id, dim=1)
-        x = self.vocab_embed(zt)
-        position_ids = torch.arange(
-            zt.shape[1],
-            device=zt.device,
-            dtype=sort_idx.dtype,
-        )[None, :].expand(zt.shape[0], -1)
-        rotary_cos_sin = self.rotary_emb(position_ids)
-        rotary_cos_sin = self._sort_rotary_cos_sin(rotary_cos_sin, sort_idx)
-        mask = self._get_esolm_attention_mask(
-            seq_len=zt.shape[1],
-            attn_mode=attn_mode,
-            device=zt.device,
-            cutoffs=cutoffs,
-        )
-        if attention_mask is not None:
-            mask = self._apply_attention_mask(mask, attention_mask)
-        return {"x": x, "rotary": rotary_cos_sin, "attention": mask}
-
-    def _sequential_features(
-        self,
-        zt_and_x0,
-        sort_idx,
-        mask_token_id,
-        attention_mask=None,
-        attn_mode="causal",
-    ):
-        if zt_and_x0.shape[1] % 2 != 0:
-            raise ValueError("EsoLM sequential inputs must contain two concatenated halves.")
-        seq_len = zt_and_x0.shape[1] // 2
-        zt = zt_and_x0[:, :seq_len]
-        x = self.vocab_embed(zt_and_x0)
-        position_ids = torch.arange(
-            seq_len,
-            device=zt_and_x0.device,
-            dtype=sort_idx.dtype,
-        )[None, :].expand(zt.shape[0], -1)
-        rotary_cos_sin = self.rotary_emb(position_ids)
-        rotary_cos_sin = self._sort_rotary_cos_sin(rotary_cos_sin, sort_idx)
-        cos, sin = rotary_cos_sin
-        rotary_cos_sin = (torch.cat([cos, cos], dim=1), torch.cat([sin, sin], dim=1))
-        cutoffs = torch.sum(zt != mask_token_id, dim=1)
-        mask = self._get_esolm_sequential_attention_mask(
-            seq_len=seq_len,
-            device=zt_and_x0.device,
-            attn_mode=attn_mode,
-            cutoffs=cutoffs,
-        )
-        if attention_mask is not None:
-            mask = self._apply_attention_mask(mask, attention_mask)
-        return {"x": x, "rotary": rotary_cos_sin, "attention": mask}
-
     def reset_kv_cache(self):
         for block in self.blocks:
             if hasattr(block, "reset_kv_cache"):
                 block.reset_kv_cache()
 
-    def _forward_esolm(
-        self,
-        zt,
-        sigma,
-        sort_index,
-        sequential_input=False,
-        attention_mask=None,
-        diffusion_attn_mode="bidirectional",
-        sequential_attn_mode="causal",
-        mask_token_id=None,
-    ):
-        if mask_token_id is None:
-            raise ValueError("EsoLM forward requires `mask_token_id`.")
-        if sequential_input:
-            if zt.shape[1] % 2 != 0:
-                raise ValueError("EsoLM sequential inputs must have even sequence length.")
-            seq_len = zt.shape[1] // 2
-            features = self._sequential_features(
-                zt_and_x0=zt,
-                sort_idx=sort_index,
-                mask_token_id=mask_token_id,
-                attention_mask=attention_mask,
-                attn_mode=sequential_attn_mode,
-            )
-        else:
-            seq_len = zt.shape[1]
-            features = self._diffusion_features(
-                zt=zt,
-                sort_idx=sort_index,
-                mask_token_id=mask_token_id,
-                attention_mask=attention_mask,
-                attn_mode=diffusion_attn_mode,
-            )
-        x = features["x"]
-        t_cond = F.silu(self.sigma_map(sigma)) if self.adaLN else None
-        for i in range(len(self.blocks)):
-            x = self.blocks[i](
-                x,
-                features["rotary"],
-                c=t_cond,
-                causal=self.causal,
-                mask=features["attention"],
-            )
-        x = self.output_layer(x, t_cond)
-        if sequential_input:
-            x = x[:, :seq_len]
-        return CausalLMOutputWithPast(logits=x, past_key_values=None)
-
-    def reset_sorted_rotary_cache(self):
-        # Upstream Eso-LMs caches sorted rotary embeddings in
-        # `models/dit.py::EsoLMDiT.reset_sorted_rotary_cache` (lines 969-970).
-        self.rotary_cos_sin_sorted = None
-
     def forward(
         self,
         input_ids: torch.LongTensor,
         attention_mask: torch.FloatTensor | Any | None = None,
-        sort_index: torch.LongTensor | None = None,
-        sequential_input: bool = False,
-        diffusion_attn_mode: str = "bidirectional",
-        sequential_attn_mode: str = "causal",
-        mask_token_id: int | None = None,
         position_ids: torch.LongTensor | None = None,
         cache_position: torch.LongTensor | None = None,
         past_key_values: Any | None = None,
         fix_cache_length: bool = False,  # False for AR, True for diffusion models
         return_updated_cache=False,
         sigma=None,
+        return_hidden_states_before_output: bool = False,
         **kwargs,
     ) -> CausalLMOutputWithPast | BaseModelOutputWithPast:
-        if sort_index is not None:
-            if sigma is None:
-                raise ValueError("EsoLM forward requires explicit sigma conditioning.")
-            return self._forward_esolm(
-                zt=input_ids,
-                sigma=sigma,
-                sort_index=sort_index,
-                sequential_input=sequential_input,
-                attention_mask=attention_mask,
-                diffusion_attn_mode=diffusion_attn_mode,
-                sequential_attn_mode=sequential_attn_mode,
-                mask_token_id=mask_token_id,
-            )
 
         x = self.vocab_embed(input_ids)
         if fix_cache_length:
@@ -1394,10 +1188,30 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 x, past_key_values = layer_output
             else:
                 x = layer_output
+        if return_hidden_states_before_output:
+            if fix_cache_length:
+                past_key_values.crop(cache_len)
+            return BaseModelOutputWithPast(
+                last_hidden_state=x,
+                past_key_values=past_key_values,
+            )
         x = self.output_layer(x, t_cond)
         if fix_cache_length:
             past_key_values.crop(cache_len)
         return CausalLMOutputWithPast(logits=x, past_key_values=past_key_values)
+
+    def project_hidden_states(self, hidden_states: torch.Tensor, sigma=None) -> torch.Tensor:
+        if self.adaLN:
+            if sigma is None:
+                sigma = torch.zeros(
+                    hidden_states.shape[0],
+                    device=hidden_states.device,
+                    dtype=hidden_states.dtype,
+                )
+            t_cond = F.silu(self.sigma_map(sigma))
+        else:
+            t_cond = None
+        return self.output_layer(hidden_states, t_cond)
 
     @torch.no_grad()
     def forward_sample(

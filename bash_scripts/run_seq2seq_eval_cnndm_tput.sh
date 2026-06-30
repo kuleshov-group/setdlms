@@ -1,34 +1,35 @@
 #!/bin/bash
-# Setup environment
-cd ../ || exit  # Go to the root directory of the repo
-source setup_env.sh
 
-# TODO: Uncomment a model and run
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+cd "${REPO_ROOT}" || exit
+source "${REPO_ROOT}/setup_env.sh"
+source "${REPO_ROOT}/bash_scripts/eval_model_paths.sh"
 
-######## AR
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#BLOCK_SIZE=1
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_AR_SAVED_MODEL_DIR>"
 
-########### MDLM
-#KV_CACHING=false
-#ALIGN_INPUTS_TO_BLOCKS=false
-#BLOCK_SIZE=32
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_MDLM_SAVED_MODEL_DIR>"
+# AR preset
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
+# BLOCK_SIZE=1
+# MODEL_PATH="${RUN_DIR}/<PATH_TO_AR_SAVED_MODEL_DIR>"
 
-########### BD3LM
-#KV_CACHING=true
-#ALIGN_INPUTS_TO_BLOCKS=true
-#BLOCK_SIZE=8
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_BD3LM_SAVED_MODEL_DIR>"#LEN_PENALTY=1.1
+# MDLM preset
+# KV_CACHING=false
+# ALIGN_INPUTS_TO_BLOCKS=false
+# BLOCK_SIZE=32
+# MODEL_PATH="${RUN_DIR}/<PATH_TO_MDLM_SAVED_MODEL_DIR>"
 
-########### E2D2
-BLOCK_SIZE=8
-MODEL_PATH="kuleshov-group/e2d2-cnndm"
-#MODEL_PATH="${RUN_DIR}/<PATH_TO_E2D2_SAVED_MODEL_DIR>"
-KV_CACHING=true
-ALIGN_INPUTS_TO_BLOCKS=false
+# BD3LM preset
+# KV_CACHING=true
+# ALIGN_INPUTS_TO_BLOCKS=true
+# BLOCK_SIZE=8
+# MODEL_PATH="${RUN_DIR}/<PATH_TO_BD3LM_SAVED_MODEL_DIR>"
+
+# E2D2 preset
+BLOCK_SIZE="${BLOCK_SIZE:-8}"
+resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-cnndm:setdlm-d8}}"
+KV_CACHING="${KV_CACHING:-true}"
+ALIGN_INPUTS_TO_BLOCKS="${ALIGN_INPUTS_TO_BLOCKS:-false}"
 
 OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail"
 REVISION=null
@@ -45,7 +46,7 @@ CKPT="best"
 USE_EMA=true
 
 OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}"
-PORT=29504
+PORT=$((RANDOM % 10000 + 29500))
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/eval/seq2seq_eval.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \

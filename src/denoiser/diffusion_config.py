@@ -24,7 +24,9 @@ class DiffusionGenerationConfig(GenerationConfig):
         min_t: float = 1e-5,
         block_size: Optional[int] = None,
         first_hitting: bool = True,
-        sampling_strategy: Literal["posterior", "predict_and_noise", "analytic"] = "posterior",
+        sampling_strategy: Literal[
+            "posterior", "predict_and_noise", "analytic"
+        ] = "posterior",
         noise_removal: bool = True,
         confidence_based_noising: bool = False,
         confidence_margin_based_noising: bool = False,
@@ -121,10 +123,74 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
     def __init__(
         self,
         max_window_size: int = 0,
-        subcontext_len: int = 0,
-        subcontext_shuffle: bool = False,
         kv_cache: bool = True,
+        cache_full_infill_context: Optional[bool] = None,
+        ar_caching: Optional[bool] = None,
+        use_first_hitting_order_in_decode: bool = False,
+        setdlm_legacy_active_window_order: bool = False,
         profile_throughput: bool = False,
+        compile_stable_decode: bool = False,
+        compile_decode_bucket_sizes: tuple[int, ...] = (
+            4,
+            8,
+            12,
+            16,
+            20,
+            24,
+            28,
+            32,
+            40,
+            48,
+            56,
+            64,
+            80,
+            96,
+            128,
+        ),
+        setdlm_fast_inference: bool = False,
+        setdlm_fast_cache_bucket_sizes: tuple[int, ...] = (
+            16,
+            24,
+            32,
+            40,
+            48,
+            56,
+            64,
+            80,
+            96,
+            128,
+            192,
+            256,
+            512,
+            1024,
+        ),
+        setdlm_fast_active_logits: bool = False,
+        setdlm_fast_logical_cache: bool = False,
+        setdlm_fast_tensor_cache: bool = False,
+        setdlm_dynamic_active_logits: bool = False,
+        setdlm_deterministic_sampler_fastpath: bool = False,
+        setdlm_vectorized_repetition_penalty: bool = False,
+        infill_repetition_penalty_include_right_context: bool = False,
+        infill_context_no_repeat_ngram_size: int = 0,
+        infill_context_no_repeat_ngram_diagnostic_log: bool = False,
+        setdlm_infill_diagnostic_log: bool = False,
+        setdlm_decode_diagnostic_log: bool = False,
+        setdlm_decode_diagnostic_max_steps: int = 8,
+        setdlm_decode_order_trace: bool = False,
+        setdlm_decode_order_trace_max_steps: int = 8,
+        setdlm_decode_snapshot_log: bool = False,
+        setdlm_decode_snapshot_max_examples: int = 4,
+        setdlm_decode_snapshot_max_snapshots: int = 96,
+        setdlm_decode_snapshot_tail_tokens: int = 64,
+        setdlm_decode_snapshot_max_decode_tokens: int = 96,
+        setdlm_l2r_eos_frontier_constraint: bool = False,
+        setdlm_infill_first_hitting_cache_diagnostic: bool = False,
+        setdlm_infill_cache_promotion_order: str = "legacy",
+        setdlm_infill_cache_promotion_trace: bool = False,
+        setdlm_infill_cache_promotion_trace_input_length: Optional[int] = None,
+        setdlm_infill_cache_promotion_trace_max_steps: int = 8,
+        setdlm_dynamic_tensor_attention_mask: bool = False,
+        setdlm_dynamic_full_window_fastpath: bool = False,
         **kwargs,
     ):
         """Generation config with additional parameters for set diffusion sampling.
@@ -132,21 +198,178 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
         Args:
             max_window_size (int): Maximum window size to use for set diffusion.
                 Defaults to 0.
-            subcontext_len (int): EsoLM subcontext count for blockwise decoding.
                 Defaults to 0, which matches the upstream tokenwise path.
-            subcontext_shuffle (bool): Whether to shuffle EsoLM subcontexts before
                 decoding. Defaults to False.
-            kv_cache (bool): Whether to use KV caching during EsoLM sampling.
                 Defaults to True, which matches upstream `config.sampling.kv_cache`.
+            cache_full_infill_context (bool): Whether infilling should cache both
+                left and right non-mask context before generation. Defaults to the
+                AnyOrderBD3LM-compatible behavior.
+            ar_caching (bool): Legacy alias for `cache_full_infill_context`.
+            use_first_hitting_order_in_decode (bool): Whether non-infill SetDLM
+                decoding should order masked tokens by first-hitting times.
+            setdlm_legacy_active_window_order (bool): Whether non-infill SetDLM
+                decoding should reuse the Jan 2026 active-window first-hitting order.
             profile_throughput (bool): Whether to skip token sampling and only
                 benchmark backbone NFEs, mirroring upstream throughput profiling.
+            compile_stable_decode (bool): Whether to pad SetDLM decode windows to
+                fixed buckets so torch.compile can specialize fewer inference shapes.
+            compile_decode_bucket_sizes (tuple[int, ...]): Candidate decode window
+                sizes used when `compile_stable_decode` is enabled.
+            setdlm_fast_inference (bool): Whether to enable the opt-in SetDLM
+                infilling fast path for compiled inference.
+            setdlm_fast_cache_bucket_sizes (tuple[int, ...]): Candidate logical cache
+                lengths used by the SetDLM fast path.
+            setdlm_fast_active_logits (bool): Whether the SetDLM fast path should skip
+                padded logits by projecting only active decode hidden states.
+            setdlm_fast_logical_cache (bool): Whether the SetDLM fast path should
+                avoid per-step cache compaction by padding after logical cache writes.
+            setdlm_fast_tensor_cache (bool): Whether the SetDLM fast path should
+                reuse bucketed attention masks and related tensor templates.
+            setdlm_dynamic_active_logits (bool): Whether the non-fast SetDLM
+                dynamic compiled path should project logits only for real decode rows.
+            setdlm_deterministic_sampler_fastpath (bool): Whether to use the exact
+                deterministic predict-and-noise sampler path when sampling is disabled.
+            setdlm_vectorized_repetition_penalty (bool): Whether to batch the plain
+                repetition-penalty logits processor across decode positions.
+            infill_repetition_penalty_include_right_context (bool): Whether
+                infilling repetition penalty should also see fixed right-context
+                tokens after the masked span.
+            infill_context_no_repeat_ngram_size (int): Diagnostic opt-in
+                no-repeat n-gram blocker that uses all visible infill context
+                plus committed generated tokens. Defaults to 0 (disabled).
+            infill_context_no_repeat_ngram_diagnostic_log (bool): Whether to
+                print aggregate context-aware n-gram blocking diagnostics.
+            setdlm_infill_diagnostic_log (bool): Whether to print SetDLM
+                infilling shape/cache diagnostics for reproduction checks.
+            setdlm_decode_diagnostic_log (bool): Whether to print non-infill
+                SetDLM decode/EOS diagnostics for reproduction checks.
+            setdlm_decode_diagnostic_max_steps (int): Maximum number of
+                non-infill SetDLM decode diagnostic records to print.
+            setdlm_decode_order_trace (bool): Whether to print non-infill
+                SetDLM target-window and cache-order trace records.
+            setdlm_decode_order_trace_max_steps (int): Maximum number of
+                non-infill SetDLM order trace records to print.
+            setdlm_decode_snapshot_log (bool): Whether to print decoded non-infill
+                SetDLM continuation snapshots for EOS timing diagnostics.
+            setdlm_decode_snapshot_max_examples (int): Maximum number of example ids
+                to snapshot when snapshot logging is enabled.
+            setdlm_decode_snapshot_max_snapshots (int): Maximum snapshots per example.
+            setdlm_decode_snapshot_tail_tokens (int): Visible target tokens to decode
+                for snapshot tails.
+            setdlm_decode_snapshot_max_decode_tokens (int): Visible tokens to decode
+                for before/after-EOS snapshot snippets.
+            setdlm_l2r_eos_frontier_constraint (bool): Whether non-infill SetDLM
+                should suppress EOS at target positions whose left-to-right target
+                prefix still contains mask/pad tokens.
+            setdlm_infill_first_hitting_cache_diagnostic (bool): Whether
+                `first_hitting` should explicitly control infill cache-promotion
+                first-hitting times. Deprecated; prefer
+                `setdlm_infill_cache_promotion_order` for new diagnostics.
+            setdlm_infill_cache_promotion_order (str): Explicit SetDLM infill
+                KV-cache promotion order. `legacy` preserves existing behavior,
+                `l2r` promotes generated tokens by left-to-right position order,
+                and `first_hitting` promotes them by noise-schedule first-hitting
+                order.
+            setdlm_infill_cache_promotion_trace (bool): Whether to print
+                per-step promoted token positions for diagnostic checks.
+            setdlm_infill_cache_promotion_trace_input_length (int): Optional
+                input length filter for promotion tracing.
+            setdlm_infill_cache_promotion_trace_max_steps (int): Maximum number
+                of promotion steps to trace per generated example.
+            setdlm_dynamic_tensor_attention_mask (bool): Whether the non-fast SetDLM
+                dynamic path should patch per-step decode attention masks from
+                tensor mask indicators, avoiding GPU-to-CPU synchronization for
+                first-mask-token discovery.
+            setdlm_dynamic_full_window_fastpath (bool): Whether the non-fast SetDLM
+                dynamic path should skip first-hitting cache-promotion bookkeeping
+                and per-step decode-count synchronization when the infilling window
+                already covers all masked positions.
         """
         super().__init__(**kwargs)
         self.max_window_size = max_window_size
-        self.subcontext_len = subcontext_len
-        self.subcontext_shuffle = subcontext_shuffle
         self.kv_cache = kv_cache
+        if cache_full_infill_context is None:
+            cache_full_infill_context = (
+                False if ar_caching is None else bool(ar_caching)
+            )
+        self.cache_full_infill_context = cache_full_infill_context
+        self.ar_caching = cache_full_infill_context
+        self.use_first_hitting_order_in_decode = use_first_hitting_order_in_decode
+        self.setdlm_legacy_active_window_order = setdlm_legacy_active_window_order
         self.profile_throughput = profile_throughput
+        self.compile_stable_decode = compile_stable_decode
+        self.compile_decode_bucket_sizes = tuple(compile_decode_bucket_sizes)
+        self.setdlm_fast_inference = setdlm_fast_inference
+        self.setdlm_fast_cache_bucket_sizes = tuple(setdlm_fast_cache_bucket_sizes)
+        self.setdlm_fast_active_logits = setdlm_fast_active_logits
+        self.setdlm_fast_logical_cache = setdlm_fast_logical_cache
+        self.setdlm_fast_tensor_cache = setdlm_fast_tensor_cache
+        self.setdlm_dynamic_active_logits = setdlm_dynamic_active_logits
+        self.setdlm_deterministic_sampler_fastpath = setdlm_deterministic_sampler_fastpath
+        self.setdlm_vectorized_repetition_penalty = setdlm_vectorized_repetition_penalty
+        self.infill_repetition_penalty_include_right_context = (
+            infill_repetition_penalty_include_right_context
+        )
+        self.infill_context_no_repeat_ngram_size = int(
+            infill_context_no_repeat_ngram_size
+        )
+        if self.infill_context_no_repeat_ngram_size < 0:
+            raise ValueError(
+                "infill_context_no_repeat_ngram_size must be non-negative, got "
+                f"{self.infill_context_no_repeat_ngram_size}"
+            )
+        self.infill_context_no_repeat_ngram_diagnostic_log = bool(
+            infill_context_no_repeat_ngram_diagnostic_log
+        )
+        self.setdlm_infill_diagnostic_log = setdlm_infill_diagnostic_log
+        self.setdlm_decode_diagnostic_log = setdlm_decode_diagnostic_log
+        self.setdlm_decode_diagnostic_max_steps = setdlm_decode_diagnostic_max_steps
+        self.setdlm_decode_order_trace = setdlm_decode_order_trace
+        self.setdlm_decode_order_trace_max_steps = setdlm_decode_order_trace_max_steps
+        self.setdlm_decode_snapshot_log = bool(setdlm_decode_snapshot_log)
+        self.setdlm_decode_snapshot_max_examples = int(
+            setdlm_decode_snapshot_max_examples
+        )
+        self.setdlm_decode_snapshot_max_snapshots = int(
+            setdlm_decode_snapshot_max_snapshots
+        )
+        self.setdlm_decode_snapshot_tail_tokens = int(
+            setdlm_decode_snapshot_tail_tokens
+        )
+        self.setdlm_decode_snapshot_max_decode_tokens = int(
+            setdlm_decode_snapshot_max_decode_tokens
+        )
+        self.setdlm_l2r_eos_frontier_constraint = (
+            setdlm_l2r_eos_frontier_constraint
+        )
+        self.setdlm_infill_first_hitting_cache_diagnostic = (
+            setdlm_infill_first_hitting_cache_diagnostic
+        )
+        valid_cache_promotion_orders = {"legacy", "l2r", "first_hitting"}
+        if setdlm_infill_cache_promotion_order not in valid_cache_promotion_orders:
+            raise ValueError(
+                "setdlm_infill_cache_promotion_order must be one of "
+                f"{sorted(valid_cache_promotion_orders)}, got "
+                f"{setdlm_infill_cache_promotion_order!r}"
+            )
+        self.setdlm_infill_cache_promotion_order = (
+            setdlm_infill_cache_promotion_order
+        )
+        self.setdlm_infill_cache_promotion_trace = (
+            setdlm_infill_cache_promotion_trace
+        )
+        self.setdlm_infill_cache_promotion_trace_input_length = (
+            setdlm_infill_cache_promotion_trace_input_length
+        )
+        self.setdlm_infill_cache_promotion_trace_max_steps = (
+            setdlm_infill_cache_promotion_trace_max_steps
+        )
+        self.setdlm_dynamic_tensor_attention_mask = (
+            setdlm_dynamic_tensor_attention_mask
+        )
+        self.setdlm_dynamic_full_window_fastpath = (
+            setdlm_dynamic_full_window_fastpath
+        )
 
 
 @dataclass

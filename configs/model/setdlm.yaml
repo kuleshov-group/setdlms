@@ -3,3 +3,6 @@ defaults:
   - _self_
 
 _target_: src.denoiser.diffusion.SetDLM
+config:
+  setdlm_eos_last_in_target_order: false
+

@@ -1,54 +1,21 @@
 #!/bin/bash
-# Setup environment
-cd ../ || exit  # Go to the root directory of the repo
-source setup_env.sh
-# TODO: Uncomment a model and run
 
-# setdlm s <= 8
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt4_max1024_distill_again_v2"
-# MODEL_PATH="kuleshov-group/setdlm-gsm8k-smax8"
-# BLOCK_SIZE=1024
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+cd "${REPO_ROOT}" || exit
+source "${REPO_ROOT}/setup_env.sh"
+source "${REPO_ROOT}/bash_scripts/eval_model_paths.sh"
 
-# setdlm s <= 16
-# # MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt8_max1024_distill_v23"
-# MODEL_PATH="kuleshov-group/setdlm-gsm8k-smax16"
-# BLOCK_SIZE=1024
-
-# setdlm s <= 32
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_aoarm_tgt16_max1024_distill_again_v2"
-# MODEL_PATH="kuleshov-group/setdlm-gsm8k-smax32"
-# BLOCK_SIZE=1024
-
-# ar
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_distill_v6"
-# BLOCK_SIZE=1
-
-# TODO: REDO TRAIN
-# mdlm
-MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v6"
-BLOCK_SIZE=1024
-
-# bd3lm s = 4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"
-# BLOCK_SIZE=4
-
-# bd3lm s = 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block8_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs8_v10"
-# BLOCK_SIZE=8
-
-# bd3lm s = 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/gsm8k-shot_block16_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs16_v10"
-# BLOCK_SIZE=16
-
-# MODEL_PATH="outputs/<PATH_TO_SAVED_MODEL_DIR>"
+resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-}}"
+BLOCK_SIZE="${BLOCK_SIZE:-1024}"
 REVISION=null
 
-EVAL_DATASET="gsm8k_eval_distill"
-BATCH_SIZE=1
-PRETRAINED_MODEL_NAME_OR_PATH="Qwen/Qwen3-1.7B-Base"  # TODO: Change as needed
-CKPT_FILE="best-rank0.pt"
-USE_EMA=true
-SEED=1
+EVAL_DATASET="${EVAL_DATASET:-gsm8k_eval_distill}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+PRETRAINED_MODEL_NAME_OR_PATH="${PRETRAINED_MODEL_NAME_OR_PATH:-Qwen/Qwen3-1.7B-Base}"
+CKPT_FILE="${CKPT_FILE:-best-rank0.pt}"
+USE_EMA="${USE_EMA:-true}"
+SEED="${SEED:-1}"
 
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \

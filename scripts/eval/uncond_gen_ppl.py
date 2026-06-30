@@ -1,9 +1,9 @@
 import datetime
-import importlib
-import inspect
 import json
 import logging
+import math
 import os
+import random
 import re
 from typing import Any, Optional
 
@@ -12,189 +12,113 @@ import mauve
 import numpy as np
 import torch
 import torch.distributed as dist
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from tqdm.auto import tqdm
 from transformers import (
-    AutoModelForCausalLM,
-    AutoModelForMaskedLM,
     AutoTokenizer,
     GPT2Tokenizer,
     GPT2TokenizerFast,
 )
 from transformers.modeling_outputs import ModelOutput
 
-from scripts.eval.model_loading import load_eval_model
+from scripts.eval.model_loading import (
+    configure_rank_local_torchinductor_cache,
+    load_eval_model,
+)
 from scripts.utils import (
     count_parameters,
     format_number,
-    load_model_from_ckpt_dir_path,
     maybe_add_missing_special_tokens,
     register_useful_resolvers,
     set_seed,
 )
-from src.denoiser.ar import AR, ARConfig
-from src.denoiser.diffusion import BD3LM, MDLM, SEDD, BD3LMConfig, MDLMConfig
-from src.noise_schedule.noise_schedules import LinearNoise
 from src.utils import fsspec_exists, fsspec_mkdirs
 
 log = logging.getLogger(__name__)
 
 
-def patch_mauve_for_modernbert() -> None:
-    """
-    Robust monkey patch for mauve so arbitrary HF encoder models
-    (including answerdotai/ModernBERT-large) can be used as featurizers.
-    """
-    import torch
-    from transformers import AutoModel, AutoTokenizer
+THROUGHPUT_WARMUP = 0
 
-    # Import the real installed modules, not package attributes.
-    mauve_utils = importlib.import_module("mauve.utils")
-    mauve_compute_mod = importlib.import_module("mauve.compute_mauve")
 
-    def _get_device_from_arg(device_id):
-        if (
-            device_id is not None
-            and torch.cuda.is_available()
-            and isinstance(device_id, int)
-            and 0 <= device_id < torch.cuda.device_count()
-        ):
-            return torch.device(f"cuda:{device_id}")
-        return torch.device("cpu")
 
-    def _get_tokenizer(model_name="gpt2"):
-        tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+def _write_json_atomic(path: str, payload: Any) -> None:
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp_path, path)
 
-        # MAUVE later pads batches, so ensure pad_token exists.
-        if tok.pad_token is None:
-            if tok.eos_token is not None:
-                tok.pad_token = tok.eos_token
-            elif tok.cls_token is not None:
-                tok.pad_token = tok.cls_token
-            elif tok.sep_token is not None:
-                tok.pad_token = tok.sep_token
-            else:
-                # last resort
-                tok.add_special_tokens({"pad_token": "[PAD]"})
-        return tok
 
-    def _get_model(model_name, tokenizer, device_id):
-        device = _get_device_from_arg(device_id)
-
-        kwargs = {"trust_remote_code": True}
-        if getattr(tokenizer, "pad_token_id", None) is not None:
-            kwargs["pad_token_id"] = tokenizer.pad_token_id
-
-        model = AutoModel.from_pretrained(model_name, **kwargs)
-        model = model.to(device)
-        model.eval()
-        return model
-
-    @torch.no_grad()
-    def _featurize_tokens_from_model(
-        model,
-        tokenized_texts,
-        batch_size,
-        name="",
-        verbose=False,
-    ):
-        """
-        For encoder-only models like ModernBERT, use attention-mask-aware
-        mean pooling over the last hidden state.
-        For decoder-only models, keep last non-pad token pooling.
-        """
-        device = next(model.parameters()).device
-        feats = []
-
-        model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
-        is_encoder_only = model_type in {
-            "bert",
-            "roberta",
-            "distilbert",
-            "albert",
-            "deberta",
-            "deberta-v2",
-            "modernbert",
-        }
-
-        for start in range(0, len(tokenized_texts), batch_size):
-            chunk = [t.view(-1) for t in tokenized_texts[start : start + batch_size]]
-            sent_lens = [len(x) for x in chunk]
-
-            input_ids = torch.nn.utils.rnn.pad_sequence(
-                chunk,
-                batch_first=True,
-                padding_value=0,
-            ).to(device)
-
-            attention_mask = torch.nn.utils.rnn.pad_sequence(
-                [torch.ones(n, dtype=torch.long) for n in sent_lens],
-                batch_first=True,
-                padding_value=0,
-            ).to(device)
-
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                return_dict=True,
-                output_hidden_states=True,
-            )
-
-            last_hidden = outputs.last_hidden_state  # (B, T, H)
-
-            if is_encoder_only:
-                mask = attention_mask.unsqueeze(-1).to(last_hidden.dtype)
-                pooled = (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(
-                    1.0
-                )
-            else:
-                last_idx = attention_mask.sum(dim=1) - 1
-                pooled = last_hidden[
-                    torch.arange(last_hidden.size(0), device=device),
-                    last_idx,
-                ]
-
-            feats.append(pooled.cpu())
-
-        return torch.cat(feats, dim=0)
-
-    # Patch mauve.utils
-    mauve_utils.get_device_from_arg = _get_device_from_arg
-    mauve_utils.get_tokenizer = _get_tokenizer
-    mauve_utils.get_model = _get_model
-    mauve_utils.featurize_tokens_from_model = _featurize_tokens_from_model
-
-    # Patch mauve.compute_mauve module globals
-    mauve_compute_mod.get_device_from_arg = _get_device_from_arg
-    mauve_compute_mod.get_tokenizer = _get_tokenizer
-    mauve_compute_mod.get_model = _get_model
-    mauve_compute_mod.featurize_tokens_from_model = _featurize_tokens_from_model
-
-    # Patch package-level exports too, just in case
-    if hasattr(mauve, "get_tokenizer"):
-        mauve.get_tokenizer = _get_tokenizer
-    if hasattr(mauve, "get_model"):
-        mauve.get_model = _get_model
-    if hasattr(mauve, "featurize_tokens_from_model"):
-        mauve.featurize_tokens_from_model = _featurize_tokens_from_model
-
-    # Reset MAUVE caches if present
-    for mod in (mauve_compute_mod, mauve_utils):
-        for attr in ("MODEL", "TOKENIZER", "MODEL_NAME"):
-            if hasattr(mod, attr):
-                setattr(mod, attr, None)
-
-    # Hard verification so failure is obvious immediately.
-    src = inspect.getsource(mauve_utils.get_tokenizer)
-    assert "AutoTokenizer.from_pretrained" in src, (
-        "MAUVE patch did not apply: mauve.utils.get_tokenizer is still original"
+def _generation_checkpoint_path(cfg: DictConfig, local_rank: int) -> str:
+    checkpoint_path = getattr(cfg, "generation_checkpoint_path", None)
+    if checkpoint_path not in (None, "", "null", "None"):
+        return str(checkpoint_path)
+    return os.path.join(
+        str(cfg.generated_samples_output_path),
+        f"generation_checkpoint.rank{local_rank}.pt",
     )
 
 
-# patch_mauve_for_modernbert()
+def _capture_rng_state() -> dict[str, Any]:
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
 
-THROUGHPUT_WARMUP = 0
 
+def _restore_rng_state(state: dict[str, Any]) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    cuda_state = state.get("cuda")
+    if cuda_state is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(cuda_state)
+
+
+def _load_generation_checkpoint(
+    cfg: DictConfig, local_rank: int
+) -> Optional[dict[str, Any]]:
+    if not bool(getattr(cfg, "resume_generation_checkpoint", False)):
+        return None
+    checkpoint_path = _generation_checkpoint_path(cfg, local_rank)
+    if not os.path.exists(checkpoint_path):
+        return None
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    _restore_rng_state(checkpoint["rng_state"])
+    print(
+        f"Resumed generation checkpoint for rank {local_rank}: "
+        f"{len(checkpoint.get('generated_samples', []))} samples from {checkpoint_path}"
+    )
+    return checkpoint
+
+
+def _save_generation_checkpoint(
+    cfg: DictConfig,
+    local_rank: int,
+    state: dict[str, Any],
+) -> None:
+    if not bool(getattr(cfg, "generation_checkpoint", False)):
+        return
+    output_path = str(cfg.generated_samples_output_path)
+    os.makedirs(output_path, exist_ok=True)
+    checkpoint_path = _generation_checkpoint_path(cfg, local_rank)
+    tmp_path = f"{checkpoint_path}.tmp"
+    torch.save({**state, "rng_state": _capture_rng_state()}, tmp_path)
+    os.replace(tmp_path, checkpoint_path)
+    partial_path = os.path.join(
+        output_path, f"generated_samples.rank{local_rank}.partial.json"
+    )
+    _write_json_atomic(partial_path, state["generated_samples"])
+    if local_rank == 0 and (
+        (not dist.is_available())
+        or (not dist.is_initialized())
+        or dist.get_world_size() == 1
+    ):
+        _write_json_atomic(
+            os.path.join(output_path, "generated_samples.partial.json"),
+            state["generated_samples"],
+        )
 
 def _summarize_numeric_list(values: list) -> dict[str, Any]:
     if not values:
@@ -209,6 +133,7 @@ def _summarize_numeric_list(values: list) -> dict[str, Any]:
 
 def build_generation_metrics_dict(
     tputs: list,
+    latencies: list,
     parallelism_factors: list,
     lengths: list,
     entropies: list,
@@ -218,13 +143,27 @@ def build_generation_metrics_dict(
     Same shape as seq2seq_eval metrics.
     """
     tp = _summarize_numeric_list(tputs)
+    lat = _summarize_numeric_list(latencies)
     pf = _summarize_numeric_list(parallelism_factors)
     ln = _summarize_numeric_list(lengths)
     ent = _summarize_numeric_list(entropies)
+    output_lengths = []
+    if tputs and latencies:
+        output_lengths = [
+            float(throughput) * float(latency)
+            for throughput, latency in zip(tputs, latencies)
+        ]
+    out_len = _summarize_numeric_list(output_lengths)
     out: dict[str, Any] = {
         "throughput_tok_per_s_mean": tp["mean"],
         "throughput_tok_per_s_std": tp["std"],
         "throughput_tok_per_s_count": tp["count"],
+        "latency_s_mean": lat["mean"],
+        "latency_s_std": lat["std"],
+        "latency_s_count": lat["count"],
+        "output_length_from_tput_latency_mean": out_len["mean"],
+        "output_length_from_tput_latency_std": out_len["std"],
+        "output_length_from_tput_latency_count": out_len["count"],
         "parallelism_factor_mean": pf["mean"],
         "parallelism_factor_std": pf["std"],
         "parallelism_factor_count": pf["count"],
@@ -240,6 +179,22 @@ def build_generation_metrics_dict(
 
 def _use_adlm_compatible_mauve(cfg: DictConfig) -> bool:
     return bool(getattr(cfg, "adlm_compatible_mauve", False))
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"", "none", "null", "auto"}:
+            return None
+        if lowered in {"1", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "n"}:
+            return False
+    return bool(value)
 
 
 def _should_reject_generated_sample(
@@ -303,13 +258,19 @@ def _load_reference_from_adlm_openwebtext_valid(
         ) from exc
 
     tokenizer = _configure_tokenizer_for_adlm_reference(tokenizer)
-    block_size = int(getattr(cfg, "max_length", None) or getattr(cfg, "max_new_tokens", 1024) + 1)
+    block_size = int(
+        getattr(cfg, "max_length", None) or getattr(cfg, "max_new_tokens", 1024) + 1
+    )
     if block_size <= 0:
         block_size = 1024
 
-    seed = int(getattr(cfg, "adlm_compatible_mauve_valid_seed", getattr(cfg, "seed", 0)))
+    seed = int(
+        getattr(cfg, "adlm_compatible_mauve_valid_seed", getattr(cfg, "seed", 0))
+    )
     eval_batch_size = int(getattr(cfg, "batch_size", 1))
-    eval_batch_size = int(getattr(cfg, "adlm_compatible_mauve_eval_batch_size", eval_batch_size))
+    eval_batch_size = int(
+        getattr(cfg, "adlm_compatible_mauve_eval_batch_size", eval_batch_size)
+    )
 
     raw_dataset = datasets.load_dataset(
         "openwebtext",
@@ -392,157 +353,6 @@ def setup_ddp() -> int:
     torch.cuda.set_device(local_rank)
     return local_rank
 
-def _try_load_pretrained_model(cfg: DictConfig) -> Any:
-    """Try checkpoint dir, then CausalLM, then MaskedLM (last without extra kwargs)."""
-    overrides = getattr(cfg, "model_config_overrides", {})
-    revision = getattr(cfg, "pretrained_model_revision", None)
-    path = cfg.pretrained_model_name_or_path
-    try:
-        return load_model_from_ckpt_dir_path(
-            path_to_ckpt_dir=path,
-            load_ema_weights=cfg.load_ema_weights,
-            ckpt_file=cfg.ckpt_file,
-            **overrides,
-        )
-    except Exception:
-        loaders = (
-            lambda: AutoModelForCausalLM.from_pretrained(
-                path,
-                trust_remote_code=True,
-                revision=revision,
-                **overrides,
-            ),
-            lambda: AutoModelForMaskedLM.from_pretrained(
-                path,
-                trust_remote_code=True,
-                revision=revision,
-                **overrides,
-            ),
-            lambda: AutoModelForMaskedLM.from_pretrained(
-                path,
-                trust_remote_code=True,
-                revision=revision,
-            ),
-        )
-        for load in loaders:
-            try:
-                return load()
-            except Exception:
-                continue
-        return None
-
-
-def _dit_legacy_backbone_template() -> str:
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "configs",
-        "model",
-        "backbone",
-        "dit_legacy.yaml",
-    )
-
-
-def _load_backbone_state_into_denoiser(
-    denoiser: Any,
-    hf_model: Optional[Any],
-    pretrained_path: str,
-) -> None:
-    """Fill denoiser.backbone from an HF wrapper or a raw checkpoint path."""
-    if hf_model is not None:
-        denoiser.backbone = hf_model.backbone
-        return
-    state_dict = torch.load(
-        pretrained_path,
-        map_location="cpu",
-        weights_only=False,
-    )["state_dict"]
-    for key in list(state_dict.keys()):
-        new_key = key
-        if "backbone." in new_key:
-            new_key = new_key.replace("backbone.", "")
-        if "_orig_mod." in new_key:
-            new_key = new_key.replace("_orig_mod.", "")
-        if new_key != key:
-            state_dict[new_key] = state_dict.pop(key)
-    state_dict.pop("sampling_eps_min", None)
-    state_dict.pop("sampling_eps_max", None)
-    denoiser.backbone.load_state_dict(state_dict)
-
-
-def _build_legacy_denoiser(
-    cfg: DictConfig,
-    tokenizer: Any,
-    hf_model: Optional[Any],
-) -> Any:
-    """Build MDLM, SEDD, AR, or BD3LM and load backbone weights (legacy checkpoints)."""
-    backbone_config = OmegaConf.load(_dit_legacy_backbone_template())
-    length = getattr(cfg, "length", 1024)
-    backbone_config.length = length
-    backbone_config.vocab_size = len(tokenizer)
-    backbone_config.block_size = getattr(cfg, "block_size", None)
-    backbone_config.pretrained_model_name_or_path = getattr(
-        cfg, "pretrained_model_name_or_path", None
-    )
-    backbone_config.num_layers = 12
-    backbone_config.n_heads = 12
-    backbone_config.hidden_size = 768
-
-    name = backbone_config.pretrained_model_name_or_path or ""
-    if "-ar-" in name:
-        backbone_config.adaln = False
-        backbone_config.causal_attention = True
-        backbone_config.attn_backend = "flash_attn"
-    elif "mdlm-" in name:
-        backbone_config.adaln = True
-    else:
-        backbone_config.adaln = True
-
-    if not isinstance(backbone_config, DictConfig):
-        backbone_config = OmegaConf.create(
-            OmegaConf.to_container(backbone_config, resolve=False)
-        )
-
-    bc = OmegaConf.to_container(backbone_config, resolve=True)
-
-    def _mdlm_like_denoiser(ctor):
-        model_config = MDLMConfig(length=length)
-        model_config.backbone_config = bc
-        model_config.keep_clean_bos = True
-        model_config.mask_token_id = tokenizer.mask_token_id
-        model_config.vocab_size = len(tokenizer)
-        return ctor(model_config, tokenizer=tokenizer)
-
-    if "mdlm-" in name:
-        denoiser = _mdlm_like_denoiser(MDLM)
-    elif "sedd-" in name:
-        denoiser = _mdlm_like_denoiser(SEDD)
-    elif "ar-" in name:
-        model_config = ARConfig(length=length, backbone_config=backbone_config)
-        model_config.backbone_config = bc
-        model_config.keep_clean_bos = True
-        model_config.mask_token_id = tokenizer.mask_token_id
-        model_config.vocab_size = len(tokenizer)
-        denoiser = AR(model_config, tokenizer=tokenizer)
-    else:
-        model_config = BD3LMConfig(
-            length=length,
-            backbone_config=backbone_config,
-            block_size=cfg.block_size,
-        )
-        model_config.backbone_config = bc
-        model_config.keep_clean_bos = True
-        model_config.mask_token_id = tokenizer.mask_token_id
-        model_config.vocab_size = len(tokenizer)
-        denoiser = BD3LM(model_config, tokenizer=tokenizer)
-
-    _load_backbone_state_into_denoiser(
-        denoiser,
-        hf_model,
-        cfg.pretrained_model_name_or_path,
-    )
-    denoiser.noise_schedule = LinearNoise()
-    return denoiser
-
 
 def generate_samples(
     cfg: DictConfig, device: str, local_rank: int
@@ -562,11 +372,37 @@ def generate_samples(
         force_legacy_if_no_generate=True,
     )
 
-    if getattr(cfg, "compile_backbone", False):
-        print("Compiling model backbone")
-        model.backbone = torch.compile(
-            model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
-        )
+    is_setdlm = model.__class__.__name__ == "SetDLM"
+    compile_requested = bool(getattr(cfg, "compile_backbone", False))
+    compile_supported = bool(hasattr(model, "backbone"))
+    compile_mode = getattr(cfg, "compile_mode", None)
+    if compile_mode in ("", "none", "None", "null", "default"):
+        compile_mode = None
+    if compile_mode is None and not is_setdlm:
+        compile_mode = "max-autotune-no-cudagraphs"
+    compile_dynamic = _optional_bool(getattr(cfg, "compile_dynamic", None))
+    if compile_dynamic is None:
+        compile_dynamic = True if is_setdlm else False
+    if compile_requested:
+        if not compile_supported:
+            print(
+                "COMPILE_BACKBONE=true requested, but this model has no backbone; "
+                "running uncompiled."
+            )
+        else:
+            cache_dir = configure_rank_local_torchinductor_cache()
+            if cache_dir:
+                print(f"Using rank-local TorchInductor cache: {cache_dir}")
+            compile_kwargs = {"dynamic": compile_dynamic}
+            if compile_mode is not None:
+                compile_kwargs["mode"] = compile_mode
+            print(f"Compiling model backbone with torch.compile({compile_kwargs})")
+            model.backbone = torch.compile(model.backbone, **compile_kwargs)
+    print(
+        "Compile settings: "
+        f"requested={compile_requested}, supported={compile_supported}, "
+        f"mode={compile_mode or 'default'}, dynamic={compile_dynamic}"
+    )
 
     model = model.to(device)
     if local_rank == 0:
@@ -591,19 +427,37 @@ def generate_samples(
     # Iterate through the dataset and sample
     generated_samples = []
     tputs = []
+    latencies = []
     parallelism_factors = []
     lengths = []
     entropies = []
+    measured_parallelism_factors = []
+    measured_lengths = []
+    measured_entropies = []
     throughput_run = bool(getattr(cfg, "throughput_run", False))
     if dist.is_available() and dist.is_initialized():
         world_size = dist.get_world_size()
     else:
         world_size = 1
+    throughput_warmup = int(getattr(cfg, "throughput_warmup", THROUGHPUT_WARMUP))
+    throughput_num_measurements = int(
+        getattr(
+            cfg,
+            "throughput_num_measurements",
+            getattr(cfg, "throughput_samples_per_rank", 200),
+        )
+    )
+    throughput_global_measurements = bool(
+        getattr(cfg, "throughput_global_measurements", False)
+    )
+    local_measurement_target = int(getattr(cfg, "throughput_samples_per_rank", 200))
+    if throughput_global_measurements and world_size > 1:
+        local_measurement_target = math.ceil(throughput_num_measurements / world_size)
     # For normal runs, shard the requested sample count across ranks.
-    # For throughput runs, each rank generates an identical fixed budget and
-    # only rank 0 records tok/s to avoid mixing timings from different devices.
+    # For throughput runs, warm up per rank, then gather measured examples
+    # across ranks and trim to the requested global sample count.
     if throughput_run:
-        num_samples = int(getattr(cfg, "throughput_samples_per_rank", 200))
+        num_samples = throughput_warmup + local_measurement_target
     else:
         num_samples = cfg.num_samples
         if dist.is_available() and dist.is_initialized():
@@ -612,32 +466,62 @@ def generate_samples(
                 new_max_samples += int(num_samples % world_size)
             num_samples = new_max_samples
 
-    pbar = tqdm(range(num_samples), desc="Generating", disable=(local_rank != 0))
+    checkpoint = _load_generation_checkpoint(cfg, local_rank)
+    if checkpoint is not None:
+        generated_samples = list(checkpoint.get("generated_samples", []))
+        tputs = list(checkpoint.get("tputs", []))
+        latencies = list(checkpoint.get("latencies", []))
+        parallelism_factors = list(checkpoint.get("parallelism_factors", []))
+        lengths = list(checkpoint.get("lengths", []))
+        entropies = list(checkpoint.get("entropies", []))
+        measured_parallelism_factors = list(
+            checkpoint.get("measured_parallelism_factors", [])
+        )
+        measured_lengths = list(checkpoint.get("measured_lengths", []))
+        measured_entropies = list(checkpoint.get("measured_entropies", []))
+    start_index = len(generated_samples)
+    if start_index > num_samples:
+        raise ValueError(
+            f"Checkpoint has {start_index} samples, but this run only requests "
+            f"{num_samples} samples on rank {local_rank}."
+        )
 
-    for ind, i in enumerate(pbar):
+    pbar = tqdm(
+        range(start_index, num_samples),
+        desc="Generating",
+        disable=(local_rank != 0),
+        initial=start_index,
+        total=num_samples,
+    )
+    checkpoint_interval = max(
+        1, int(getattr(cfg, "generation_checkpoint_interval", 1))
+    )
+
+    for i in pbar:
         input_ids = torch.tensor([model.tokenizer.bos_token_id])[None, :].to(
             model.device
         )
         # Generate samples
         with torch.no_grad():
             while True:
-                should_measure_tput = (not throughput_run) or local_rank == 0
-                if should_measure_tput:
-                    start_event = torch.cuda.Event(enable_timing=True)
-                    end_event = torch.cuda.Event(enable_timing=True)
-                    start_event.record()
-                else:
-                    start_event, end_event = None, None
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
+                if gen_kwargs["stopping_criteria"] is not None:
+                    reset_stopping_criteria = getattr(
+                        gen_kwargs["stopping_criteria"], "reset", None
+                    )
+                    if callable(reset_stopping_criteria):
+                        reset_stopping_criteria()
                 generation_output = model.generate(
                     inputs=input_ids,
                     disable_pbar=False,
                     tokenizer=tokenizer,
                     **gen_kwargs,
                 )
-                if should_measure_tput:
-                    end_event.record()
-                    torch.cuda.synchronize()
-                    elapsed_time_s = start_event.elapsed_time(end_event) / 1000
+                end_event.record()
+                torch.cuda.synchronize()
+                elapsed_time_s = start_event.elapsed_time(end_event) / 1000
                 if isinstance(generation_output, ModelOutput):
                     outputs = generation_output.sequences
                     parallelism_factor = generation_output.get(
@@ -661,22 +545,53 @@ def generate_samples(
                     truncate_idx = gen_kwargs["stopping_criteria"][0].truncate_idx[0]
                     if truncate_idx is not None:
                         outputs = outputs[:, : min(truncate_idx, outputs.shape[1])]
-                if _should_reject_generated_sample(cfg, outputs, entropy):
+                if (not throughput_run) and _should_reject_generated_sample(
+                    cfg, outputs, entropy
+                ):
                     continue
                 break
 
             print("final length:", outputs.shape[1])
 
-            if ind % 100 == 0:
+            if i % 100 == 0:
                 print(tokenizer.decode(outputs[0]))
 
-            if should_measure_tput and i >= THROUGHPUT_WARMUP:
+            if i >= throughput_warmup:
                 tputs.append(length / elapsed_time_s)
+                latencies.append(elapsed_time_s)
+                measured_parallelism_factors.append(parallelism_factor)
+                measured_lengths.append(outputs.shape[1])
+                measured_entropies.extend(entropy)
             parallelism_factors.append(parallelism_factor)
             lengths.append(outputs.shape[1])
             entropies.extend(entropy)
             output_text = model.tokenizer.decode(outputs[0])
             generated_samples.append(output_text)
+
+            if (
+                bool(getattr(cfg, "generation_checkpoint", False))
+                and (
+                    len(generated_samples) % checkpoint_interval == 0
+                    or len(generated_samples) == num_samples
+                )
+            ):
+                _save_generation_checkpoint(
+                    cfg,
+                    local_rank,
+                    {
+                        "rank": int(local_rank),
+                        "target_num_samples": int(num_samples),
+                        "generated_samples": generated_samples,
+                        "tputs": tputs,
+                        "latencies": latencies,
+                        "parallelism_factors": parallelism_factors,
+                        "lengths": lengths,
+                        "entropies": entropies,
+                        "measured_parallelism_factors": measured_parallelism_factors,
+                        "measured_lengths": measured_lengths,
+                        "measured_entropies": measured_entropies,
+                    },
+                )
 
             if local_rank == 0:
                 postfix = {
@@ -691,18 +606,36 @@ def generate_samples(
 
     # gather samples across devices
     generated_samples = gather_results(generated_samples, world_size)
-    if not throughput_run:
-        tputs = gather_results(tputs, world_size)
+    tputs = gather_results(tputs, world_size)
+    latencies = gather_results(latencies, world_size)
     parallelism_factors = gather_results(parallelism_factors, world_size)
     lengths = gather_results(lengths, world_size)
     entropies = gather_results(entropies, world_size)
+    measured_parallelism_factors = gather_results(
+        measured_parallelism_factors, world_size
+    )
+    measured_lengths = gather_results(measured_lengths, world_size)
+    measured_entropies = gather_results(measured_entropies, world_size)
     gen_metrics: Optional[dict[str, Any]] = None
     if local_rank == 0:
+        if throughput_run:
+            tputs = tputs[:throughput_num_measurements]
+            latencies = latencies[:throughput_num_measurements]
+            measured_parallelism_factors = measured_parallelism_factors[
+                :throughput_num_measurements
+            ]
+            measured_lengths = measured_lengths[:throughput_num_measurements]
+            measured_entropies = measured_entropies[:throughput_num_measurements]
         if tputs:
-            tput_prefix = "Rank 0 TPUT" if throughput_run else "TPUT"
+            tput_prefix = "TPUT"
             print(
                 f"{tput_prefix} (tok/s) over {len(tputs)} samples: "
                 f"{np.mean(tputs)} +/- {np.std(tputs)}"
+            )
+        if latencies:
+            print(
+                f"Latency (s) over {len(latencies)} samples: "
+                f"{np.mean(latencies)} +/- {np.std(latencies)}"
             )
         print(
             f"Parallelism factor over {len(parallelism_factors)} samples: "
@@ -716,11 +649,115 @@ def generate_samples(
             f"Entropies over {len(entropies)} samples: "
             f"{np.mean(entropies)} +/- {np.std(entropies)}"
         )
+        metrics_parallelism = (
+            measured_parallelism_factors if throughput_run else parallelism_factors
+        )
+        metrics_lengths = measured_lengths if throughput_run else lengths
+        metrics_entropies = measured_entropies if throughput_run else entropies
         gen_metrics = build_generation_metrics_dict(
-            tputs, parallelism_factors, lengths, entropies
+            tputs, latencies, metrics_parallelism, metrics_lengths, metrics_entropies
         )
         if not fsspec_exists(cfg.generated_samples_output_path):
             fsspec_mkdirs(cfg.generated_samples_output_path)
+        if throughput_run:
+            output_lengths_from_timing = [
+                float(throughput) * float(latency)
+                for throughput, latency in zip(tputs, latencies)
+            ]
+            generation_config = getattr(cfg, "generation_config", {})
+            nfe = getattr(generation_config, "num_steps", None)
+            throughput_summary = {
+                "throughput_mean": float(np.mean(tputs)) if tputs else None,
+                "throughput_std": float(np.std(tputs)) if tputs else None,
+                "throughput_all": [float(x) for x in tputs],
+                "latency_mean": float(np.mean(latencies)) if latencies else None,
+                "latency_std": float(np.std(latencies)) if latencies else None,
+                "latency_all": [float(x) for x in latencies],
+                "output_length_from_tput_latency_mean": (
+                    float(np.mean(output_lengths_from_timing))
+                    if output_lengths_from_timing
+                    else None
+                ),
+                "output_length_from_tput_latency_std": (
+                    float(np.std(output_lengths_from_timing))
+                    if output_lengths_from_timing
+                    else None
+                ),
+                "parallelism_factor_mean": (
+                    float(np.mean(measured_parallelism_factors))
+                    if measured_parallelism_factors
+                    else None
+                ),
+                "parallelism_factor_std": (
+                    float(np.std(measured_parallelism_factors))
+                    if measured_parallelism_factors
+                    else None
+                ),
+                "parallelism_factor_all": [
+                    float(x) for x in measured_parallelism_factors
+                ],
+                "sequence_length_tokens_mean": (
+                    float(np.mean(measured_lengths)) if measured_lengths else None
+                ),
+                "sequence_length_tokens_std": (
+                    float(np.std(measured_lengths)) if measured_lengths else None
+                ),
+                "warmup_examples_per_rank": throughput_warmup,
+                "measured_examples": len(tputs),
+                "requested_measured_examples": throughput_num_measurements,
+                "local_measurement_target": local_measurement_target,
+                "throughput_global_measurements": throughput_global_measurements,
+                "world_size": world_size,
+                "nfe": int(nfe) if nfe is not None else None,
+                "compile_backbone": compile_requested,
+                "compile_supported": compile_supported,
+                "compile_mode": compile_mode or "default",
+                "compile_dynamic": compile_dynamic,
+                "confidence_based_noising": bool(
+                    getattr(generation_config, "confidence_based_noising", False)
+                ),
+                "confidence_threshold": float(
+                    getattr(generation_config, "confidence_threshold", 1e6)
+                ),
+                "setdlm_fast_inference": bool(
+                    getattr(generation_config, "setdlm_fast_inference", False)
+                ),
+                "setdlm_dynamic_active_logits": bool(
+                    getattr(generation_config, "setdlm_dynamic_active_logits", False)
+                ),
+                "setdlm_deterministic_sampler_fastpath": bool(
+                    getattr(
+                        generation_config,
+                        "setdlm_deterministic_sampler_fastpath",
+                        False,
+                    )
+                ),
+                "setdlm_vectorized_repetition_penalty": bool(
+                    getattr(
+                        generation_config,
+                        "setdlm_vectorized_repetition_penalty",
+                        False,
+                    )
+                ),
+                "setdlm_dynamic_tensor_attention_mask": bool(
+                    getattr(
+                        generation_config,
+                        "setdlm_dynamic_tensor_attention_mask",
+                        False,
+                    )
+                ),
+                "setdlm_dynamic_full_window_fastpath": bool(
+                    getattr(
+                        generation_config,
+                        "setdlm_dynamic_full_window_fastpath",
+                        False,
+                    )
+                ),
+            }
+            with open(
+                f"{cfg.generated_samples_output_path}/throughput-all.json", "w"
+            ) as f:
+                json.dump(throughput_summary, f, indent=2)
         with open(
             f"{cfg.generated_samples_output_path}/generated_samples.json", "w"
         ) as f:
@@ -927,8 +964,15 @@ def main(cfg: DictConfig) -> None:
     mauve_ref_dataset = getattr(cfg, "mauve_reference_dataset", None)
     mauve_stats: Optional[dict[str, Any]] = None
     if (
-        (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
-    ) and mauve_ref_dataset is not None:
+        not getattr(cfg, "throughput_run", False)
+        and not getattr(cfg, "skip_mauve", False)
+        and (
+            (not dist.is_available())
+            or (not dist.is_initialized())
+            or dist.get_rank() == 0
+        )
+        and mauve_ref_dataset is not None
+    ):
         tokenizer = hydra.utils.instantiate(cfg.tokenizer)
         mauve_stats = compute_mauve_metrics(
             cfg, samples, device=device, tokenizer=tokenizer

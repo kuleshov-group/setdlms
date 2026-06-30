@@ -1,7 +1,6 @@
 import logging
 import os
 
-# import time  # Use for multi-node
 import hydra
 import torch
 import torch.distributed as torch_dist
@@ -37,7 +36,7 @@ def main(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         _convert_="all",  # required to enable json-serialization when saving checkpoint
     )
-    print(model)
+    log.info("%s", model)
     if getattr(cfg.training, "compile_backbone", False):
         log.info("Compiling model backbone")
         model.backbone = torch.compile(
@@ -87,7 +86,6 @@ def main(cfg: DictConfig) -> None:
         collate_fn=train_collator,
         sampler=train_sampler,
     )
-    # time.sleep(30)  # Needed for multi-node training
 
     # Val dataloader (optional)
     if getattr(cfg, "eval_dataset", None) is not None:
@@ -105,7 +103,6 @@ def main(cfg: DictConfig) -> None:
         )
     else:
         eval_dataset, eval_dataloader = None, None
-    # time.sleep(30)  # Needed for multi-node training
 
     # Optimizer
     optimizer = hydra.utils.instantiate(

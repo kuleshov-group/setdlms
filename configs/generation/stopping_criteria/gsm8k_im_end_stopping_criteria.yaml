@@ -1,0 +1,5 @@
+gsm8k_im_end_stopping_criteria:
+  _target_: src.custom_transformers.generation.RegexStoppingCriteria
+  tokenizer: ${tokenizer}
+  pattern: '<\|im_end\|>'
+  num_matches: 2

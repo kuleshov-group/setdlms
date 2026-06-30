@@ -1,15 +1,18 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+
 accelerate==1.11.0
 datasets==4.2.0
 einops==0.8.1
 fire==0.7.1
 hydra-core==1.3.2
-ipdb
+ipdb==0.13.13
 lm-eval==0.4.9
-magic-wormhole
+magic-wormhole==0.24.0
 mosaicml==0.32.1
-pre-commit
-ruff
+pre-commit==4.2.0
+pytest==9.0.2
+ruff==0.11.0
 sentencepiece==0.2.1
-torch==2.6.0
+torch==2.6.0+cu124
 transformers==4.52.4
 wandb==0.22.2

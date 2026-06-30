@@ -1,14 +1,16 @@
 #!/bin/bash
 
 <<comment
-#  Usage:
-cd bash_scripts/
-source g2_run_wrapper.sh <SHELL_SCRIPT>
+# Usage:
+#   source srun_wrapper.sh <SHELL_SCRIPT>
 comment
 
+WRAPPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${WRAPPER_DIR}/.." && pwd)"
 
-if [ -z "$1" ]; then
+if [ -z "${1:-}" ]; then
   echo "Usage: $0 script_name"
+  return 1 2>/dev/null || exit 1
 fi
 
 script_name="$1"
@@ -17,23 +19,25 @@ if [[ "$script_name" != *.sh ]]; then
 fi
 
 # Construct the full path
-script_full_path=$(realpath "./${script_name}")
+script_full_path=$(realpath "${WRAPPER_DIR}/${script_name}")
 
 # Check if the file exists in the directory
 if [ ! -e "${script_full_path}" ]; then
-  echo "Script '$script_full_path' not found."
+  echo "Script '${script_full_path}' not found."
+  return 1 2>/dev/null || exit 1
 fi
 
-if [ -z "${CUDA_VISIBLE_DEVICES}" ]; then
-  NUM_VISIBLE_DEVICES=${SLURM_GPUS_ON_NODE}
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+  NUM_VISIBLE_DEVICES="${SLURM_GPUS_ON_NODE:-${NUM_VISIBLE_DEVICES:-1}}"
 else
-  NUM_VISIBLE_DEVICES=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
+  NUM_VISIBLE_DEVICES=$(echo "${CUDA_VISIBLE_DEVICES}" | awk -F',' '{print NF}')
 fi
 export NUM_VISIBLE_DEVICES
-RUN_DIR="/share/kuleshov/$(whoami)/runs/dllm-dev"
-DATA_DIR="/share/kuleshov/ma2238/dllm-data"
-mkdir -p ${RUN_DIR}
-mkdir -p ${DATA_DIR}
+RUN_DIR="${RUN_DIR:-${REPO_ROOT}/outputs/runs}"
+DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data}"
+mkdir -p "${RUN_DIR}"
+mkdir -p "${DATA_DIR}"
+export REPO_ROOT
 export RUN_DIR
 export DATA_DIR
-source ${script_full_path}
+source "${script_full_path}"

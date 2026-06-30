@@ -1,2 +1,2 @@
 _target_: src.datasets.preprocessed_dataset.load_preprocessed_dataset
-dataset_path: '/share/kuleshov/ssahoo/textdiffusion/data/ptb_validation_bs1024_wrapped_eosFalse.dat'
+dataset_path: '${oc.env:DLLM_EVAL_DATA_DIR,data/eval}/ptb_validation_bs1024_wrapped_eosFalse.dat'

@@ -6,7 +6,6 @@ import torch
 from transformers import DataCollatorWithPadding, PreTrainedTokenizerBase
 
 
-# TODO: For AR init diffusion models, implement attn_mask annealing? (see DiffuLlama)
 class DenoisingCollator:
     """Custom collator that samples a random t value for each example in the batch."""
 
@@ -74,7 +73,6 @@ class DenoisingCollator:
         self.block_size = block_size
         self.legacy_antithetic_sampling = legacy_antithetic_sampling
         self.sample_t = sample_t
-        # TODO: Confirm that this works on multi-node
         self._rank = rank
         self._world_size = world_size
 
@@ -155,52 +153,4 @@ class DenoisingCollator:
         # Override the attention mask to attend to all tokens (including [PAD])
         if self.predict_padding:
             batch["attention_mask"] = torch.ones_like(batch["input_ids"])
-        return batch
-
-
-class ConcatenatedSequenceCollatorWrapper:
-    """Collator wrapper to add sequence_id to batch."""
-
-    def __init__(
-        self,
-        base_collator: Callable,
-        eos_token_id: int | None = None,
-        bos_token_id: int | None = None,
-    ):
-        self.base_collator = base_collator
-        if (eos_token_id is None) and (bos_token_id is None):
-            raise ValueError(
-                "Must supply a value for either eos_token_id or bos_token_id,"
-                " but got None for both."
-            )
-        if (eos_token_id is not None) and (bos_token_id is not None):
-            raise ValueError(
-                "Cannot use *both* EOS and BOS tokens for detecting sequence"
-                " boundaries. Please supply `eos_token_id` if sequences end with an EOS"
-                " token, or use `bos_token_id` if sequences start with a BOS token."
-            )
-        if eos_token_id is None:
-            self.split_token_id = bos_token_id
-            self.bos_mode = True
-        else:
-            self.split_token_id = eos_token_id
-            self.bos_mode = False
-
-    def get_sequence_id_from_batch(
-        self, batch: dict[str, torch.Tensor]
-    ) -> torch.Tensor:
-        assert self.split_token_id is not None
-        is_separator = torch.eq(batch["input_ids"], self.split_token_id)
-        cumulative_sep = torch.cumsum(is_separator, dim=1).to(batch["input_ids"].dtype)
-        # If separator token is bos, we're already done
-        if self.bos_mode:
-            return cumulative_sep
-
-        # If separator token is eos, right shift 1 space
-        left_zeros = cumulative_sep.new_zeros((cumulative_sep.shape[0], 1))
-        return torch.cat([left_zeros, cumulative_sep[:, :-1]], dim=1)
-
-    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
-        batch = self.base_collator(features)
-        batch["sequence_id"] = self.get_sequence_id_from_batch(batch)
         return batch

@@ -402,6 +402,9 @@ class ROCStoriesDataset(Dataset):
         num_target_sentences: int = 1,
         max_samples: int | None = None,
         insert_special_tokens: bool = True,
+        insert_bos_token: bool | None = None,
+        insert_eos_token: bool | None = None,
+        sample_indices: list[int] | None = None,
         # Unused tokenizer arg (compat. with other dataset loading functions/classes)
         **_: Dict[str, Any],
     ):
@@ -415,6 +418,12 @@ class ROCStoriesDataset(Dataset):
         self.max_length = max_length
         self.padding = padding
         self.insert_special_tokens = insert_special_tokens
+        self.insert_bos_token = (
+            insert_special_tokens if insert_bos_token is None else insert_bos_token
+        )
+        self.insert_eos_token = (
+            insert_special_tokens if insert_eos_token is None else insert_eos_token
+        )
         self.dataset = []
         with open(dataset_path) as f:
             reader = csv.reader(f)
@@ -424,6 +433,9 @@ class ROCStoriesDataset(Dataset):
                 self.dataset.append(sents)
                 if max_samples is not None and len(self.dataset) >= max_samples:
                     break
+        if sample_indices is not None:
+            indices = [int(index) for index in sample_indices]
+            self.dataset = [self.dataset[index] for index in indices]
 
     @property
     def target_references(self) -> list[str]:
@@ -460,12 +472,10 @@ class ROCStoriesDataset(Dataset):
         input_ids = (
             prefix_ids + [self.tokenizer.mask_token_id] * len(middle_ids) + suffix_ids
         )
-        if self.insert_special_tokens:
-            input_ids = (
-                [self.tokenizer.bos_token_id]
-                + input_ids
-                + [self.tokenizer.eos_token_id]
-            )
+        if self.insert_bos_token:
+            input_ids = [self.tokenizer.bos_token_id] + input_ids
+        if self.insert_eos_token:
+            input_ids = input_ids + [self.tokenizer.eos_token_id]
         input_ids = torch.LongTensor(input_ids)
         attention_mask = torch.ones_like(input_ids)
 

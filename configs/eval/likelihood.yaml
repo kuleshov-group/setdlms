@@ -2,7 +2,6 @@ defaults:
   - _self_
 load_ema_weights: true
 ckpt_file: 'best-rank0.pt'  # best-rank0.pt or latest-rank0.pt
-require_refusion_semantics: false
 model_config_overrides: null  # Dict of model config overrides, e.g., {length: 512}
 eval_dataloader:
   _target_: torch.utils.data.DataLoader

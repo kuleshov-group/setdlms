@@ -1,7 +1,5 @@
 import logging
-import os
 import random
-from numbers import Integral
 from typing import Any
 
 import hydra
@@ -13,6 +11,7 @@ from composer.utils import dist, reproducibility
 from omegaconf import DictConfig
 
 from scripts.eval.model_loading import (
+    configure_rank_local_torchinductor_cache,
     load_eval_model,
     maybe_load_legacy_checkpoint_tokenizer,
     normalize_model_config_overrides,
@@ -21,9 +20,6 @@ from scripts.utils import (
     maybe_add_missing_special_tokens,
     register_useful_resolvers,
 )
-from src.datasets.collator import DenoisingCollator
-from src.denoiser.esolm import EsoLM
-from src.denoiser.refusion import ReFusion
 
 log = logging.getLogger(__name__)
 
@@ -43,41 +39,6 @@ class RepeatDataloader:
         return len(self.dataloader) * self.k
 
 
-def require_refusion_semantics(cfg: DictConfig) -> bool:
-    return bool(getattr(cfg.task, "require_refusion_semantics", False))
-
-
-def _validate_refusion_length(value: Any, source_name: str) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, Integral):
-        raise ValueError(
-            "Likelihood eval requested ReFusion semantics, but "
-            f"`{source_name}` must be a positive finite integer sequence length. "
-            "Refusing non-ReFusion behavior."
-        )
-    length = int(value)
-    if length <= 0 or length >= 1_000_000:
-        raise ValueError(
-            "Likelihood eval requested ReFusion semantics, but "
-            f"`{source_name}={length}` is not a usable explicit sequence length. "
-            "Refusing non-ReFusion behavior."
-        )
-    return length
-
-
-def build_likelihood_model_config_overrides(cfg: DictConfig) -> dict[str, Any]:
-    model_config_overrides = normalize_model_config_overrides(
-        getattr(cfg, "model_config_overrides", None)
-    )
-    if not require_refusion_semantics(cfg):
-        return model_config_overrides
-    model_config_overrides["model_type"] = "refusion"
-    _validate_refusion_length(
-        model_config_overrides.get("length"),
-        "model_config_overrides.length",
-    )
-    return model_config_overrides
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
@@ -103,13 +64,16 @@ def main(cfg: DictConfig) -> None:
     checkpoint_tokenizer = maybe_load_legacy_checkpoint_tokenizer(
         cfg.pretrained_model_name_or_path
     )
-    if checkpoint_tokenizer is not None:
+    if checkpoint_tokenizer is not None and getattr(
+        checkpoint_tokenizer, "eos_token", None
+    ) is not None:
         tokenizer = checkpoint_tokenizer
-    else:
-        tokenizer = maybe_add_missing_special_tokens(tokenizer)
+    tokenizer = maybe_add_missing_special_tokens(tokenizer)
 
     # Load model
-    model_config_overrides = build_likelihood_model_config_overrides(cfg)
+    model_config_overrides = normalize_model_config_overrides(
+        getattr(cfg, "model_config_overrides", None)
+    )
     loaded_model = load_eval_model(
         pretrained_model_name_or_path=cfg.pretrained_model_name_or_path,
         tokenizer=tokenizer,
@@ -120,16 +84,12 @@ def main(cfg: DictConfig) -> None:
         model_config_overrides=model_config_overrides,
         verbose=True,
         force_legacy_if_no_generate=True,
-        require_explicit_refusion_length=require_refusion_semantics(cfg),
     )
-    if require_refusion_semantics(cfg) and not isinstance(loaded_model, ReFusion):
-        raise ValueError(
-            "Likelihood eval requested ReFusion semantics, but loading returned a "
-            f"non-local `ReFusion` wrapper ({type(loaded_model).__name__}). Refusing "
-            "non-ReFusion behavior."
-        )
 
     if getattr(cfg, "compile_backbone", False):
+        cache_dir = configure_rank_local_torchinductor_cache()
+        if cache_dir:
+            log.info("Using rank-local TorchInductor cache: %s", cache_dir)
         log.info("Compiling model backbone")
         loaded_model.backbone = torch.compile(
             loaded_model.backbone, dynamic=False, mode="max-autotune-no-cudagraphs"
@@ -152,10 +112,6 @@ def main(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         max_length=model.config.length,
     )
-    if isinstance(loaded_model, EsoLM) and isinstance(collator, DenoisingCollator):
-        # Upstream Eso-LMs samples diffusion timesteps inside `algo.nll()` from the
-        # active diffusion sub-batch. Do not inject generic collator-side `t`.
-        collator.sample_t = False
     eval_sampler = dist.get_sampler(eval_dataset, shuffle=False, drop_last=False)
 
     eval_dataloader = hydra.utils.instantiate(

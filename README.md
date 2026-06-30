@@ -17,55 +17,78 @@ wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O mi
 bash miniconda.sh -b -p /opt/conda
 ```
 
-Setup a conda environment and install dependencies using:
+Create the locked conda environment:
 
-Activate the environment:
+```bash
+conda env create -f requirements.yaml
+conda activate dllm-dev
+```
+
+The conda file installs Python, pip, the CUDA compiler used for local extension builds,
+the exact pip lock in [`requirements-lock.txt`](requirements-lock.txt), and this package
+in editable mode. To validate a fresh environment, run:
+
+```bash
+python -m pip check
+python - <<'PY'
+import torch
+import transformers
+import src
+
+print(torch.__version__)
+print(transformers.__version__)
+PY
+```
+
+For a pip-only install, use the pinned direct requirements:
+
+```bash
+python -m pip install -r requirements.txt -e .
+```
+
+Use [`requirements-lock.txt`](requirements-lock.txt) when byte-for-byte dependency
+reproduction is required. Regenerate the lockfile only as an intentional release step.
+
+Activate an existing environment with:
 
 ```bash
 conda activate dllm-dev
 ```
 
-We also include a [`setup_env.sh`](./setup_env.sh) script that can be used to set up the
-environment on a new machine.
-Run the script using:
+We also include a [`setup_env.sh`](./setup_env.sh) script for runtime shell variables on
+compute nodes. Run it from the repository root after the environment has been created:
+
 ```bash
 source setup_env.sh
 ```
 
-You can also include this snippet in shell / slurm scripts to set up the environment on
-a compute node.
+Credentials are intentionally opt-in. If you want the setup script to source private
+W&B or Hugging Face settings, point `DLLM_PRIVATE_ENV` at a local, untracked shell file:
 
-In this script, we set up WandB and HuggingFace tokens by sourcing a script which is
-expected to be in the `/home/<YOUR_USER_NAME>/` directory.
-Copy the contents below into a shell script `/home/<YOUR_USER_NAME>/setup_discdiff.sh`
-and replace the placeholder tokens with your own:
 ```shell
-# W&B / HF Setup
 export WANDB__SERVICE_WAIT=600
-export _WANDB_STARTUP_DEBUG="true"
-export WANDB_ENTITY="kuleshov-group"
+export WANDB_ENTITY="<WANDB_ENTITY>"
 export WANDB_API_KEY="<WANDB_API_KEY>"
-echo "Logging into W&B as '${WANDB_ENTITY}'."
-
-# HF Setup
 export HUGGINGFACE_TOKEN="<HF_TOKEN>"
-huggingface-cli login --token ${HUGGINGFACE_TOKEN} --add-to-git-credential
 ```
+
+Then run `DLLM_PRIVATE_ENV=/path/to/private_env.sh source setup_env.sh`.
+
 - WandB token can be found [here](https://wandb.ai/authorize).
-- HuggingFace token can be setup [here](https://huggingface.co/settings/tokens).
+- Hugging Face token can be created [here](https://huggingface.co/settings/tokens).
 
 ## 1. Code Organization
-1. [`bash_scripts`](bash_scripts): These shells scripts can be used to reproduce the
+1. [`bash_scripts`](bash_scripts): These shell scripts can be used to reproduce the
 experiments from our work.
-2. [`configs`](configs): We utilize hydra config files to organize experiments.
-   1. [`config.yaml`](configs/config.yaml) This config is the entry point for launching
+2. [`configs`](configs): We use Hydra config files to organize experiments.
+   1. [`config.yaml`](configs/config.yaml): Entry point for launching
    training experiments.
-   2. [`eval_config.yaml`](configs/eval_config.yaml) This config is the entry point for
+   2. [`eval_config.yaml`](configs/eval_config.yaml): Entry point for
    evaluations.
 3. [`scripts`](scripts): The main training and evaluation scripts
    1. [`scripts/composer_scripts/train_discrete_denoiser.py`](scripts/composer_scripts/train_discrete_denoiser.py):
    This script is the main training entry point.
-   2. [`scripts/evals`](scripts/eval): These scripts run the evaluation for the
+   2. [`scripts/eval`](scripts/eval): These scripts run evaluation for the
    translation, summarization, and math reasoning datasets, as well as any likelihood
    evaluation.
 4. [`src`](src):
@@ -80,10 +103,10 @@ experiments from our work.
          - `MDLM`: Standard masked diffusion.
          - `BD3LM`: Block diffusion models.
          - `SetDLM`: Set diffusion models.
-   2. [`src/backbone`](src/backbone): These are the underlying neural networks the take
+   2. [`src/backbone`](src/backbone): These are the underlying neural networks that take
    in noisy inputs and produce logits.
    Each denoiser is parameterized by a backbone.
-   The denoiser can optionally, post-process the logit outputs of the backbone to
+   The denoiser can optionally post-process the logit outputs of the backbone to
    produce log-probs over the clean sequence.
 
 ## 2. Reproducing Experiments
@@ -93,22 +116,47 @@ the training and evaluations from our work.
 specified.
 For example, to train SetDLM on the GSM8K dataset, use
 [`run_train_setdlm_gsm8k.sh`](bash_scripts/run_train_setdlm_gsm8k.sh).
-- Once models have been trained, the provided evaluation scripts can be used to reproduce
-tables and figures from our work.
-For example, to evaluate models trained on the GSM8K dataset, use
-[`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh) (or the `*_tput` / `*_intm` variants).
-In that file, and similar ones for other evaluations, specify the path to the saved
-checkpoints, and uncomment the relevant section for a given denoiser class.
-We also provide scripts that will produce the generation throughput numbers we report.
-These files contain a `_tput` at the end of the script name.
+- Once models have been trained or downloaded, the provided evaluation scripts can be used
+to reproduce tables and figures from our work. For example, to evaluate GSM8K models,
+use [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh) (or the `*_tput`
+variants). We also provide scripts that produce the generation throughput numbers we
+report; these files contain `_tput` in the script name.
 
-Below are the evaluation scripts provided for various tasks:
+Evaluation scripts resolve checkpoints through [`bash_scripts/eval_model_paths.sh`](bash_scripts/eval_model_paths.sh).
+For known paper checkpoints, the resolver prefers the Hugging Face model id, falls back
+to the corresponding local checkpoint path if the Hub model is unavailable, and errors
+before launching evaluation if neither is available. Select a known checkpoint with
+`EVAL_MODEL_KEY`, an HF id, or a local checkpoint path in `MODEL_PATH`:
+
+```bash
+# Prefer kuleshov-group/setdlm-gsm8k-smax32, fall back to the matching local run dir.
+EVAL_MODEL_KEY=gsm8k:setdlm-d16 bash bash_scripts/run_lm_eval_harness.sh
+
+# Explicit local paths are also resolved to their HF ids when available.
+MODEL_PATH=/share/kuleshov/ma2238/runs/dllm-dev/<run-dir> bash bash_scripts/run_lm_eval_harness.sh
+
+# Force local checkpoints, or skip the live Hub availability check when needed.
+EVAL_MODEL_PREFER_LOCAL=true EVAL_MODEL_KEY=cnndm:setdlm-d8 bash bash_scripts/run_seq2seq_eval_cnndm.sh
+EVAL_MODEL_SKIP_HF_CHECK=true EVAL_MODEL_KEY=gsm8k:setdlm-d16 bash bash_scripts/run_lm_eval_harness.sh
+```
+
+Dataset configs read from `DLLM_DATA_DIR` and default to `data/`. Set
+`DLLM_DATA_DIR=/path/to/datasets` when cached datasets live elsewhere. Evaluation scripts
+write outputs under `outputs/` by default and accept checkpoint-related overrides such as
+`MODEL_PATH`, `EVAL_MODEL_KEY`, `CKPT_FILE` or `CKPT`, and `USE_EMA`. `LM1B_MODEL_KEY`
+and `LM1B_MODEL_PATH` are accepted by the LM1B likelihood wrapper.
+
+Evaluation scripts are provided for the following tasks:
 - Text summarization: [`run_seq2seq_eval_cnndm.sh`](bash_scripts/run_seq2seq_eval_cnndm.sh), [`run_seq2seq_eval_cnndm_tput.sh`](bash_scripts/run_seq2seq_eval_cnndm_tput.sh)
 - Mathematical reasoning: [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh), [`run_lm_eval_harness_tput.sh`](bash_scripts/run_lm_eval_harness_tput.sh), [`run_likelihood_eval_gsm8k.sh`](bash_scripts/run_likelihood_eval_gsm8k.sh)
-- Likelihood estimation [`run_likelihood_eval_owt.sh`](bash_scripts/run_likelihood_eval_owt.sh), [`run_likelihood_eval_lm1b.sh`](bash_scripts/run_likelihood_eval_lm1b.sh)
+- Likelihood estimation: [`run_likelihood_eval_owt.sh`](bash_scripts/run_likelihood_eval_owt.sh), [`run_likelihood_eval_lm1b.sh`](bash_scripts/run_likelihood_eval_lm1b.sh)
 - Multiple-choice commonsense benchmarks (trained on OpenWebText): [`run_mcqa_eval_owt.sh`](bash_scripts/run_mcqa_eval_owt.sh)
 - Infilling (trained on OpenWebText): [`run_seq2seq_eval_infill_nlp.sh`](bash_scripts/run_seq2seq_eval_infill_nlp.sh)
 - Unconditional generation (trained on OpenWebText): [`run_uncond_gen_ppl_owt.sh`](bash_scripts/run_uncond_gen_ppl_owt.sh)
+
+For full experiment sweeps, [`scripts/eval/repro_suite_runner.py`](scripts/eval/repro_suite_runner.py)
+builds the evaluation matrix and uses the same HF-first checkpoint resolver, so generated
+commands and expected output paths agree with the shell wrappers.
 
 The MCQA evaluation flow uses Hydra overrides in the same style as the other eval
 frameworks, for example `+eval/mcqa@task=all` or `+eval/mcqa@task=hellaswag`.
@@ -119,22 +167,40 @@ summary table to `metrics.json` / `metrics.txt`. By default, answer options are
 ranked by average log-probability per answer token to reduce length bias.
 
 ## 3. HuggingFace Integration
-We release the following SetDLMs (s ≤ 8, 16, 32) on HuggingFace:
-- 1.7B SetDLMs for text summarization (distilled on GSM8K from Qwen3 1.7B):
-[`kuleshov-group/..`](..)
-- 80M SetDLMs for text summarization (trained on CNN/DM from scratch):
-[`kuleshov-group/..`](..)
-- 110M SetDLMs for likelihood estimation / infilling (trained on OWT from scratch):
-[`kuleshov-group/..`](..)
+Evaluation checkpoints are mapped in [`scripts/push_hf_models.py`](scripts/push_hf_models.py).
+The script converts the old notebook workflow into a reproducible command-line tool and
+covers the 32 local checkpoint-backed models used by the evaluation matrix across GSM8K,
+CNN/DM, OpenWebText, and LM1B.
+
+```bash
+# List every checkpoint that would be pushed, with HF repo id and local path.
+python scripts/push_hf_models.py
+
+# Filter the list, or resolve a key/path exactly as the eval scripts do.
+python scripts/push_hf_models.py --only gsm8k
+python scripts/push_hf_models.py --resolve gsm8k:setdlm-d16
+
+# Push to Hugging Face. Repos are private by default; add --public for public repos.
+python scripts/push_hf_models.py --yes
+```
+
+The GSM8K SetDLM release ids are:
+- `kuleshov-group/setdlm-gsm8k-smax8`
+- `kuleshov-group/setdlm-gsm8k-smax16`
+- `kuleshov-group/setdlm-gsm8k-smax32`
+
+Other evaluated checkpoints use the `kuleshov-group/e2d2-<dataset>-<model>` naming
+scheme, for example `kuleshov-group/e2d2-cnndm-setdlm-d8` and
+`kuleshov-group/e2d2-owt-bd3lm-s16`. The resolver accepts either these HF ids or compact
+keys such as `cnndm:setdlm-d8`, `owt:bd3lm-s16`, and `lm1b:ar`.
 
 ## Citation
 ```
-@inproceedings{
-arriola2026setdiffusion,
-title={Set Diffusion: Interpolating Token Orderings between Autoregression and Diffusion for Fast and Flexible Decoding},
-author={Marianne Arriola and Volodymyr Kuleshov},
-booktitle={arXiv},
-year={2026},
-url={..}
+@article{arriola2026setdiffusion,
+  title={Set Diffusion: Interpolating Token Orderings between Autoregression and Diffusion for Fast and Flexible Decoding},
+  author={Marianne Arriola and Volodymyr Kuleshov},
+  journal={arXix},
+  year={2026},
+  url={...}
 }
 ```

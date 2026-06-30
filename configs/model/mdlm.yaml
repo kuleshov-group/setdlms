@@ -6,5 +6,3 @@ _target_: src.denoiser.diffusion.MDLM
 config:
   _target_: src.denoiser.diffusion.MDLMConfig
   keep_clean_bos: false
-  papl_alpha: 0.0
-  papl_tau: 1.0

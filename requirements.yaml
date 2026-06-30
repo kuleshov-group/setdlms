@@ -1,15 +1,13 @@
 name: dllm-dev
 channels:
   - pytorch
-  - anaconda
   - nvidia
+  - anaconda
   - defaults
 dependencies:
-  - anaconda::jupyter
-  - nvidia/label/cuda-12.4.1::cuda-nvcc
-  - python=3.12
-  - pytorch=2.5.1
-  - pytorch-cuda=12.4
-  - pip
+  - python=3.12.9
+  - pip=25.0
+  - nvidia/label/cuda-12.4.1::cuda-nvcc=12.4.131
   - pip:
-      - -r requirements.txt
+      - -r requirements-lock.txt
+      - -e .

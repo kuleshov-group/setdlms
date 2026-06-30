@@ -1,157 +1,114 @@
 #!/bin/bash
-# Setup environment
-cd ../ || exit  # Go to the root directory of the repo
-source setup_env.sh
 
-COMPILE_BACKBONE=false
-SAMPLING_STRATEGY="predict_and_noise"
-NOISE_REMOVAL=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+cd "${REPO_ROOT}" || exit
+source "${REPO_ROOT}/setup_env.sh"
+source "${REPO_ROOT}/bash_scripts/eval_model_paths.sh"
 
-# bd3lm s = 4
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block4_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# BLOCK_SIZE=4
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=true
-# USE_EMA=false
-# REPETITION_PENALTY=1.0
-# NUCLEUS_P=0.9
-# MAX_WINDOW_SIZE=4
+COMPILE_BACKBONE="${COMPILE_BACKBONE:-false}"
+COMPILE_MODE="${COMPILE_MODE:-}"
+COMPILE_DYNAMIC="${COMPILE_DYNAMIC:-}"
+SEED="${SEED:-1234}"
+SKIP_MAUVE="${SKIP_MAUVE:-false}"
+EVAL_ONLY="${EVAL_ONLY:-false}"
+GENERATION_CHECKPOINT="${GENERATION_CHECKPOINT:-false}"
+RESUME_GENERATION_CHECKPOINT="${RESUME_GENERATION_CHECKPOINT:-${GENERATION_CHECKPOINT}}"
+GENERATION_CHECKPOINT_INTERVAL="${GENERATION_CHECKPOINT_INTERVAL:-1}"
+SAMPLING_STRATEGY="${SAMPLING_STRATEGY:-}"
+NOISE_REMOVAL="${NOISE_REMOVAL:-}"
 
-# bd3lm s = 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block8_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# BLOCK_SIZE=8
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=true
-# USE_EMA=false
-# REPETITION_PENALTY=1.0
-# NUCLEUS_P=0.9
-# MAX_WINDOW_SIZE=8
+resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-}}"
+MODEL_FAMILY="${MODEL_FAMILY:-}"
+CKPT_FILE="${CKPT_FILE:-best-rank0.pt}"
+BLOCK_SIZE="${BLOCK_SIZE:-1024}"
+MAX_WINDOW_SIZE="${MAX_WINDOW_SIZE:-${BLOCK_SIZE}}"
+ALIGN_INPUTS_TO_BLOCKS="${ALIGN_INPUTS_TO_BLOCKS:-false}"
+KV_CACHING="${KV_CACHING:-true}"
+USE_EMA="${USE_EMA:-false}"
+NUCLEUS_P="${NUCLEUS_P:-${2:-1.0}}"
+REPETITION_PENALTY="${REPETITION_PENALTY:-${1:-1.0}}"
 
-# bd3lm s = 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block16_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_bd3lm_normlayernorm_adalnfalse_vscratch2"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# BLOCK_SIZE=16
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=true
-# USE_EMA=false
-# REPETITION_PENALTY=1.1
-# NUCLEUS_P=0.9
-# MAX_WINDOW_SIZE=16
+MODEL_PATH_LOWER="$(printf '%s' "${MODEL_PATH}" | tr '[:upper:]' '[:lower:]')"
+if [ -z "${MODEL_FAMILY}" ]; then
+  if [[ "${MODEL_PATH_LOWER}" == *sedd* ]]; then
+    MODEL_FAMILY="SEDD"
+  else
+    MODEL_FAMILY="AUTO"
+  fi
+fi
 
-# setdlm s <= 8
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block4_vscratch"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# MAX_WINDOW_SIZE=4
-# BLOCK_SIZE=1024
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
-# USE_EMA=false
-# REPETITION_PENALTY=1.1
-# NUCLEUS_P=0.95
+if [ "${MODEL_FAMILY}" = "SEDD" ]; then
+  GENERATION_CONFIG_NAME="${GENERATION_CONFIG_NAME:-sedd_generation_config}"
+  SAMPLING_STRATEGY="${SAMPLING_STRATEGY:-analytic}"
+  NOISE_REMOVAL="${NOISE_REMOVAL:-true}"
+  ALIGN_INPUTS_TO_BLOCKS="${ALIGN_INPUTS_TO_BLOCKS:-false}"
+else
+  GENERATION_CONFIG_NAME="${GENERATION_CONFIG_NAME:-set_diffusion_generation_config}"
+  SAMPLING_STRATEGY="${SAMPLING_STRATEGY:-predict_and_noise}"
+  NOISE_REMOVAL="${NOISE_REMOVAL:-false}"
+fi
 
-# setdlm s <= 16
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block8_vscratch"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# MAX_WINDOW_SIZE=8
-# BLOCK_SIZE=1024
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
-# USE_EMA=false
-# REPETITION_PENALTY=1.1
-# NUCLEUS_P=0.95
-
-# setdlm s <= 32
-# MODEL_PATH="/share/kuleshov/ma2238/runs/dllm-dev/owt_block1024_lr3e-4_bsz512_warm2500ba_layers12_hidden768_inter3072_aoarm_normlayernorm_adalnfalse_block16_vscratch"
-# CKPT_FILE="ep17-ba300000-rank0.pt"
-# MAX_WINDOW_SIZE=16
-# BLOCK_SIZE=1024
-# KV_CACHING=true
-# ALIGN_INPUTS_TO_BLOCKS=false
-# USE_EMA=false
-# REPETITION_PENALTY=1.05
-# NUCLEUS_P=0.95
-
-# ar
-# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-ar-noeos-v4-1"
-# CKPT_FILE="20-300000.ckpt"
-# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
-# ALIGN_INPUTS_TO_BLOCKS=true
-# BLOCK_SIZE=1
-# USE_EMA=true
-# NUCLEUS_P=$2
-# REPETITION_PENALTY=$1
-# MAX_WINDOW_SIZE=1
-
-# mdlm
-# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-mdlm-noeos-v4"
-# CKPT_FILE="18-300000.ckpt"
-# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
-# ALIGN_INPUTS_TO_BLOCKS=true
-# BLOCK_SIZE=32
-# USE_EMA=true
-# NUCLEUS_P=$2
-# REPETITION_PENALTY=$1
-# MAX_WINDOW_SIZE=32
-# KV_CACHING=false
-
-# sedd
-# MODEL_PATH="/share/kuleshov/ma2238/textdiffusion/checkpoints/mari-owt-sedd-noeos-v4"
-# CKPT_FILE="18-300000.ckpt"
-# MODEL_PATH=${MODEL_PATH}/${CKPT_FILE}
-# BLOCK_SIZE=1024
-# ALIGN_INPUTS_TO_BLOCKS=true
-# KV_CACHING=false
-# USE_EMA=true
-# NUCLEUS_P=1.0
-# REPETITION_PENALTY=1.0
-# MAX_WINDOW_SIZE=1024
-# SAMPLING_STRATEGY="analytic"
-# NOISE_REMOVAL=true
-
-# esolm
-MODEL_PATH="/share/kuleshov/ma2238/dllm-dev-new/dllm-dev/esolmb-alpha0-0d125-batchsplit-0d5-250k.ckpt"
-BLOCK_SIZE=1024
-MAX_WINDOW_SIZE=1024
-ALIGN_INPUTS_TO_BLOCKS=true
-KV_CACHING=true
-USE_EMA=true
-NUCLEUS_P=1.0
-REPETITION_PENALTY=1.0
-
-T=${BLOCK_SIZE}
+T=${GENERATION_NUM_STEPS:-${BLOCK_SIZE}}
 
 REVISION=null
 DO_SAMPLE=true
-FIRST_HITTING=false
-CONFIDENCE_BASED_NOISING=false
+FIRST_HITTING="${FIRST_HITTING:-false}"
+CONFIDENCE_BASED_NOISING="${CONFIDENCE_BASED_NOISING:-false}"
 CONFIDENCE_MARGIN_BASED_NOISING=false
-CONFIDENCE_THRESHOLD=1e6
+CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-1e6}"
+SETDLM_FAST_INFERENCE="${SETDLM_FAST_INFERENCE:-false}"
+SETDLM_DYNAMIC_ACTIVE_LOGITS="${SETDLM_DYNAMIC_ACTIVE_LOGITS:-false}"
+SETDLM_DETERMINISTIC_SAMPLER_FASTPATH="${SETDLM_DETERMINISTIC_SAMPLER_FASTPATH:-false}"
+SETDLM_VECTORIZED_REPETITION_PENALTY="${SETDLM_VECTORIZED_REPETITION_PENALTY:-false}"
+SETDLM_DYNAMIC_TENSOR_ATTENTION_MASK="${SETDLM_DYNAMIC_TENSOR_ATTENTION_MASK:-false}"
+SETDLM_DYNAMIC_FULL_WINDOW_FASTPATH="${SETDLM_DYNAMIC_FULL_WINDOW_FASTPATH:-false}"
+SETDLM_FULL_WINDOW_FASTPATH_LABEL="${SETDLM_FULL_WINDOW_FASTPATH_LABEL:-N/A}"
+SETDLM_THROUGHPUT_RUN_NAME="${SETDLM_THROUGHPUT_RUN_NAME:-N/A}"
 
-MAX_LENGTH=1024
-THROUGHPUT_RUN=true
-THROUGHPUT_SAMPLES_PER_RANK=200
-NUM_SAMPLES=5000 # TODO
+MAX_LENGTH=${MAX_LENGTH:-1024}
+THROUGHPUT_RUN=${THROUGHPUT_RUN:-false}
+THROUGHPUT_SAMPLES_PER_RANK=${THROUGHPUT_SAMPLES_PER_RANK:-200}
+THROUGHPUT_WARMUP=${THROUGHPUT_WARMUP:-0}
+THROUGHPUT_MEASUREMENTS=${THROUGHPUT_MEASUREMENTS:-${THROUGHPUT_SAMPLES_PER_RANK}}
+THROUGHPUT_GLOBAL_MEASUREMENTS=${THROUGHPUT_GLOBAL_MEASUREMENTS:-false}
+REQUESTED_NUM_SAMPLES=${NUM_SAMPLES:-1000}
+NUM_SAMPLES=${REQUESTED_NUM_SAMPLES}
 if [ "${THROUGHPUT_RUN}" = "true" ]; then
   NUM_SAMPLES=${THROUGHPUT_SAMPLES_PER_RANK}
 fi
-echo "MODEL_PATH: ${MODEL_PATH} BLOCK_SIZE: ${BLOCK_SIZE} MAX_WINDOW_SIZE: ${MAX_WINDOW_SIZE} NUCLEUS_P: ${NUCLEUS_P} REPETITION_PENALTY: ${REPETITION_PENALTY} THROUGHPUT_RUN: ${THROUGHPUT_RUN}"
+OUTPUT_NUM_SAMPLES=${OUTPUT_NUM_SAMPLES:-${REQUESTED_NUM_SAMPLES}}
+MAUVE_REFERENCE_NUM_SAMPLES=${MAUVE_REFERENCE_NUM_SAMPLES:-${OUTPUT_NUM_SAMPLES}}
+STOPPING_CONFIDENCE_THRESHOLD=${STOPPING_CONFIDENCE_THRESHOLD:-0.005}
+STOPPING_CONFIDENCE_WINDOW=${STOPPING_CONFIDENCE_WINDOW:-128}
+STOPPING_CONFIDENCE_MIN_TOKENS=${STOPPING_CONFIDENCE_MIN_TOKENS:-128}
+STOPPING_CONFIDENCE_PATIENCE=${STOPPING_CONFIDENCE_PATIENCE:-4}
+TOKENIZER_PATH="${TOKENIZER_PATH:-gpt2}"
+OUTPUT_DATASET_NAME="${OUTPUT_DATASET_NAME:-owt}"
+echo "MODEL_PATH: ${MODEL_PATH} MODEL_FAMILY: ${MODEL_FAMILY} GENERATION_CONFIG: ${GENERATION_CONFIG_NAME} BLOCK_SIZE: ${BLOCK_SIZE} MAX_WINDOW_SIZE: ${MAX_WINDOW_SIZE} T: ${T} SAMPLING_STRATEGY: ${SAMPLING_STRATEGY} NOISE_REMOVAL: ${NOISE_REMOVAL} NUCLEUS_P: ${NUCLEUS_P} REPETITION_PENALTY: ${REPETITION_PENALTY} THROUGHPUT_RUN: ${THROUGHPUT_RUN} THROUGHPUT_WARMUP: ${THROUGHPUT_WARMUP} THROUGHPUT_MEASUREMENTS: ${THROUGHPUT_MEASUREMENTS} THROUGHPUT_GLOBAL_MEASUREMENTS: ${THROUGHPUT_GLOBAL_MEASUREMENTS} STOPPING_CONFIDENCE_THRESHOLD: ${STOPPING_CONFIDENCE_THRESHOLD} STOPPING_CONFIDENCE_MIN_TOKENS: ${STOPPING_CONFIDENCE_MIN_TOKENS} STOPPING_CONFIDENCE_PATIENCE: ${STOPPING_CONFIDENCE_PATIENCE}"
+echo "SEED: ${SEED} SKIP_MAUVE: ${SKIP_MAUVE} EVAL_ONLY: ${EVAL_ONLY} GENERATION_CHECKPOINT: ${GENERATION_CHECKPOINT} RESUME_GENERATION_CHECKPOINT: ${RESUME_GENERATION_CHECKPOINT} GENERATION_CHECKPOINT_INTERVAL: ${GENERATION_CHECKPOINT_INTERVAL}"
+echo "TOKENIZER_PATH: ${TOKENIZER_PATH} OUTPUT_DATASET_NAME: ${OUTPUT_DATASET_NAME} MAX_LENGTH: ${MAX_LENGTH} OUTPUT_NUM_SAMPLES: ${OUTPUT_NUM_SAMPLES}"
+echo "COMPILE_BACKBONE: ${COMPILE_BACKBONE} COMPILE_MODE: ${COMPILE_MODE:-auto} COMPILE_DYNAMIC: ${COMPILE_DYNAMIC:-auto}"
+echo "CONFIDENCE_BASED_NOISING: ${CONFIDENCE_BASED_NOISING} CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD} FIRST_HITTING: ${FIRST_HITTING} ALIGN_INPUTS_TO_BLOCKS: ${ALIGN_INPUTS_TO_BLOCKS}"
+echo "SETDLM_FAST_INFERENCE: ${SETDLM_FAST_INFERENCE} SETDLM_DYNAMIC_ACTIVE_LOGITS: ${SETDLM_DYNAMIC_ACTIVE_LOGITS} SETDLM_DETERMINISTIC_SAMPLER_FASTPATH: ${SETDLM_DETERMINISTIC_SAMPLER_FASTPATH} SETDLM_VECTORIZED_REPETITION_PENALTY: ${SETDLM_VECTORIZED_REPETITION_PENALTY} SETDLM_DYNAMIC_TENSOR_ATTENTION_MASK: ${SETDLM_DYNAMIC_TENSOR_ATTENTION_MASK} SETDLM_DYNAMIC_FULL_WINDOW_FASTPATH: ${SETDLM_DYNAMIC_FULL_WINDOW_FASTPATH} SETDLM_FULL_WINDOW_FASTPATH_LABEL: ${SETDLM_FULL_WINDOW_FASTPATH_LABEL} SETDLM_THROUGHPUT_RUN_NAME: ${SETDLM_THROUGHPUT_RUN_NAME}"
 
-TOKENIZER_PATH="gpt2"
-
-OUTPUT_DIR="outputs/${MODEL_PATH}/owt-L-${MAX_LENGTH}-NUM_SAMPLES${NUM_SAMPLES}"
+OUTPUT_DIR="outputs/${MODEL_PATH}/${OUTPUT_DATASET_NAME}-L-${MAX_LENGTH}-NUM_SAMPLES${OUTPUT_NUM_SAMPLES}"
 mkdir -p ${OUTPUT_DIR}
-OUTPUT_PATH="${OUTPUT_DIR}/block_size-${BLOCK_SIZE}-T${T}-sampling_strategy-${SAMPLING_STRATEGY}-noise_removal-${NOISE_REMOVAL}-do_sample-${DO_SAMPLE}-first_hitting-${FIRST_HITTING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}-nucleus_p${NUCLEUS_P}-repetition_penalty${REPETITION_PENALTY}-conf${CONFIDENCE_THRESHOLD}-max_window_size${MAX_WINDOW_SIZE}"
+OUTPUT_PATH="${OUTPUT_DIR}/block_size-${BLOCK_SIZE}-T${T}-sampling_strategy-${SAMPLING_STRATEGY}-noise_removal-${NOISE_REMOVAL}-do_sample-${DO_SAMPLE}-first_hitting-${FIRST_HITTING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT_FILE}-ema${USE_EMA}-nucleus_p${NUCLEUS_P}-repetition_penalty${REPETITION_PENALTY}-conf${CONFIDENCE_THRESHOLD}-max_window_size${MAX_WINDOW_SIZE}"
+if [ "${STOPPING_CONFIDENCE_THRESHOLD}" != "null" ]; then
+  OUTPUT_PATH="${OUTPUT_PATH}-stop_conf${STOPPING_CONFIDENCE_THRESHOLD}-stop_win${STOPPING_CONFIDENCE_WINDOW}-stop_min${STOPPING_CONFIDENCE_MIN_TOKENS}-stop_patience${STOPPING_CONFIDENCE_PATIENCE}"
+fi
 if [ "${THROUGHPUT_RUN}" = "true" ]; then
   OUTPUT_PATH="${OUTPUT_PATH}-throughput_run"
 fi
+OUTPUT_PATH="${OUTPUT_PATH_OVERRIDE:-${OUTPUT_PATH}}"
 
 TORCHRUN_ARGS=(
   hydra.output_subdir=null
   hydra.run.dir="${PWD}"
   hydra/job_logging=disabled
   hydra/hydra_logging=disabled
+  seed=${SEED}
   pretrained_model_name_or_path=${MODEL_PATH}
   pretrained_model_revision=${REVISION}
   +ckpt_file="${CKPT_FILE}"
@@ -162,7 +119,7 @@ TORCHRUN_ARGS=(
   max_length=${MAX_LENGTH}
   max_new_tokens=$((${MAX_LENGTH} - 1))
   block_size=${BLOCK_SIZE}
-  generation@generation_config=set_diffusion_generation_config
+  generation@generation_config=${GENERATION_CONFIG_NAME}
   generation_config.num_steps=${T}
   generation_config.sampling_strategy=${SAMPLING_STRATEGY}
   generation_config.noise_removal=${NOISE_REMOVAL}
@@ -173,20 +130,51 @@ TORCHRUN_ARGS=(
   generation_config.confidence_threshold=${CONFIDENCE_THRESHOLD}
   generation_config.use_cache=${KV_CACHING}
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS}
-  generation_config.max_window_size=${MAX_WINDOW_SIZE}
   generation_config.linear_unmasking=true
   generation_config.nucleus_p=${NUCLEUS_P}
   generation/stopping_criteria@stopping_criteria_list='[entropy_eos_stopping_criteria]'
+  stopping_criteria_list.entropy_eos_stopping_criteria.confidence_threshold=${STOPPING_CONFIDENCE_THRESHOLD}
+  stopping_criteria_list.entropy_eos_stopping_criteria.confidence_window=${STOPPING_CONFIDENCE_WINDOW}
+  stopping_criteria_list.entropy_eos_stopping_criteria.confidence_min_tokens=${STOPPING_CONFIDENCE_MIN_TOKENS}
+  stopping_criteria_list.entropy_eos_stopping_criteria.confidence_patience=${STOPPING_CONFIDENCE_PATIENCE}
   batch_size=1
+  +skip_mauve=${SKIP_MAUVE}
+  +eval_only=${EVAL_ONLY}
+  +generation_checkpoint=${GENERATION_CHECKPOINT}
+  +resume_generation_checkpoint=${RESUME_GENERATION_CHECKPOINT}
+  +generation_checkpoint_interval=${GENERATION_CHECKPOINT_INTERVAL}
   +throughput_run=${THROUGHPUT_RUN}
   +throughput_samples_per_rank=${THROUGHPUT_SAMPLES_PER_RANK}
+  +throughput_warmup=${THROUGHPUT_WARMUP}
+  +throughput_num_measurements=${THROUGHPUT_MEASUREMENTS}
+  +throughput_global_measurements=${THROUGHPUT_GLOBAL_MEASUREMENTS}
   +model_config_overrides.attn_backend=sdpa
   +model_config_overrides.backbone_config.attn_backend=sdpa
   generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor]'
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY}
   +compile_backbone=${COMPILE_BACKBONE}
   num_samples=${NUM_SAMPLES}
+  mauve_reference_num_samples=${MAUVE_REFERENCE_NUM_SAMPLES}
 )
+
+if [ "${GENERATION_CONFIG_NAME}" = "set_diffusion_generation_config" ]; then
+  TORCHRUN_ARGS+=(
+    generation_config.max_window_size=${MAX_WINDOW_SIZE}
+    generation_config.setdlm_fast_inference=${SETDLM_FAST_INFERENCE}
+    generation_config.setdlm_dynamic_active_logits=${SETDLM_DYNAMIC_ACTIVE_LOGITS}
+    generation_config.setdlm_deterministic_sampler_fastpath=${SETDLM_DETERMINISTIC_SAMPLER_FASTPATH}
+    generation_config.setdlm_vectorized_repetition_penalty=${SETDLM_VECTORIZED_REPETITION_PENALTY}
+    generation_config.setdlm_dynamic_tensor_attention_mask=${SETDLM_DYNAMIC_TENSOR_ATTENTION_MASK}
+    generation_config.setdlm_dynamic_full_window_fastpath=${SETDLM_DYNAMIC_FULL_WINDOW_FASTPATH}
+  )
+fi
+
+if [ -n "${COMPILE_MODE}" ]; then
+  TORCHRUN_ARGS+=(+compile_mode=${COMPILE_MODE})
+fi
+if [ -n "${COMPILE_DYNAMIC}" ]; then
+  TORCHRUN_ARGS+=(+compile_dynamic=${COMPILE_DYNAMIC})
+fi
 
 PORT=$((RANDOM % 10000 + 29500))
 torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} \

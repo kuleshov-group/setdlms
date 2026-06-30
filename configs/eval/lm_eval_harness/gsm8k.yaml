@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 tasks: 'gsm8k'
-system_instruction: null  # TODO: Can we use this instead of tokenizer
-apply_chat_template: true  # TODO: Can we use this instead of tokenizer
+system_instruction: null
+apply_chat_template: true
 model:
   gen_kwargs: ${gen_kwargs}

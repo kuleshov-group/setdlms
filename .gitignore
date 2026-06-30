@@ -1,22 +1,61 @@
+# Python caches and local environments
 __pycache__/
+*.py[cod]
+*.egg-info/
 .venv/
-.hf_cache
-.idea
+
+# Tool caches
+.hf_cache/
 .ipynb_checkpoints/
+.tmp/
+.triton_cache/
+.torchinductor_cache/
 .pytest_cache/
 .ruff_cache/
+
+# Local editor/OS files
 .DS_Store
+.idea/
+.vscode/
+
+# Runtime outputs and large generated artifacts
 outputs/
 output/
-watch_folder
+checkpoints/
+watch_folder/
+data/
 core
-*.png
+core.*
+*.ckpt
+*.pt
+*.pth
+*.log
+
+# Generated media and plots
 *.jpg
+*.png
 *.pdf
-scripts/install_dm_sans_font.py
-bash_scripts/run_all_uncond_gen_ppls.sh
-test_hf_model.py
-bash_scripts/eval_models.py
-notebooks/create_gif.ipynb
-scripts/push_eval_checkpoints_to_hub.py
+
+# Local credentials/configuration
+.env
+.env.*
+setup_discdiff.sh
+
+# Internal notes and scratch spaces
+internal_infill_eval_results.md
 gsm8k_diffusion/
+config.yaml
+papl_implementation_instructions.md
+refusion_patch_instructions.md
+
+# Local helper artifacts not included in the release
+bash_scripts/eval_models.py
+bash_scripts/run_all_uncond_gen_ppls.sh
+bash_scripts/run_lm_eval_harness_intm.sh
+bash_scripts/run_setdlm_compile_stable_decode_smoke.sh
+notebooks/create_gif.ipynb
+notebooks/push_to_hub.ipynb
+scripts/eval/harness_eval_record_intm.py
+scripts/install_dm_sans_font.py
+scripts/push_eval_checkpoints_to_hub.py
+test_hf_model.py

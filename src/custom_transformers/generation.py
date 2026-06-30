@@ -32,6 +32,12 @@ class HydraCompatibleStoppingCriteriaList(StoppingCriteriaList):
     def __init__(self, stopping_criteria_dict: dict[str, StoppingCriteria]):
         super().__init__(list(stopping_criteria_dict.values()))
 
+    def reset(self):
+        for criterion in self:
+            reset = getattr(criterion, "reset", None)
+            if callable(reset):
+                reset()
+
 
 class RegexStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer, pattern, num_matches: int = 1):
@@ -108,7 +114,7 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
     """
     Hugging Face stopping criteria replicating:
       - stop if entropy on last 256 tokens < threshold
-      - if var_length: stop if a second EOS is present
+      - if var_length: stop if enough EOS tokens are present
     Note: cannot truncate inside generate(); store truncation info for post-processing.
     """
 
@@ -119,6 +125,12 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         block_size: int = 128,
         var_length: bool = False,
         num_matches: int = 1,
+        ignore_prompt_eos: bool = False,
+        prompt_length: int = 1,
+        confidence_threshold: float | None = None,
+        confidence_window: int = 128,
+        confidence_min_tokens: int = 32,
+        confidence_patience: int = 1,
     ):
         super().__init__()
         self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
@@ -130,16 +142,45 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         self.block_size = block_size
         self.var_length = var_length
         self.num_matches = num_matches
+        self.ignore_prompt_eos = ignore_prompt_eos
+        self.prompt_length = max(int(prompt_length), 0)
+        self.confidence_threshold = confidence_threshold
+        # Kept for config compatibility; confidence stopping now uses consecutive
+        # sampled-token confidences instead of a rolling-window mean.
+        self.confidence_window = max(int(confidence_window), 1)
+        self.confidence_min_tokens = max(int(confidence_min_tokens), 1)
+        self.confidence_patience = max(int(confidence_patience), 1)
 
         # For optional post-processing:
         # one entry per batch item, filled with either None or an int truncate index.
         self.truncate_idx = None
         self.stop_reason = None
+        self.confidence_strikes = None
+        self.confidence_seen_positions = None
+
+    def reset(self):
+        self.truncate_idx = None
+        self.stop_reason = None
+        self.confidence_strikes = None
+        self.confidence_seen_positions = None
 
     def _ensure_state(self, batch_size: int):
         if self.truncate_idx is None or len(self.truncate_idx) != batch_size:
             self.truncate_idx = [None] * batch_size
             self.stop_reason = [None] * batch_size
+            self.confidence_strikes = [0] * batch_size
+            self.confidence_seen_positions = [set() for _ in range(batch_size)]
+        else:
+            if (
+                self.confidence_strikes is None
+                or len(self.confidence_strikes) != batch_size
+            ):
+                self.confidence_strikes = [0] * batch_size
+            if (
+                self.confidence_seen_positions is None
+                or len(self.confidence_seen_positions) != batch_size
+            ):
+                self.confidence_seen_positions = [set() for _ in range(batch_size)]
 
     def _compute_entropy(self, x):
         # exclude mask tokens
@@ -147,6 +188,73 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         _, counts = torch.unique(x, return_counts=True, sorted=False)
         entropy = torch.special.entr(counts.float() / counts.sum()).sum()
         return entropy
+
+    def _stop_offset(self, seq_len: int) -> int:
+        return min(self.prompt_length, seq_len) if self.ignore_prompt_eos else 0
+
+    def _generated_tokens_seen(self, seq_len: int) -> int:
+        return max(seq_len - self._stop_offset(seq_len), 0)
+
+    def _has_min_generated_tokens(self, seq_len: int) -> bool:
+        return self._generated_tokens_seen(seq_len) >= self.confidence_min_tokens
+
+    def _min_truncate_idx(self, seq_len: int) -> int:
+        return min(self._stop_offset(seq_len) + self.confidence_min_tokens, seq_len)
+
+    def _confidence_stop(self, input_ids, token_confidence, seq_len):
+        if self.confidence_threshold is None or token_confidence is None:
+            return False
+        if token_confidence.ndim == 1:
+            token_confidence = token_confidence.unsqueeze(0)
+        token_confidence = token_confidence[:, :seq_len]
+
+        stop_any = False
+        confidence_offset = self._stop_offset(seq_len)
+        for i in range(input_ids.shape[0]):
+            confidence_i = token_confidence[i]
+            valid = torch.isfinite(confidence_i)
+            valid &= input_ids[i, :seq_len] != self.mask_token_id
+            if confidence_offset > 0:
+                valid[:confidence_offset] = False
+            positions = torch.nonzero(valid, as_tuple=False).squeeze(-1)
+            if positions.numel() == 0:
+                self.confidence_strikes[i] = 0
+                continue
+
+            seen_positions = self.confidence_seen_positions[i]
+            new_positions = [
+                int(position.item())
+                for position in positions
+                if int(position.item()) not in seen_positions
+            ]
+            if not new_positions:
+                continue
+
+            if len(seen_positions) < self.confidence_min_tokens:
+                num_to_skip = min(
+                    self.confidence_min_tokens - len(seen_positions),
+                    len(new_positions),
+                )
+                seen_positions.update(new_positions[:num_to_skip])
+                new_positions = new_positions[num_to_skip:]
+                self.confidence_strikes[i] = 0
+                if not new_positions:
+                    continue
+
+            for pos in new_positions:
+                seen_positions.add(pos)
+                conf = float(confidence_i[pos].detach().cpu())
+                if conf < self.confidence_threshold:
+                    self.confidence_strikes[i] += 1
+                else:
+                    self.confidence_strikes[i] = 0
+
+                if self.confidence_strikes[i] >= self.confidence_patience:
+                    stop_any = True
+                    self.truncate_idx[i] = min(pos + 1, seq_len)
+                    self.stop_reason[i] = "low_confidence"
+                    break
+        return stop_any
 
     @torch.no_grad()
     def __call__(
@@ -159,29 +267,41 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         bsz, seq_len = input_ids.shape
         self._ensure_state(bsz)
         if self.var_length:
-            eos_mask = input_ids == self.eos_token_id  # (B, L)
+            eos_offset = self._stop_offset(seq_len)
+            eos_input_ids = input_ids[:, eos_offset:]
+            eos_mask = eos_input_ids == self.eos_token_id  # (B, L - eos_offset)
             eos_counts = eos_mask.sum(dim=1)
+            min_truncate_idx = self._min_truncate_idx(seq_len)
 
             if torch.any(eos_counts >= self.num_matches):
                 for i in range(bsz):
                     if eos_counts[i].item() >= self.num_matches:
-                        eos_positions = torch.nonzero(
-                            eos_mask[i], as_tuple=False
-                        ).squeeze(-1)
+                        eos_positions = (
+                            torch.nonzero(eos_mask[i], as_tuple=False).squeeze(-1)
+                            + eos_offset
+                        )
+                        eos_positions = eos_positions[eos_positions + 1 >= min_truncate_idx]
+                        if eos_positions.numel() < self.num_matches:
+                            continue
 
                         last_eos_pos = int(eos_positions[self.num_matches - 1].item())
 
                         has_mask_before = (
-                            input_ids[i, :last_eos_pos] == self.mask_token_id
+                            input_ids[i, eos_offset:last_eos_pos] == self.mask_token_id
                         ).any()
 
                         if not has_mask_before:
-                            stop_any = True
                             self.truncate_idx[i] = min(last_eos_pos + 1, seq_len)
                             self.stop_reason[i] = "last_eos"
                             return True
 
+        token_confidence = kwargs.get("token_confidence")
+        if self._confidence_stop(input_ids, token_confidence, seq_len):
+            return True
+
         if seq_len < self.block_size:
+            return False
+        if not self._has_min_generated_tokens(seq_len):
             return False
 
         last_block = input_ids[:, -self.block_size :]
@@ -198,8 +318,10 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         if entropy_val < self.entropy_threshold:
             stop_any = True
             if self.var_length:
-                # In your code: truncate_idx = x.shape[1] - 256
+                min_truncate_idx = self._min_truncate_idx(seq_len)
                 for i in range(bsz):
-                    self.truncate_idx[i] = max(seq_len - self.block_size, 0)
+                    self.truncate_idx[i] = min(
+                        max(seq_len - self.block_size, min_truncate_idx), seq_len
+                    )
                     self.stop_reason[i] = "low_entropy"
         return stop_any

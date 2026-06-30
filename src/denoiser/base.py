@@ -28,7 +28,6 @@ from transformers.modeling_outputs import CausalLMOutputWithPast, ModelOutput
 from src.backbone.automodel import AutoModelFromPreTrained  # noqa: F401
 from src.backbone.dit_legacy import DITLegacy
 from src.noise_schedule.noise_schedules import (  # noqa: F401
-    EsoLogLinearNoise,
     LinearNoise,
     StaggeredNoise,
 )
@@ -274,7 +273,7 @@ class Denoiser(ABC, PreTrainedModel):
         Returns:
             Backbone output (ModelOutput instance).
         """
-        # HACK FOR LEGACY MODELS
+        # Legacy DIT checkpoints expose a timesteps argument.
         compiled_backbone = hasattr(self.backbone, "_orig_mod")
         if (
             "timesteps" in inspect.signature(self.backbone.forward).parameters
@@ -300,7 +299,7 @@ class Denoiser(ABC, PreTrainedModel):
                         logits=backbone_output[0],
                         past_key_values=None,
                     )
-        # HACK FOR LEGACY MDLM HF MODEL
+        # Older HF-wrapped MDLM checkpoints omit attention_mask.
         if (
             "attention_mask" not in inspect.signature(self.backbone.forward).parameters
             and not compiled_backbone
@@ -360,7 +359,7 @@ class Denoiser(ABC, PreTrainedModel):
         backbone_output = self._backbone_forward(denoiser_inputs, **kwargs)
         new_past_key_values = getattr(backbone_output, "past_key_values", None)
         backbone_output = getattr(backbone_output, "logits", backbone_output[0])
-        # from legacy codebase
+        # Compatibility path for legacy DIT checkpoints.
         if "timesteps" in inspect.signature(
             self.backbone.forward
         ).parameters or isinstance(self.backbone, DITLegacy):

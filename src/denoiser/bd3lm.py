@@ -34,6 +34,8 @@ class BD3LMConfig(MDLMConfig):
         self,
         block_size: Optional[int] = None,
         eval_block_size: Optional[int] = None,
+        setdlm_eos_last_in_target_order: bool = False,
+        setdlm_fht_cache_order: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -41,6 +43,10 @@ class BD3LMConfig(MDLMConfig):
         self.eval_block_size = (
             eval_block_size if eval_block_size is not None else block_size
         )
+        self.setdlm_eos_last_in_target_order = bool(
+            setdlm_eos_last_in_target_order
+        )
+        self.setdlm_fht_cache_order = bool(setdlm_fht_cache_order)
 
 
 class BD3LM(MDLM):
@@ -173,7 +179,7 @@ class BD3LM(MDLM):
                 self.mask_token_id,
                 xt,
             )
-            if self.config.keep_clean_bos:
+            if getattr(self.config, "keep_clean_bos", False):
                 xt[..., 0] = input_ids[..., 0]
         if pad_length > 0:
             xt = xt[:, :-pad_length]

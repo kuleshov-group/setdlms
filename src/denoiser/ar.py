@@ -1,5 +1,5 @@
 import copy
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 from transformers import (
@@ -9,6 +9,10 @@ from transformers import (
     StoppingCriteriaList,
 )
 from transformers.cache_utils import Cache, DynamicCache
+from transformers.generation import (
+    ExponentialDecayLengthPenalty,
+    MinNewTokensLengthLogitsProcessor,
+)
 from transformers.generation.utils import GenerateOutput
 
 from src.denoiser.base import Denoiser, DenoiserConfig, DenoiserInput, LossAndNllOutput
@@ -137,16 +141,22 @@ class AR(Denoiser):
         return LossAndNllOutput(loss=token_nll, nlls=nlls)  # type: ignore
 
     def _nucleus_sample(self, p_x0: torch.FloatTensor, p: float):
-        if p == 1.0:
+        if p >= 1.0:
             return p_x0
         sorted_probs, sorted_indices = p_x0.sort(dim=-1, descending=True)
         cum_probs = sorted_probs.cumsum(dim=-1)
-        nucleus_mask = cum_probs <= p
-        nucleus_mask[..., 0] = 1
-        sorted_probs = sorted_probs * nucleus_mask
-        p_x0.scatter_(-1, sorted_indices, sorted_probs * nucleus_mask)
-        p_x0 /= p_x0.sum(-1, keepdim=True)
-        return p_x0
+
+        # Match the diffusion samplers: remove tokens after the first token that
+        # pushes cumulative mass over p, while keeping that crossing token.
+        nucleus_mask = cum_probs >= p
+        nucleus_mask[..., 1:] = nucleus_mask[..., :-1].clone()
+        nucleus_mask[..., 0] = False
+
+        sorted_probs = sorted_probs.masked_fill(nucleus_mask, 0.0)
+        filtered = torch.zeros_like(p_x0)
+        filtered.scatter_(-1, sorted_indices, sorted_probs)
+        filtered /= filtered.sum(-1, keepdim=True)
+        return filtered
 
     def _generate_unconditional(
         self,
@@ -154,20 +164,50 @@ class AR(Denoiser):
         x: torch.LongTensor,
         log_x_theta: torch.FloatTensor,
         logits_processor: Optional[LogitsProcessorList] = None,
-    ) -> torch.LongTensor:
+        processor_input_ids: Optional[torch.LongTensor] = None,
+        length_penalty_input_ids: Optional[torch.LongTensor] = None,
+    ) -> Tuple[torch.LongTensor, torch.FloatTensor]:
         if logits_processor is not None and len(logits_processor) > 0:
-            log_x_theta = logits_processor(input_ids=x, scores=log_x_theta)
+            processor_input_ids = (
+                x if processor_input_ids is None else processor_input_ids
+            )
+            length_penalty_input_ids = (
+                processor_input_ids
+                if length_penalty_input_ids is None
+                else length_penalty_input_ids
+            )
+            for lp in logits_processor:
+                if isinstance(lp, MinNewTokensLengthLogitsProcessor):
+                    eos_token_id = getattr(lp, "eos_token_id", None)
+                    if isinstance(eos_token_id, torch.Tensor):
+                        lp.eos_token_id = eos_token_id.to(
+                            device=log_x_theta.device
+                        )
+                lp_input_ids = (
+                    length_penalty_input_ids
+                    if isinstance(
+                        lp,
+                        (
+                            ExponentialDecayLengthPenalty,
+                            MinNewTokensLengthLogitsProcessor,
+                        ),
+                    )
+                    else processor_input_ids
+                )
+                log_x_theta = lp(input_ids=lp_input_ids, scores=log_x_theta)
             log_x_theta = log_x_theta.log_softmax(dim=-1)
         else:
             log_x_theta = self._forward(log_x_theta, denoiser_inputs=None)
+        probs = log_x_theta.exp()
         if getattr(generation_config, "nucleus_p", 1.0) < 1.0:
-            log_x_theta = self._nucleus_sample(
-                log_x_theta.exp(), p=getattr(generation_config, "nucleus_p", 1.0)
-            ).log()
+            probs = self._nucleus_sample(
+                probs, p=getattr(generation_config, "nucleus_p", 1.0)
+            )
         y = self._sample_categorical(
-            log_x_theta.exp(), do_sample=getattr(generation_config, "do_sample", False)
+            probs, do_sample=getattr(generation_config, "do_sample", False)
         )
-        return y
+        confidence = probs.gather(-1, y[..., None]).squeeze(dim=-1)
+        return y, confidence
 
     def _crop_kv_cache_left(self, past_key_values: Any, drop: int) -> Any:
         """
@@ -211,11 +251,28 @@ class AR(Denoiser):
     ) -> Union[GenerateOutput, torch.LongTensor]:
         assert tokenizer is not None, "Tokenizer is required"
         if hasattr(self.backbone, "model") and hasattr(self.backbone.model, "generate"):
+            generation_logits_processor = logits_processor
+            if logits_processor is not None and inputs is not None:
+                generation_logits_processor = copy.deepcopy(logits_processor)
+                for lp in generation_logits_processor:
+                    if isinstance(lp, ExponentialDecayLengthPenalty):
+                        # Hydra constructs this processor with input_ids_seq_length=0.
+                        # HF generate passes the full prompt as input_ids, so offset the
+                        # start index to make regulation_start count generated tokens.
+                        lp.regulation_start += inputs.shape[-1]
+                    elif isinstance(lp, MinNewTokensLengthLogitsProcessor):
+                        # Hydra constructs this with prompt_length_to_skip=0. HF
+                        # generate passes prompt+generated tokens, so offset the
+                        # prompt skip to make min_new_tokens count target tokens.
+                        lp.prompt_length_to_skip += inputs.shape[-1]
+                        eos_token_id = getattr(lp, "eos_token_id", None)
+                        if isinstance(eos_token_id, torch.Tensor):
+                            lp.eos_token_id = eos_token_id.to(device=inputs.device)
             outputs = self.backbone.model.generate(
                 inputs=inputs,
                 attention_mask=torch.ones_like(inputs),
                 generation_config=generation_config,
-                logits_processor=logits_processor,
+                logits_processor=generation_logits_processor,
                 stopping_criteria=stopping_criteria,
                 max_length=max_length,
                 max_new_tokens=max_new_tokens,
@@ -253,6 +310,14 @@ class AR(Denoiser):
                 ),
                 dim=-1,
             )
+        accumulated_confidence = torch.full(
+            x.shape,
+            float("nan"),
+            dtype=torch.float32,
+            device=device,
+        )
+        accumulated_confidence[x != tokenizer.mask_token_id] = 1.0
+        if input_len != 0:
             # cache
             cache_inputs = self._prepare_inputs_inference(
                 inputs,
@@ -270,8 +335,17 @@ class AR(Denoiser):
             else:
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
-            x[:, input_len] = self._generate_unconditional(
-                generation_config, x, logits[:, -1], logits_processor
+            next_token, token_confidence = self._generate_unconditional(
+                generation_config,
+                x,
+                logits[:, -1],
+                logits_processor,
+                processor_input_ids=x[:, :input_len],
+                length_penalty_input_ids=x[:, input_len:input_len],
+            )
+            x[:, input_len] = next_token
+            accumulated_confidence[:, input_len] = token_confidence.to(
+                accumulated_confidence
             )
             cache["past_key_values"] = backbone_output["past_key_values"]
 
@@ -293,13 +367,23 @@ class AR(Denoiser):
                 logits = backbone_output["logits"]
             logits[:, :, tokenizer.mask_token_id] = -torch.inf
             cache["past_key_values"] = backbone_output["past_key_values"]
-            x[:, i + 1] = self._generate_unconditional(
-                generation_config, x, logits[:, -1], logits_processor
+            next_token, token_confidence = self._generate_unconditional(
+                generation_config,
+                x,
+                logits[:, -1],
+                logits_processor,
+                processor_input_ids=x[:, : i + 1],
+                length_penalty_input_ids=x[:, input_len : i + 1],
+            )
+            x[:, i + 1] = next_token
+            accumulated_confidence[:, i + 1] = token_confidence.to(
+                accumulated_confidence
             )
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
                     input_ids=x[:, : i + 2],
                     scores=None,
+                    token_confidence=accumulated_confidence[:, : i + 2],
                 )
                 if torch.any(is_done):
                     x = x[:, : i + 2]

@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# Setup environment
-cd ../ || exit  # Go to the root directory of the repo
-source setup_env.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+cd "${REPO_ROOT}" || exit
+source "${REPO_ROOT}/setup_env.sh"
 
 # Model arch
 LENGTH=128

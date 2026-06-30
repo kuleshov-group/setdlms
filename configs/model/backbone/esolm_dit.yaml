@@ -1,7 +1,0 @@
-defaults:
-  - dit@_here_
-  - _self_
-
-# EsoLM-specific DiT preset mirroring the upstream sigma-conditioned path.
-adaln: true
-is_esolm_backbone: true

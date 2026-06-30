@@ -118,7 +118,9 @@ class WrapperParityTests(unittest.TestCase):
             source="pretrained",
         )
         log_probs = model.forward(
-            input_ids=torch.tensor([[7, self.tokenizer.mask_token_id]], dtype=torch.long),
+            input_ids=torch.tensor(
+                [[7, self.tokenizer.mask_token_id]], dtype=torch.long
+            ),
             attention_mask=torch.ones(1, 2, dtype=torch.long),
         )
         self.assertEqual(int(log_probs[0, 0].argmax().item()), 7)
@@ -170,7 +172,10 @@ class WrapperParityTests(unittest.TestCase):
             use_cache=True,
         )
         self.assertEqual(result.generation_order, [])
-        self.assertEqual(result.metadata["generation_order_source"], "unavailable_from_original_generate")
+        self.assertEqual(
+            result.metadata["generation_order_source"],
+            "unavailable_from_original_generate",
+        )
         call = denoiser.generate_calls[0]
         self.assertTrue(torch.equal(call["inputs"], torch.tensor([[21, 22]])))
         self.assertEqual(call["max_new_tokens"], 2)
