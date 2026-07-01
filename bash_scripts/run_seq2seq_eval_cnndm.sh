@@ -38,6 +38,10 @@ CNNDM_DISABLE_STOP_TOKEN_POSTPROCESS="${CNNDM_DISABLE_STOP_TOKEN_POSTPROCESS:-fa
 CNNDM_MIN_NEW_TOKENS="${CNNDM_MIN_NEW_TOKENS:-null}"
 CNNDM_MIN_NEW_TOKENS_SOURCE="${CNNDM_MIN_NEW_TOKENS_SOURCE:-}"
 CNNDM_EOS_TOKEN_ID="${CNNDM_EOS_TOKEN_ID:-151643}"
+CNNDM_MDLM_LEGACY_MIN_NEW_FIXED40="${CNNDM_MDLM_LEGACY_MIN_NEW_FIXED40:-false}"
+CNNDM_LEGACY_MIN_NEW_TOKENS="${CNNDM_LEGACY_MIN_NEW_TOKENS:-40}"
+CNNDM_LEGACY_PROMPT_LENGTH_TO_SKIP="${CNNDM_LEGACY_PROMPT_LENGTH_TO_SKIP:-40}"
+CNNDM_LEGACY_EOS_TOKEN_ID="${CNNDM_LEGACY_EOS_TOKEN_ID:-151643}"
 
 OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail_t1"
 REVISION=null
@@ -84,6 +88,10 @@ echo "CNNDM_DISABLE_STOP_TOKEN_POSTPROCESS: ${CNNDM_DISABLE_STOP_TOKEN_POSTPROCE
 echo "CNNDM_MIN_NEW_TOKENS: ${CNNDM_MIN_NEW_TOKENS}"
 echo "CNNDM_MIN_NEW_TOKENS_SOURCE: ${CNNDM_MIN_NEW_TOKENS_SOURCE}"
 echo "CNNDM_EOS_TOKEN_ID: ${CNNDM_EOS_TOKEN_ID}"
+echo "CNNDM_MDLM_LEGACY_MIN_NEW_FIXED40: ${CNNDM_MDLM_LEGACY_MIN_NEW_FIXED40}"
+echo "CNNDM_LEGACY_MIN_NEW_TOKENS: ${CNNDM_LEGACY_MIN_NEW_TOKENS}"
+echo "CNNDM_LEGACY_PROMPT_LENGTH_TO_SKIP: ${CNNDM_LEGACY_PROMPT_LENGTH_TO_SKIP}"
+echo "CNNDM_LEGACY_EOS_TOKEN_ID: ${CNNDM_LEGACY_EOS_TOKEN_ID}"
 echo "REGULATION_START: ${REGULATION_START}"
 echo "REPETITION_PENALTY: ${REPETITION_PENALTY}"
 echo "CONF_THRESHOLD: ${CONF_THRESHOLD}"
@@ -122,13 +130,17 @@ if [[ "${CNNDM_DISABLE_STOPPING_CRITERIA}" == "true" ]]; then
   NO_STOP_SUFFIX="_no-stoptrue"
 fi
 MIN_NEW_SUFFIX=""
-if [[ "${CNNDM_MIN_NEW_TOKENS}" != "null" && -n "${CNNDM_MIN_NEW_TOKENS}" ]]; then
+if [[ "${CNNDM_MDLM_LEGACY_MIN_NEW_FIXED40}" != "true" && "${CNNDM_MIN_NEW_TOKENS}" != "null" && -n "${CNNDM_MIN_NEW_TOKENS}" ]]; then
   MIN_NEW_SUFFIX="_min-new-${CNNDM_MIN_NEW_TOKENS}"
   if [[ -n "${CNNDM_MIN_NEW_TOKENS_SOURCE}" ]]; then
     MIN_NEW_SUFFIX="${MIN_NEW_SUFFIX}-${CNNDM_MIN_NEW_TOKENS_SOURCE}"
   fi
 fi
-DEFAULT_OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}${DECODE_ORDER_SUFFIX}${EOS_FRONTIER_SUFFIX}${TARGET_PROMPT_SUFFIX}${SNAPSHOT_SUFFIX}${NO_STOP_SUFFIX}${MIN_NEW_SUFFIX}"
+LEGACY_MIN_NEW_SUFFIX=""
+if [[ "${CNNDM_MDLM_LEGACY_MIN_NEW_FIXED40}" == "true" ]]; then
+  LEGACY_MIN_NEW_SUFFIX="_min-new-${CNNDM_LEGACY_MIN_NEW_TOKENS}-fixed${CNNDM_LEGACY_PROMPT_LENGTH_TO_SKIP}"
+fi
+DEFAULT_OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}${DECODE_ORDER_SUFFIX}${EOS_FRONTIER_SUFFIX}${TARGET_PROMPT_SUFFIX}${SNAPSHOT_SUFFIX}${NO_STOP_SUFFIX}${MIN_NEW_SUFFIX}${LEGACY_MIN_NEW_SUFFIX}"
 OUTPUT_PATH="${OUTPUT_PATH:-${DEFAULT_OUTPUT_PATH}}"
 if [[ -n "${OUTPUT_PATH_OVERRIDE}" ]]; then
   OUTPUT_PATH="${OUTPUT_PATH_OVERRIDE}"
@@ -148,12 +160,20 @@ LOGITS_PROCESSOR_ARGS=(
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY}
   logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]"
 )
-if [[ "${CNNDM_MIN_NEW_TOKENS}" != "null" && -n "${CNNDM_MIN_NEW_TOKENS}" ]]; then
+if [[ "${CNNDM_MDLM_LEGACY_MIN_NEW_FIXED40}" != "true" && "${CNNDM_MIN_NEW_TOKENS}" != "null" && -n "${CNNDM_MIN_NEW_TOKENS}" ]]; then
   LOGITS_PROCESSOR_ARGS+=(
     +logits_processor_list.min_new_tokens_length_logits_processor._target_=transformers.generation.MinNewTokensLengthLogitsProcessor
     +logits_processor_list.min_new_tokens_length_logits_processor.prompt_length_to_skip=0
     +logits_processor_list.min_new_tokens_length_logits_processor.min_new_tokens=${CNNDM_MIN_NEW_TOKENS}
     +logits_processor_list.min_new_tokens_length_logits_processor.eos_token_id=${CNNDM_EOS_TOKEN_ID}
+  )
+fi
+if [[ "${CNNDM_MDLM_LEGACY_MIN_NEW_FIXED40}" == "true" ]]; then
+  LOGITS_PROCESSOR_ARGS+=(
+    +logits_processor_list.min_new_tokens_length_logits_processor._target_=transformers.generation.MinNewTokensLengthLogitsProcessor
+    +logits_processor_list.min_new_tokens_length_logits_processor.prompt_length_to_skip=${CNNDM_LEGACY_PROMPT_LENGTH_TO_SKIP}
+    +logits_processor_list.min_new_tokens_length_logits_processor.min_new_tokens=${CNNDM_LEGACY_MIN_NEW_TOKENS}
+    +logits_processor_list.min_new_tokens_length_logits_processor.eos_token_id=${CNNDM_LEGACY_EOS_TOKEN_ID}
   )
 fi
 EXTRA_ARGS=(
