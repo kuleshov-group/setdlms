@@ -34,6 +34,7 @@ class DiffusionGenerationConfig(GenerationConfig):
         align_inputs_to_blocks: bool = True,
         compute_inf_budget: bool = False,
         nucleus_p: float = 1.0,
+        fused_block_cache: Optional[bool] = None,
         **kwargs,
     ):
         """Generation config with additional parameters relevant for diffusion model
@@ -96,6 +97,10 @@ class DiffusionGenerationConfig(GenerationConfig):
                 Defaults to False.
             nucleus_p (float): Nucleus sampling probability.
                 Defaults to 1.0.
+            fused_block_cache (bool): Whether cached blockwise generation should
+                fuse the previous-block cache update into the first denoising step
+                for the next block. Defaults to None, which enables the fused path
+                for exact BD3LM models and leaves other model families unchanged.
             kwargs: Keyword arguments passed to `GenerationConfig`.
         """
         super().__init__(**kwargs)
@@ -117,6 +122,7 @@ class DiffusionGenerationConfig(GenerationConfig):
         self.align_inputs_to_blocks = align_inputs_to_blocks
         self.compute_inf_budget = compute_inf_budget
         self.nucleus_p = nucleus_p
+        self.fused_block_cache = fused_block_cache
 
 
 class SetDiffusionGenerationConfig(DiffusionGenerationConfig):

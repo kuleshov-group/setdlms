@@ -852,6 +852,156 @@ class MDLM(Denoiser):
             )
         return rel
 
+    def _can_use_fused_block_cache(
+        self,
+        generation_config: DiffusionGenerationConfig,
+        is_infill_task: bool,
+        mdlm_inference: bool,
+        block_size: int,
+    ) -> bool:
+        fused_block_cache = getattr(generation_config, "fused_block_cache", None)
+        if isinstance(fused_block_cache, str):
+            normalized = fused_block_cache.strip().lower()
+            if normalized in {"auto", "none", "null"}:
+                fused_block_cache = None
+            elif normalized in {"1", "true", "yes", "on"}:
+                fused_block_cache = True
+            elif normalized in {"0", "false", "no", "off"}:
+                fused_block_cache = False
+        if fused_block_cache is None:
+            fused_block_cache = getattr(self.config, "model_type", None) == "bd3lm"
+        if not fused_block_cache:
+            return False
+        if not getattr(generation_config, "use_cache", False):
+            return False
+        if is_infill_task or mdlm_inference:
+            return False
+        if getattr(self.config, "block_size", self.config.length) >= self.config.length:
+            return False
+        if block_size <= 0 or 2 * block_size > self.config.length:
+            return False
+        return isinstance(getattr(self, "static_attention_mask", None), torch.Tensor)
+
+    def _build_fused_block_cache_attention_mask(
+        self,
+        batch_size: int,
+        cache_len: int,
+        prefix_len: int,
+        decode_len: int,
+        device: torch.device,
+    ) -> torch.FloatTensor:
+        full_len = cache_len + prefix_len + decode_len
+        local_len = prefix_len + decode_len
+        static_attention_mask = self.static_attention_mask
+        if static_attention_mask.device != device:
+            static_attention_mask = static_attention_mask.to(device)
+        if (
+            static_attention_mask.shape[-2] < full_len
+            or static_attention_mask.shape[-1] < full_len
+        ):
+            raise ValueError(
+                "static attention mask is too short for fused block cache: "
+                f"mask_shape={tuple(static_attention_mask.shape)}, full_len={full_len}"
+            )
+        attention_mask = torch.zeros(
+            (batch_size, 1, local_len, full_len),
+            dtype=torch.bool,
+            device=device,
+        )
+        if prefix_len > 0:
+            attention_mask[:, :, :prefix_len, : cache_len + prefix_len] = (
+                static_attention_mask[
+                    None,
+                    None,
+                    cache_len : cache_len + prefix_len,
+                    : cache_len + prefix_len,
+                ]
+            )
+        if decode_len > 0:
+            attention_mask[:, :, prefix_len:, :full_len] = static_attention_mask[
+                None,
+                None,
+                cache_len + prefix_len : full_len,
+                :full_len,
+            ]
+        return self._preprocess_attention_mask(attention_mask, dtype=torch.float)
+
+    @staticmethod
+    def _crop_past_key_values_left(past_key_values: Any, drop: int) -> Any:
+        if drop <= 0 or past_key_values is None:
+            return past_key_values
+        if not (
+            hasattr(past_key_values, "key_cache")
+            and hasattr(past_key_values, "value_cache")
+        ):
+            raise TypeError("DynamicCache-like structure not found")
+        key_cache = getattr(past_key_values, "key_cache")
+        value_cache = getattr(past_key_values, "value_cache")
+        for i in range(len(past_key_values)):
+            k = key_cache[i]
+            v = value_cache[i]
+            if k is not None:
+                key_cache[i] = k[..., drop:, :]
+            if v is not None:
+                value_cache[i] = v[..., drop:, :]
+        return past_key_values
+
+    @staticmethod
+    def _crop_cache_to_length(
+        cache: Optional[Dict[str, Any]],
+        keep_len: int,
+    ) -> Optional[Dict[str, Any]]:
+        if cache is None or "past_key_values" not in cache:
+            return cache
+        past_key_values = cache.get("past_key_values")
+        if past_key_values is None:
+            return cache
+        if hasattr(past_key_values, "crop"):
+            past_key_values.crop(keep_len)
+            return cache
+        if not (
+            hasattr(past_key_values, "key_cache")
+            and hasattr(past_key_values, "value_cache")
+        ):
+            raise TypeError("DynamicCache-like structure not found")
+        key_cache = getattr(past_key_values, "key_cache")
+        value_cache = getattr(past_key_values, "value_cache")
+        for i in range(len(past_key_values)):
+            k = key_cache[i]
+            v = value_cache[i]
+            if k is not None:
+                key_cache[i] = k[..., :keep_len, :]
+            if v is not None:
+                value_cache[i] = v[..., :keep_len, :]
+        return cache
+
+    def _trim_cache_for_fused_block(
+        self,
+        cache: Optional[Dict[str, Any]],
+        fused_input_len: int,
+    ) -> tuple[Dict[str, Any], int]:
+        cache = cache if cache is not None else {}
+        past_key_values = cache.get("past_key_values", DynamicCache())
+        cache_len = self._get_past_key_values_seq_length(past_key_values)
+        max_cache_len = self.config.length - fused_input_len
+        if max_cache_len < 0:
+            raise ValueError(
+                "fused block cache input exceeds model context: "
+                f"fused_input_len={fused_input_len}, length={self.config.length}"
+            )
+        overflow = max(cache_len - max_cache_len, 0)
+        if overflow > 0:
+            crop_left = getattr(self, "_crop_kv_cache_left", None)
+            if crop_left is not None:
+                past_key_values = crop_left(past_key_values, overflow)
+            else:
+                past_key_values = self._crop_past_key_values_left(
+                    past_key_values, overflow
+                )
+            cache["past_key_values"] = past_key_values
+            cache_len -= overflow
+        return cache, cache_len
+
     def _generate_unconditional(
         self,
         generation_config: DiffusionGenerationConfig,
@@ -1314,6 +1464,14 @@ class MDLM(Denoiser):
                 ),
                 cache={},
             )
+        fused_block_cache = self._can_use_fused_block_cache(
+            generation_config=generation_config,
+            is_infill_task=is_infill_task,
+            mdlm_inference=mdlm_inference,
+            block_size=block_size,
+        )
+        pending_cache_inputs = None
+
         if is_infill_task:
             inputs_offset = (
                 (accumulated_samples == self.mask_token_id)[0].nonzero().min()
@@ -1422,6 +1580,12 @@ class MDLM(Denoiser):
                 input_indices = (0, inputs_offset + ((block_id + 1) * block_size))
 
             if self.mask_token_id not in xt:
+                if fused_block_cache and pending_cache_inputs is not None:
+                    cache = self.update_cache(
+                        inputs=pending_cache_inputs,
+                        cache=cache,
+                    )
+                    pending_cache_inputs = None
                 continue
             if sample_indices.shape[-1] == 0:
                 break
@@ -1443,11 +1607,39 @@ class MDLM(Denoiser):
                 block_NFEs += 1
                 total_NFEs += 1
                 return_updated_cache = False
-                denoiser_inputs, cache = self._prepare_inputs_inference(
-                    input_ids=xt,
-                    context=context,
-                    cache=cache if generation_config.use_cache else None,
-                )
+                fused_prefix_len = None
+                fused_active_decode_len = None
+                fused_cache_keep_len = None
+                if fused_block_cache and pending_cache_inputs is not None and i == 0:
+                    fused_xt = torch.cat([pending_cache_inputs, xt], dim=-1)
+                    cache, fused_cache_len = self._trim_cache_for_fused_block(
+                        cache=cache,
+                        fused_input_len=fused_xt.shape[-1],
+                    )
+                    fused_prefix_len = pending_cache_inputs.shape[-1]
+                    fused_active_decode_len = xt.shape[-1]
+                    fused_cache_keep_len = fused_cache_len + fused_prefix_len
+                    fused_attention_mask = self._build_fused_block_cache_attention_mask(
+                        batch_size=fused_xt.shape[0],
+                        cache_len=fused_cache_len,
+                        prefix_len=fused_prefix_len,
+                        decode_len=fused_active_decode_len,
+                        device=fused_xt.device,
+                    )
+                    denoiser_inputs, cache = self._prepare_inputs_inference(
+                        input_ids=fused_xt,
+                        attention_mask=fused_attention_mask,
+                        context=context,
+                        cache=cache if generation_config.use_cache else None,
+                        return_updated_cache=True,
+                    )
+                    return_updated_cache = True
+                else:
+                    denoiser_inputs, cache = self._prepare_inputs_inference(
+                        input_ids=xt,
+                        context=context,
+                        cache=cache if generation_config.use_cache else None,
+                    )
                 next_t = (
                     timesteps[i + 1]
                     if i < timesteps.shape[-1] - 1
@@ -1519,11 +1711,16 @@ class MDLM(Denoiser):
                     sample_indices=sample_indices,
                     input_indices=input_indices,
                     return_updated_cache=return_updated_cache,
+                    cache_len=fused_prefix_len,
+                    active_decode_len=fused_active_decode_len,
                     confidence_state=confidence_state,
                     **kwargs,
                 )
 
                 xs, cache = generation_output
+                if fused_cache_keep_len is not None:
+                    cache = self._crop_cache_to_length(cache, fused_cache_keep_len)
+                    pending_cache_inputs = None
                 sample_confidence = confidence_state.get("sample_confidence")
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
@@ -1619,10 +1816,15 @@ class MDLM(Denoiser):
                 and getattr(self.config, "block_size", self.config.length)
                 < self.config.length
             ):
-                cache = self.update_cache(
-                    inputs=xt,
-                    cache=cache,
-                )
+                if fused_block_cache:
+                    pending_cache_inputs = (
+                        xt.detach().clone() if block_id < max_blocks - 1 else None
+                    )
+                else:
+                    cache = self.update_cache(
+                        inputs=xt,
+                        cache=cache,
+                    )
         parallelism_factor = (
             sum(num_tokens_generated_per_step) / len(num_tokens_generated_per_step)
             if len(num_tokens_generated_per_step) > 0

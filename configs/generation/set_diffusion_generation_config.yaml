@@ -10,3 +10,4 @@ infill_repetition_penalty_include_right_context: false
 infill_context_no_repeat_ngram_size: 0
 setdlm_l2r_eos_frontier_constraint: false
 setdlm_infill_cache_promotion_order: legacy
+fused_block_cache: null
