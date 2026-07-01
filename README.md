@@ -23,9 +23,9 @@ conda env create -f requirements.yaml
 conda activate dllm-dev
 ```
 
-The conda file installs Python, pip, the CUDA compiler used for local extension builds,
-the exact pip lock in [`requirements-lock.txt`](requirements-lock.txt), and this package
-in editable mode. To validate a fresh environment, run:
+The conda file installs Python, pip, the pinned dependencies in
+[`requirements-lock.txt`](requirements-lock.txt), and this package in editable mode.
+To validate a fresh environment, run:
 
 ```bash
 python -m pip check
@@ -117,9 +117,8 @@ For example, to train SetDLM on the GSM8K dataset, use
 [`run_train_setdlm_gsm8k.sh`](bash_scripts/run_train_setdlm_gsm8k.sh).
 - Once models have been trained or downloaded, the provided evaluation scripts can be used
 to reproduce tables and figures from our work. For example, to evaluate GSM8K models,
-use [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh) (or the `*_tput`
-variants). We also provide scripts that produce the generation throughput numbers we
-report; these files contain `_tput` in the script name.
+use [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh). The task-specific
+wrappers below document the supported evaluation entry points.
 
 Evaluation scripts resolve checkpoints through [`bash_scripts/eval_model_paths.sh`](bash_scripts/eval_model_paths.sh).
 For known paper checkpoints, the resolver prefers the Hugging Face model id, falls back
@@ -146,8 +145,8 @@ write outputs under `outputs/` by default and accept checkpoint-related override
 and `LM1B_MODEL_PATH` are accepted by the LM1B likelihood wrapper.
 
 Evaluation scripts are provided for the following tasks:
-- Text summarization: [`run_seq2seq_eval_cnndm.sh`](bash_scripts/run_seq2seq_eval_cnndm.sh), [`run_seq2seq_eval_cnndm_tput.sh`](bash_scripts/run_seq2seq_eval_cnndm_tput.sh)
-- Mathematical reasoning: [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh), [`run_lm_eval_harness_tput.sh`](bash_scripts/run_lm_eval_harness_tput.sh), [`run_likelihood_eval_gsm8k.sh`](bash_scripts/run_likelihood_eval_gsm8k.sh)
+- Text summarization: [`run_seq2seq_eval_cnndm.sh`](bash_scripts/run_seq2seq_eval_cnndm.sh)
+- Mathematical reasoning: [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh), [`run_likelihood_eval_gsm8k.sh`](bash_scripts/run_likelihood_eval_gsm8k.sh)
 - Likelihood estimation: [`run_likelihood_eval_owt.sh`](bash_scripts/run_likelihood_eval_owt.sh), [`run_likelihood_eval_lm1b.sh`](bash_scripts/run_likelihood_eval_lm1b.sh)
 - Multiple-choice commonsense benchmarks (trained on OpenWebText): [`run_mcqa_eval_owt.sh`](bash_scripts/run_mcqa_eval_owt.sh)
 - Infilling (trained on OpenWebText): [`run_seq2seq_eval_infill_nlp.sh`](bash_scripts/run_seq2seq_eval_infill_nlp.sh)
