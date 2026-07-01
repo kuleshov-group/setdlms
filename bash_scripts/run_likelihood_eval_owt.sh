@@ -8,14 +8,43 @@ source setup_env.sh
 source "${REPO_ROOT}/bash_scripts/eval_model_paths.sh"
 set -u
 
-MODEL_NAME="${MODEL_NAME:-SetDLM}"
-resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-}}"
+REQUESTED_MODEL="${MODEL_PATH:-${EVAL_MODEL_KEY:-}}"
+resolve_eval_model_path "${REQUESTED_MODEL}"
+MODEL_NAME="${MODEL_NAME:-${RESOLVED_MODEL_LABEL:-SetDLM}}"
 CKPT_FILE="${CKPT_FILE:-best-rank0.pt}"
 REVISION=null
 TOKENIZER_PATH="gpt2"
 
+is_setdlm_model() {
+  case "${MODEL_NAME:-} ${MODEL_PATH:-} ${EVAL_MODEL_KEY:-} ${LM1B_MODEL_KEY:-} ${LM1B_MODEL_PATH:-}" in
+    *SetDLM*|*setdlm*|*aoarm*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+infer_setdlm_desired_block_size() {
+  case "${MODEL_NAME:-} ${MODEL_PATH:-} ${EVAL_MODEL_KEY:-} ${LM1B_MODEL_KEY:-} ${LM1B_MODEL_PATH:-}" in
+    *d4*|*tgt4*|*smax8*) echo 4 ;;
+    *d8*|*tgt8*|*smax16*) echo 8 ;;
+    *d16*|*tgt16*|*smax32*) echo 16 ;;
+    *) echo "" ;;
+  esac
+}
+
+set_setdlm_ppl_noise_max_block_size() {
+  if is_setdlm_model; then
+    local desired_block_size="${SETDLM_DESIRED_BLOCK_SIZE:-$(infer_setdlm_desired_block_size)}"
+    if [ -z "${desired_block_size}" ]; then
+      echo "ERROR: Could not infer SetDLM desired block size for MODEL_NAME=${MODEL_NAME:-}, MODEL_PATH=${MODEL_PATH:-}." >&2
+      exit 1
+    fi
+    MAX_BLOCK_SIZE="${MAX_BLOCK_SIZE:-$((2 * desired_block_size))}"
+    MODEL_CONFIG_OVERRIDE_ARGS+=(+model_config_overrides.noise_config.max_block_size="${MAX_BLOCK_SIZE}")
+  fi
+}
+
 BLOCK_SIZE="${BLOCK_SIZE:-1024}"
-MAX_BLOCK_SIZE="${MAX_BLOCK_SIZE:-8}"
+MAX_BLOCK_SIZE="${MAX_BLOCK_SIZE:-}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 USE_EMA="${USE_EMA:-false}"
 COMPILE_BACKBONE="${COMPILE_BACKBONE:-true}"
@@ -28,8 +57,10 @@ echo "  use_ema: ${USE_EMA}"
 echo "  eval_dataset: owt_eval_gpt2"
 
 MODEL_CONFIG_OVERRIDE_ARGS=()
-if [[ "${MODEL_NAME}" == SetDLM* ]]; then
-  MODEL_CONFIG_OVERRIDE_ARGS+=(+model_config_overrides.noise_config.max_block_size="${MAX_BLOCK_SIZE}")
+set_setdlm_ppl_noise_max_block_size
+if is_setdlm_model; then
+  echo "  setdlm_desired_block_size: ${SETDLM_DESIRED_BLOCK_SIZE:-$(infer_setdlm_desired_block_size)}"
+  echo "  noise_max_block_size: ${MAX_BLOCK_SIZE}"
 fi
 
 composer -n "${EVAL_NUM_PROCESSES}" scripts/eval/likelihood_eval.py \

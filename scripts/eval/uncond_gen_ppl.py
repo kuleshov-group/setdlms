@@ -487,22 +487,41 @@ def generate_samples(
     local_measurement_target = int(getattr(cfg, "throughput_samples_per_rank", 200))
     if throughput_global_measurements and world_size > 1:
         local_measurement_target = math.ceil(throughput_num_measurements / world_size)
-    # For normal runs, shard the requested sample count across ranks.
-    # For throughput runs, warm up per rank, then gather measured examples
-    # across ranks and trim to the requested global sample count.
+    rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+    rank_invariant_generation = (
+        (not throughput_run) and _rank_invariant_generation_enabled()
+    )
+    global_sample_indices: Optional[list[int]] = None
+    # For normal MAUVE/unconditional generation, rank-invariant mode shards by
+    # global sample id and later restores global order after gathering. This
+    # keeps generated_samples.json unchanged when the GPU count changes.
+    # Throughput runs keep the historical per-rank sampling semantics.
     if throughput_run:
         num_samples = throughput_warmup + local_measurement_target
     else:
-        num_samples = cfg.num_samples
-        if dist.is_available() and dist.is_initialized():
-            new_max_samples = int(num_samples // world_size)
-            if dist.get_rank() == 0:
-                new_max_samples += int(num_samples % world_size)
-            num_samples = new_max_samples
+        requested_num_samples = int(cfg.num_samples)
+        if rank_invariant_generation:
+            global_sample_indices = list(range(rank, requested_num_samples, world_size))
+            num_samples = len(global_sample_indices)
+        else:
+            num_samples = requested_num_samples
+            if dist.is_available() and dist.is_initialized():
+                new_max_samples = int(num_samples // world_size)
+                if rank == 0:
+                    new_max_samples += int(num_samples % world_size)
+                num_samples = new_max_samples
 
     checkpoint = _load_generation_checkpoint(cfg, local_rank)
+    generated_sample_indices = []
+    diagnostic_stop_records = []
     if checkpoint is not None:
         generated_samples = list(checkpoint.get("generated_samples", []))
+        generated_sample_indices = list(
+            checkpoint.get("generated_sample_indices", [])
+        )
+        if rank_invariant_generation and not generated_sample_indices:
+            assert global_sample_indices is not None
+            generated_sample_indices = global_sample_indices[: len(generated_samples)]
         tputs = list(checkpoint.get("tputs", []))
         latencies = list(checkpoint.get("latencies", []))
         parallelism_factors = list(checkpoint.get("parallelism_factors", []))
@@ -513,6 +532,9 @@ def generate_samples(
         )
         measured_lengths = list(checkpoint.get("measured_lengths", []))
         measured_entropies = list(checkpoint.get("measured_entropies", []))
+        diagnostic_stop_records = list(
+            checkpoint.get("diagnostic_stop_records", [])
+        )
     start_index = len(generated_samples)
     if start_index > num_samples:
         raise ValueError(
@@ -532,18 +554,26 @@ def generate_samples(
     )
 
     for i in pbar:
+        global_sample_index = (
+            global_sample_indices[i]
+            if global_sample_indices is not None
+            else i
+        )
         input_ids = torch.tensor([model.tokenizer.bos_token_id])[None, :].to(
             model.device
         )
         # Generate samples
         with torch.no_grad():
+            generation_attempt = 0
             while True:
-                if _rank_invariant_generation_enabled():
+                if rank_invariant_generation:
                     example_seed = _stable_generation_seed(
                         int(os.environ.get("LM_EVAL_BASE_SEED", cfg.seed)),
-                        i,
+                        global_sample_index,
+                        generation_attempt,
                     )
                     _seed_generation_for_example(example_seed)
+                generation_attempt += 1
 
                 start_event = torch.cuda.Event(enable_timing=True)
                 end_event = torch.cuda.Event(enable_timing=True)
@@ -573,17 +603,27 @@ def generate_samples(
                 else:
                     outputs = generation_output
                     parallelism_factor = -1.0
-                length = outputs.numel() - input_ids.numel()
+                raw_length = outputs.numel() - input_ids.numel()
+                length = raw_length
+                stop_reason = None
+                truncate_idx = None
+                stopping_criterion = None
+                if gen_kwargs["stopping_criteria"] is not None:
+                    stopping_criterion = gen_kwargs["stopping_criteria"][0]
+                    stop_reason = getattr(stopping_criterion, "stop_reason", None)
+                raw_output_text = None
+                if bool(getattr(cfg, "diagnostic_stop_reasons", False)):
+                    raw_output_text = model.tokenizer.decode(outputs[0])
                 entropy = _compute_entropy(
                     outputs, model.tokenizer.mask_token_id, model.tokenizer.pad_token_id
                 )
                 if (
                     (not throughput_run)
-                    and gen_kwargs["stopping_criteria"] is not None
-                    and hasattr(gen_kwargs["stopping_criteria"][0], "truncate_idx")
-                    and gen_kwargs["stopping_criteria"][0].truncate_idx is not None
+                    and stopping_criterion is not None
+                    and hasattr(stopping_criterion, "truncate_idx")
+                    and stopping_criterion.truncate_idx is not None
                 ):
-                    truncate_idx = gen_kwargs["stopping_criteria"][0].truncate_idx[0]
+                    truncate_idx = stopping_criterion.truncate_idx[0]
                     if truncate_idx is not None:
                         outputs = outputs[:, : min(truncate_idx, outputs.shape[1])]
                 if (not throughput_run) and _should_reject_generated_sample(
@@ -594,7 +634,7 @@ def generate_samples(
 
             print("final length:", outputs.shape[1])
 
-            if i % 100 == 0:
+            if global_sample_index % 100 == 0:
                 print(tokenizer.decode(outputs[0]))
 
             if i >= throughput_warmup:
@@ -608,6 +648,22 @@ def generate_samples(
             entropies.extend(entropy)
             output_text = model.tokenizer.decode(outputs[0])
             generated_samples.append(output_text)
+            generated_sample_indices.append(int(global_sample_index))
+            if bool(getattr(cfg, "diagnostic_stop_reasons", False)):
+                diagnostic_stop_records.append(
+                    {
+                        "global_sample_index": int(global_sample_index),
+                        "final_length": int(outputs.shape[1]),
+                        "raw_length": int(raw_length),
+                        "generated_tokens": int(outputs.shape[1] - input_ids.numel()),
+                        "raw_generated_tokens": int(raw_length),
+                        "raw_output_text": raw_output_text,
+                        "truncated_output_text": output_text,
+                        "stop_reason": stop_reason,
+                        "truncate_idx": int(truncate_idx) if truncate_idx is not None else None,
+                        "generation_attempt": int(generation_attempt),
+                    }
+                )
 
             if (
                 bool(getattr(cfg, "generation_checkpoint", False))
@@ -623,6 +679,7 @@ def generate_samples(
                         "rank": int(local_rank),
                         "target_num_samples": int(num_samples),
                         "generated_samples": generated_samples,
+                        "generated_sample_indices": generated_sample_indices,
                         "tputs": tputs,
                         "latencies": latencies,
                         "parallelism_factors": parallelism_factors,
@@ -631,6 +688,7 @@ def generate_samples(
                         "measured_parallelism_factors": measured_parallelism_factors,
                         "measured_lengths": measured_lengths,
                         "measured_entropies": measured_entropies,
+                        "diagnostic_stop_records": diagnostic_stop_records,
                     },
                 )
 
@@ -647,6 +705,7 @@ def generate_samples(
 
     # gather samples across devices
     generated_samples = gather_results(generated_samples, world_size)
+    generated_sample_indices = gather_results(generated_sample_indices, world_size)
     tputs = gather_results(tputs, world_size)
     latencies = gather_results(latencies, world_size)
     parallelism_factors = gather_results(parallelism_factors, world_size)
@@ -657,8 +716,37 @@ def generate_samples(
     )
     measured_lengths = gather_results(measured_lengths, world_size)
     measured_entropies = gather_results(measured_entropies, world_size)
+    diagnostic_stop_records = gather_results(diagnostic_stop_records, world_size)
     gen_metrics: Optional[dict[str, Any]] = None
     if local_rank == 0:
+        if rank_invariant_generation:
+            order = sorted(
+                range(len(generated_sample_indices)),
+                key=lambda idx: generated_sample_indices[idx],
+            )
+
+            def reorder_if_sample_aligned(values: list[Any]) -> list[Any]:
+                if len(values) != len(order):
+                    return values
+                return [values[idx] for idx in order]
+
+            generated_samples = reorder_if_sample_aligned(generated_samples)
+            generated_sample_indices = reorder_if_sample_aligned(
+                generated_sample_indices
+            )
+            tputs = reorder_if_sample_aligned(tputs)
+            latencies = reorder_if_sample_aligned(latencies)
+            parallelism_factors = reorder_if_sample_aligned(parallelism_factors)
+            lengths = reorder_if_sample_aligned(lengths)
+            entropies = reorder_if_sample_aligned(entropies)
+            measured_parallelism_factors = reorder_if_sample_aligned(
+                measured_parallelism_factors
+            )
+            measured_lengths = reorder_if_sample_aligned(measured_lengths)
+            measured_entropies = reorder_if_sample_aligned(measured_entropies)
+            diagnostic_stop_records = reorder_if_sample_aligned(
+                diagnostic_stop_records
+            )
         if throughput_run:
             tputs = tputs[:throughput_num_measurements]
             latencies = latencies[:throughput_num_measurements]
@@ -760,45 +848,16 @@ def generate_samples(
                 "confidence_threshold": float(
                     getattr(generation_config, "confidence_threshold", 1e6)
                 ),
-                "setdlm_fast_inference": bool(
-                    getattr(generation_config, "setdlm_fast_inference", False)
-                ),
-                "setdlm_dynamic_active_logits": bool(
-                    getattr(generation_config, "setdlm_dynamic_active_logits", False)
-                ),
-                "setdlm_deterministic_sampler_fastpath": bool(
-                    getattr(
-                        generation_config,
-                        "setdlm_deterministic_sampler_fastpath",
-                        False,
-                    )
-                ),
-                "setdlm_vectorized_repetition_penalty": bool(
-                    getattr(
-                        generation_config,
-                        "setdlm_vectorized_repetition_penalty",
-                        False,
-                    )
-                ),
-                "setdlm_dynamic_tensor_attention_mask": bool(
-                    getattr(
-                        generation_config,
-                        "setdlm_dynamic_tensor_attention_mask",
-                        False,
-                    )
-                ),
-                "setdlm_dynamic_full_window_fastpath": bool(
-                    getattr(
-                        generation_config,
-                        "setdlm_dynamic_full_window_fastpath",
-                        False,
-                    )
-                ),
             }
             with open(
                 f"{cfg.generated_samples_output_path}/throughput-all.json", "w"
             ) as f:
                 json.dump(throughput_summary, f, indent=2)
+        if bool(getattr(cfg, "diagnostic_stop_reasons", False)):
+            with open(
+                f"{cfg.generated_samples_output_path}/diagnostic_stop_reasons.json", "w"
+            ) as f:
+                json.dump(diagnostic_stop_records, f, indent=2)
         with open(
             f"{cfg.generated_samples_output_path}/generated_samples.json", "w"
         ) as f:
@@ -986,8 +1045,11 @@ def compute_mauve_metrics(
 @hydra.main(version_base=None, config_path="../../configs", config_name="eval_config")
 def main(cfg: DictConfig) -> None:
     local_rank = setup_ddp()
-    set_seed(cfg.seed + local_rank)
     os.environ.setdefault("LM_EVAL_BASE_SEED", str(int(cfg.seed)))
+    if _rank_invariant_generation_enabled():
+        set_seed(int(os.environ["LM_EVAL_BASE_SEED"]))
+    else:
+        set_seed(cfg.seed + local_rank)
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     if not os.path.exists(cfg.generated_samples_output_path):
         if local_rank == 0:

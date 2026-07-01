@@ -209,13 +209,6 @@ class MatrixRow:
     compile_mode: str
     compile_dynamic: str
     compile_supported: str
-    setdlm_fast_inference: str
-    setdlm_dynamic_active_logits: str
-    setdlm_deterministic_sampler_fastpath: str
-    setdlm_vectorized_repetition_penalty: str
-    setdlm_dynamic_tensor_attention_mask: str
-    setdlm_dynamic_full_window_fastpath: str
-    setdlm_full_window_fastpath_label: str
     setdlm_l2r_eos_frontier_constraint: str
     cnndm_generate_target_prompt: str
     setdlm_throughput_run_name: str
@@ -321,6 +314,16 @@ def is_confidence_threshold_run(target: Target) -> bool:
 
 
 def setdlm_throughput_env(target: Target) -> dict[str, str]:
+    if target.variant in {"MDLM", "BD3LM"}:
+        fused_cache = target.variant == "BD3LM"
+        return {
+            "FUSED_BLOCK_CACHE": "auto",
+            "SETDLM_THROUGHPUT_RUN_NAME": (
+                "bd3lm_fused_block_cache"
+                if fused_cache
+                else "mdlm_no_fused_block_cache"
+            ),
+        }
     if target.variant != "SetDLM":
         return {}
     confidence_override = os.environ.get(
@@ -340,22 +343,6 @@ def setdlm_throughput_env(target: Target) -> dict[str, str]:
         "CONFIDENCE_BASED_NOISING": "true" if confidence_run else "false",
         "CONFIDENCE_THRESHOLD": confidence_threshold,
         "CONF_THRESHOLD": confidence_threshold,
-        "SETDLM_FAST_INFERENCE": "false",
-        "SETDLM_DYNAMIC_ACTIVE_LOGITS": "true",
-        "SETDLM_DETERMINISTIC_SAMPLER_FASTPATH": (
-            "false" if confidence_run else "true"
-        ),
-        "SETDLM_VECTORIZED_REPETITION_PENALTY": "true",
-        "SETDLM_DYNAMIC_TENSOR_ATTENTION_MASK": "false",
-        "SETDLM_DYNAMIC_FULL_WINDOW_FASTPATH": "true",
-        "SETDLM_FULL_WINDOW_FASTPATH_LABEL": (
-            "requested" if confidence_run else "enabled_if_eligible"
-        ),
-        "SETDLM_THROUGHPUT_RUN_NAME": (
-            "setdlm_dynamic_all_full_window_requested"
-            if confidence_run
-            else "setdlm_dynamic_all_full_window"
-        ),
     }
 
 
@@ -1793,23 +1780,6 @@ def build_row(
         compile_mode=env.get("COMPILE_MODE", "N/A"),
         compile_dynamic=env.get("COMPILE_DYNAMIC", "N/A"),
         compile_supported=env.get("COMPILE_SUPPORTED", "N/A"),
-        setdlm_fast_inference=env.get("SETDLM_FAST_INFERENCE", "N/A"),
-        setdlm_dynamic_active_logits=env.get("SETDLM_DYNAMIC_ACTIVE_LOGITS", "N/A"),
-        setdlm_deterministic_sampler_fastpath=env.get(
-            "SETDLM_DETERMINISTIC_SAMPLER_FASTPATH", "N/A"
-        ),
-        setdlm_vectorized_repetition_penalty=env.get(
-            "SETDLM_VECTORIZED_REPETITION_PENALTY", "N/A"
-        ),
-        setdlm_dynamic_tensor_attention_mask=env.get(
-            "SETDLM_DYNAMIC_TENSOR_ATTENTION_MASK", "N/A"
-        ),
-        setdlm_dynamic_full_window_fastpath=env.get(
-            "SETDLM_DYNAMIC_FULL_WINDOW_FASTPATH", "N/A"
-        ),
-        setdlm_full_window_fastpath_label=env.get(
-            "SETDLM_FULL_WINDOW_FASTPATH_LABEL", "N/A"
-        ),
         setdlm_l2r_eos_frontier_constraint=env.get(
             "SETDLM_L2R_EOS_FRONTIER_CONSTRAINT", "N/A"
         ),
@@ -1900,13 +1870,6 @@ def print_tsv(rows: list[MatrixRow]) -> None:
         "compile_mode",
         "compile_dynamic",
         "compile_supported",
-        "setdlm_fast_inference",
-        "setdlm_dynamic_active_logits",
-        "setdlm_deterministic_sampler_fastpath",
-        "setdlm_vectorized_repetition_penalty",
-        "setdlm_dynamic_tensor_attention_mask",
-        "setdlm_dynamic_full_window_fastpath",
-        "setdlm_full_window_fastpath_label",
         "setdlm_l2r_eos_frontier_constraint",
         "cnndm_generate_target_prompt",
         "setdlm_throughput_run_name",

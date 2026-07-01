@@ -6,18 +6,8 @@ max_window_size: ${block_size}
 cache_full_infill_context: false
 use_first_hitting_order_in_decode: false
 setdlm_legacy_active_window_order: false
-setdlm_fast_inference: false
-compile_decode_bucket_sizes: [4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 128]
-setdlm_fast_cache_bucket_sizes: [16, 24, 32, 40, 48, 56, 64, 80, 96, 128, 192, 256, 512, 1024]
-setdlm_fast_active_logits: false
-setdlm_fast_logical_cache: false
-setdlm_fast_tensor_cache: false
-setdlm_dynamic_active_logits: false
-setdlm_deterministic_sampler_fastpath: false
-setdlm_vectorized_repetition_penalty: false
 infill_repetition_penalty_include_right_context: false
 infill_context_no_repeat_ngram_size: 0
 setdlm_l2r_eos_frontier_constraint: false
 setdlm_infill_cache_promotion_order: legacy
-setdlm_dynamic_tensor_attention_mask: false
-setdlm_dynamic_full_window_fastpath: false
+fused_block_cache: null

@@ -349,16 +349,19 @@ class BD3LM(MDLM):
             past_key_values = self._crop_kv_cache_left(past_key_values, overflow)
             cache_length = cache_length - overflow
             full_seq_length = cache_length + input_ids.shape[-1]
-        # subset of block-causal mask
-        decoder_attention_mask = self.static_attention_mask[
-            None,
-            None,
-            cache_length:full_seq_length,
-            :full_seq_length,
-        ]  # Make attention mask 4D
-        decoder_attention_mask = self._preprocess_attention_mask(
-            decoder_attention_mask, dtype=torch.float
-        )
+        if attention_mask is None:
+            # subset of block-causal mask
+            decoder_attention_mask = self.static_attention_mask[
+                None,
+                None,
+                cache_length:full_seq_length,
+                :full_seq_length,
+            ]  # Make attention mask 4D
+            decoder_attention_mask = self._preprocess_attention_mask(
+                decoder_attention_mask, dtype=torch.float
+            )
+        else:
+            decoder_attention_mask = attention_mask
         position_ids = torch.arange(cache_length, full_seq_length).to(device)[None, :]
         return (
             DenoiserInput(

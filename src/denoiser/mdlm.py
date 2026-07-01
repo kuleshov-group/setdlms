@@ -472,54 +472,6 @@ class MDLM(Denoiser):
         else:
             return filtered
 
-    def _project_backbone_hidden_states(
-        self,
-        hidden_states: torch.FloatTensor,
-        denoiser_inputs: DenoiserInput,
-        **kwargs: Any,
-    ) -> torch.FloatTensor:
-        backbone = getattr(self.backbone, "_orig_mod", self.backbone)
-        project_hidden_states = getattr(backbone, "project_hidden_states", None)
-        if project_hidden_states is None:
-            raise ValueError(
-                "Backbone does not support projecting cropped hidden states."
-            )
-        sigma = kwargs.get("sigma", denoiser_inputs.backbone_kwargs.get("sigma"))
-        return project_hidden_states(hidden_states, sigma=sigma)
-
-    @staticmethod
-    def _plain_repetition_penalty(logits_processor: Optional[LogitsProcessorList]):
-        if logits_processor is None or len(logits_processor) != 1:
-            return None
-        processor = logits_processor[0]
-        if processor.__class__.__name__ != "RepetitionPenaltyLogitsProcessor":
-            return None
-        penalty = getattr(processor, "penalty", None)
-        return None if penalty is None else float(penalty)
-
-    @staticmethod
-    def _apply_repetition_penalty_vectorized(
-        scores: torch.FloatTensor,
-        input_ids: torch.LongTensor,
-        penalty: float,
-    ) -> torch.FloatTensor:
-        if scores.dim() != 3:
-            raise ValueError(f"Expected scores dim 3, got {scores.dim()}.")
-        batch_size, decode_len, vocab_size = scores.shape
-        if input_ids.shape[0] != batch_size:
-            raise ValueError("input_ids batch size must match scores batch size.")
-
-        scores_2d = scores.reshape(batch_size * decode_len, vocab_size)
-        expanded_ids = (
-            input_ids[:, None, :]
-            .expand(batch_size, decode_len, input_ids.shape[-1])
-            .reshape(batch_size * decode_len, input_ids.shape[-1])
-        )
-        gathered = torch.gather(scores_2d, 1, expanded_ids)
-        penalized = torch.where(gathered < 0, gathered * penalty, gathered / penalty)
-        scores_2d = scores_2d.scatter(1, expanded_ids, penalized)
-        return scores_2d.view(batch_size, decode_len, vocab_size)
-
     @staticmethod
     def _visible_infill_context(
         accumulated_samples: torch.LongTensor,
@@ -691,21 +643,6 @@ class MDLM(Denoiser):
             "visible_ngram_count": visible_ngram_count,
             "generated_ngram_count": generated_ngram_count,
         }
-
-    @staticmethod
-    def _can_use_deterministic_predict_and_noise_fastpath(
-        generation_config: DiffusionGenerationConfig,
-    ) -> bool:
-        return (
-            bool(getattr(generation_config, "setdlm_deterministic_sampler_fastpath", False))
-            and generation_config.sampling_strategy == "predict_and_noise"
-            and not bool(getattr(generation_config, "do_sample", True))
-            and float(getattr(generation_config, "nucleus_p", 1.0)) >= 1.0
-            and not bool(getattr(generation_config, "confidence_based_noising", False))
-            and not bool(
-                getattr(generation_config, "confidence_margin_based_noising", False)
-            )
-        )
 
     @staticmethod
     def _length_penalty_prefix_lengths(
@@ -915,6 +852,156 @@ class MDLM(Denoiser):
             )
         return rel
 
+    def _can_use_fused_block_cache(
+        self,
+        generation_config: DiffusionGenerationConfig,
+        is_infill_task: bool,
+        mdlm_inference: bool,
+        block_size: int,
+    ) -> bool:
+        fused_block_cache = getattr(generation_config, "fused_block_cache", None)
+        if isinstance(fused_block_cache, str):
+            normalized = fused_block_cache.strip().lower()
+            if normalized in {"auto", "none", "null"}:
+                fused_block_cache = None
+            elif normalized in {"1", "true", "yes", "on"}:
+                fused_block_cache = True
+            elif normalized in {"0", "false", "no", "off"}:
+                fused_block_cache = False
+        if fused_block_cache is None:
+            fused_block_cache = getattr(self.config, "model_type", None) == "bd3lm"
+        if not fused_block_cache:
+            return False
+        if not getattr(generation_config, "use_cache", False):
+            return False
+        if is_infill_task or mdlm_inference:
+            return False
+        if getattr(self.config, "block_size", self.config.length) >= self.config.length:
+            return False
+        if block_size <= 0 or 2 * block_size > self.config.length:
+            return False
+        return isinstance(getattr(self, "static_attention_mask", None), torch.Tensor)
+
+    def _build_fused_block_cache_attention_mask(
+        self,
+        batch_size: int,
+        cache_len: int,
+        prefix_len: int,
+        decode_len: int,
+        device: torch.device,
+    ) -> torch.FloatTensor:
+        full_len = cache_len + prefix_len + decode_len
+        local_len = prefix_len + decode_len
+        static_attention_mask = self.static_attention_mask
+        if static_attention_mask.device != device:
+            static_attention_mask = static_attention_mask.to(device)
+        if (
+            static_attention_mask.shape[-2] < full_len
+            or static_attention_mask.shape[-1] < full_len
+        ):
+            raise ValueError(
+                "static attention mask is too short for fused block cache: "
+                f"mask_shape={tuple(static_attention_mask.shape)}, full_len={full_len}"
+            )
+        attention_mask = torch.zeros(
+            (batch_size, 1, local_len, full_len),
+            dtype=torch.bool,
+            device=device,
+        )
+        if prefix_len > 0:
+            attention_mask[:, :, :prefix_len, : cache_len + prefix_len] = (
+                static_attention_mask[
+                    None,
+                    None,
+                    cache_len : cache_len + prefix_len,
+                    : cache_len + prefix_len,
+                ]
+            )
+        if decode_len > 0:
+            attention_mask[:, :, prefix_len:, :full_len] = static_attention_mask[
+                None,
+                None,
+                cache_len + prefix_len : full_len,
+                :full_len,
+            ]
+        return self._preprocess_attention_mask(attention_mask, dtype=torch.float)
+
+    @staticmethod
+    def _crop_past_key_values_left(past_key_values: Any, drop: int) -> Any:
+        if drop <= 0 or past_key_values is None:
+            return past_key_values
+        if not (
+            hasattr(past_key_values, "key_cache")
+            and hasattr(past_key_values, "value_cache")
+        ):
+            raise TypeError("DynamicCache-like structure not found")
+        key_cache = getattr(past_key_values, "key_cache")
+        value_cache = getattr(past_key_values, "value_cache")
+        for i in range(len(past_key_values)):
+            k = key_cache[i]
+            v = value_cache[i]
+            if k is not None:
+                key_cache[i] = k[..., drop:, :]
+            if v is not None:
+                value_cache[i] = v[..., drop:, :]
+        return past_key_values
+
+    @staticmethod
+    def _crop_cache_to_length(
+        cache: Optional[Dict[str, Any]],
+        keep_len: int,
+    ) -> Optional[Dict[str, Any]]:
+        if cache is None or "past_key_values" not in cache:
+            return cache
+        past_key_values = cache.get("past_key_values")
+        if past_key_values is None:
+            return cache
+        if hasattr(past_key_values, "crop"):
+            past_key_values.crop(keep_len)
+            return cache
+        if not (
+            hasattr(past_key_values, "key_cache")
+            and hasattr(past_key_values, "value_cache")
+        ):
+            raise TypeError("DynamicCache-like structure not found")
+        key_cache = getattr(past_key_values, "key_cache")
+        value_cache = getattr(past_key_values, "value_cache")
+        for i in range(len(past_key_values)):
+            k = key_cache[i]
+            v = value_cache[i]
+            if k is not None:
+                key_cache[i] = k[..., :keep_len, :]
+            if v is not None:
+                value_cache[i] = v[..., :keep_len, :]
+        return cache
+
+    def _trim_cache_for_fused_block(
+        self,
+        cache: Optional[Dict[str, Any]],
+        fused_input_len: int,
+    ) -> tuple[Dict[str, Any], int]:
+        cache = cache if cache is not None else {}
+        past_key_values = cache.get("past_key_values", DynamicCache())
+        cache_len = self._get_past_key_values_seq_length(past_key_values)
+        max_cache_len = self.config.length - fused_input_len
+        if max_cache_len < 0:
+            raise ValueError(
+                "fused block cache input exceeds model context: "
+                f"fused_input_len={fused_input_len}, length={self.config.length}"
+            )
+        overflow = max(cache_len - max_cache_len, 0)
+        if overflow > 0:
+            crop_left = getattr(self, "_crop_kv_cache_left", None)
+            if crop_left is not None:
+                past_key_values = crop_left(past_key_values, overflow)
+            else:
+                past_key_values = self._crop_past_key_values_left(
+                    past_key_values, overflow
+                )
+            cache["past_key_values"] = past_key_values
+            cache_len -= overflow
+        return cache, cache_len
+
     def _generate_unconditional(
         self,
         generation_config: DiffusionGenerationConfig,
@@ -939,12 +1026,9 @@ class MDLM(Denoiser):
         block_size: int = 0,
         confidence_state: Optional[Dict[str, torch.Tensor]] = None,
         active_decode_len: Optional[int] = None,
-        project_active_logits: bool = False,
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
-        if project_active_logits:
-            denoiser_inputs.backbone_kwargs["return_hidden_states_before_output"] = True
         backbone_cache = {
             k: v
             for k, v in cache.items()
@@ -962,17 +1046,15 @@ class MDLM(Denoiser):
             **backbone_cache,
             **kwargs,
         )
-        hidden_states = None
         if isinstance(backbone_output, torch.Tensor):
             logits = backbone_output
         else:
             backbone_output = {k: v for k, v in backbone_output.items()}
             logits = backbone_output.pop("logits", None)
-            hidden_states = backbone_output.pop("last_hidden_state", None)
-            if logits is None and hidden_states is None:
-                raise ValueError("Backbone output must include logits or hidden states.")
+            if logits is None:
+                raise ValueError("Backbone output must include logits.")
             cache = cache | backbone_output
-        model_output = hidden_states if hidden_states is not None else logits
+        model_output = logits
         prefix_lengths_cover_full_window = (
             length_penalty_prefix_lengths is not None
             and length_penalty_prefix_lengths.shape[-1] == model_output.shape[1]
@@ -1027,20 +1109,10 @@ class MDLM(Denoiser):
                     denoiser_inputs.backbone_kwargs[key] = value[
                         ..., :active_position_len
                     ]
-        if hidden_states is not None:
-            logits = self._project_backbone_hidden_states(
-                model_output,
-                denoiser_inputs,
-                **kwargs,
-            )
-        else:
-            logits = model_output
+        logits = model_output
 
         if logits_processor is not None and len(logits_processor) > 0:
             log_x_theta = logits
-            repetition_penalty = None
-            if getattr(generation_config, "setdlm_vectorized_repetition_penalty", False):
-                repetition_penalty = MDLM._plain_repetition_penalty(logits_processor)
             sample_idx = (
                 sample_indices[0] if sample_indices.ndim == 2 else sample_indices
             )
@@ -1108,85 +1180,66 @@ class MDLM(Denoiser):
                         processor_running_generation = processor_running_generation[
                             ..., inputs_offset_value:
                         ]
-            if repetition_penalty is not None:
-                log_x_theta = MDLM._apply_repetition_penalty_vectorized(
-                    log_x_theta,
-                    repetition_processor_input_ids,
-                    repetition_penalty,
-                )
-            else:
-                for lp in logits_processor:
-                    if isinstance(lp, MinNewTokensLengthLogitsProcessor):
-                        eos_token_id = getattr(lp, "eos_token_id", None)
-                        if isinstance(eos_token_id, torch.Tensor):
-                            lp.eos_token_id = eos_token_id.to(
-                                device=log_x_theta.device
+            for lp in logits_processor:
+                if isinstance(lp, MinNewTokensLengthLogitsProcessor):
+                    eos_token_id = getattr(lp, "eos_token_id", None)
+                    if isinstance(eos_token_id, torch.Tensor):
+                        lp.eos_token_id = eos_token_id.to(device=log_x_theta.device)
+                for j in range(log_x_theta.shape[1]):
+                    if isinstance(lp, (ExponentialDecayLengthPenalty, MinNewTokensLengthLogitsProcessor)):
+                        if length_penalty_prefix_lengths_for_processor is not None:
+                            prefix_lengths = length_penalty_prefix_lengths_for_processor[
+                                :, j
+                            ].clamp(
+                                min=0,
+                                max=processor_running_generation.shape[-1],
                             )
-                    for j in range(log_x_theta.shape[1]):
-                        if isinstance(
-                            lp,
-                            (
-                                ExponentialDecayLengthPenalty,
-                                MinNewTokensLengthLogitsProcessor,
-                            ),
-                        ):
-                            if length_penalty_prefix_lengths_for_processor is not None:
-                                prefix_lengths = length_penalty_prefix_lengths_for_processor[
-                                    :, j
-                                ].clamp(
-                                    min=0,
-                                    max=processor_running_generation.shape[-1],
-                                )
-                                if bool(torch.all(prefix_lengths == prefix_lengths[0]).item()):
-                                    prefix_len = int(prefix_lengths[0].item())
-                                    log_x_theta[:, j] = lp(
-                                        input_ids=processor_running_generation[
-                                            ..., :prefix_len
-                                        ],
-                                        scores=log_x_theta[:, j],
-                                    )
-                                else:
-                                    row_scores = []
-                                    for row_idx, row_prefix_len in enumerate(
-                                        prefix_lengths
-                                    ):
-                                        prefix_len = int(row_prefix_len.item())
-                                        row_scores.append(
-                                            lp(
-                                                input_ids=processor_running_generation[
-                                                    row_idx : row_idx + 1, :prefix_len
-                                                ],
-                                                scores=log_x_theta[
-                                                    row_idx : row_idx + 1, j
-                                                ],
-                                            )
-                                        )
-                                    log_x_theta[:, j] = torch.cat(row_scores, dim=0)
-                            else:
-                                prefix_len = int(
-                                    target_relative_sample_idx[j]
-                                    .clamp(
-                                        min=0,
-                                        max=processor_running_generation.shape[-1],
-                                    )
-                                    .item()
-                                )
+                            if bool(torch.all(prefix_lengths == prefix_lengths[0]).item()):
+                                prefix_len = int(prefix_lengths[0].item())
                                 log_x_theta[:, j] = lp(
                                     input_ids=processor_running_generation[
                                         ..., :prefix_len
                                     ],
                                     scores=log_x_theta[:, j],
                                 )
+                            else:
+                                row_scores = []
+                                for row_idx, row_prefix_len in enumerate(prefix_lengths):
+                                    prefix_len = int(row_prefix_len.item())
+                                    row_scores.append(
+                                        lp(
+                                            input_ids=processor_running_generation[
+                                                row_idx : row_idx + 1, :prefix_len
+                                            ],
+                                            scores=log_x_theta[
+                                                row_idx : row_idx + 1, j
+                                            ],
+                                        )
+                                    )
+                                log_x_theta[:, j] = torch.cat(row_scores, dim=0)
                         else:
-                            lp_input_ids = (
-                                repetition_processor_input_ids
-                                if lp.__class__.__name__ == "RepetitionPenaltyLogitsProcessor"
-                                else running_generation
+                            prefix_len = int(
+                                target_relative_sample_idx[j]
+                                .clamp(
+                                    min=0,
+                                    max=processor_running_generation.shape[-1],
+                                )
+                                .item()
                             )
                             log_x_theta[:, j] = lp(
-                                input_ids=lp_input_ids,
+                                input_ids=processor_running_generation[..., :prefix_len],
                                 scores=log_x_theta[:, j],
                             )
+                    else:
+                        lp_input_ids = (
+                            repetition_processor_input_ids
+                            if lp.__class__.__name__ == "RepetitionPenaltyLogitsProcessor"
+                            else running_generation
+                        )
+                        log_x_theta[:, j] = lp(
+                            input_ids=lp_input_ids,
+                            scores=log_x_theta[:, j],
+                        )
             # renormalize
             log_x_theta[..., self.mask_token_id] = self.neg_infinity
             log_x_theta = log_x_theta - torch.logsumexp(
@@ -1230,39 +1283,6 @@ class MDLM(Denoiser):
                     sample_indices=sample_indices,
                 )
             )
-
-        if MDLM._can_use_deterministic_predict_and_noise_fastpath(generation_config):
-            xs = log_x_theta.argmax(dim=-1)
-            xs_log_probs = log_x_theta.gather(-1, xs[..., None]).squeeze(-1)
-            sample_confidence = xs_log_probs.exp()
-            output = xs.clone()
-
-            est_noise_indices_next = (next_t * block_size).round().to(torch.int)
-            est_noise_indices_curr = (t * block_size).round().to(torch.int)
-            num_to_decode = est_noise_indices_curr - est_noise_indices_next
-            conf = torch.where(
-                (denoiser_inputs.xt == self.mask_token_id).bool(),  # type: ignore
-                xs_log_probs,
-                torch.inf,
-            )
-            num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum(
-                -1
-            ) + num_to_decode
-            noise_indices = conf.argsort(dim=-1)[..., : -num_clean_indices[0]]
-            output[..., noise_indices] = self.mask_token_id
-            output = torch.where(
-                sample_confidence >= generation_config.confidence_threshold,
-                xs,
-                output,
-            )
-            output = torch.where(
-                denoiser_inputs.xt == self.mask_token_id, output, denoiser_inputs.xt
-            )
-            if confidence_state is not None:
-                confidence_state.clear()
-                confidence_state.update(confidence_updates)
-                confidence_state["sample_confidence"] = sample_confidence.detach()
-            return output, cache  # type: ignore
 
         x_theta = log_x_theta.exp()
 
@@ -1444,6 +1464,13 @@ class MDLM(Denoiser):
                 ),
                 cache={},
             )
+        fused_block_cache = self._can_use_fused_block_cache(
+            generation_config=generation_config,
+            is_infill_task=is_infill_task,
+            mdlm_inference=mdlm_inference,
+            block_size=block_size,
+        )
+        pending_cache_inputs = None
 
         if is_infill_task:
             inputs_offset = (
@@ -1553,6 +1580,12 @@ class MDLM(Denoiser):
                 input_indices = (0, inputs_offset + ((block_id + 1) * block_size))
 
             if self.mask_token_id not in xt:
+                if fused_block_cache and pending_cache_inputs is not None:
+                    cache = self.update_cache(
+                        inputs=pending_cache_inputs,
+                        cache=cache,
+                    )
+                    pending_cache_inputs = None
                 continue
             if sample_indices.shape[-1] == 0:
                 break
@@ -1573,11 +1606,40 @@ class MDLM(Denoiser):
                 # Used for logit processing
                 block_NFEs += 1
                 total_NFEs += 1
-                denoiser_inputs, cache = self._prepare_inputs_inference(
-                    input_ids=xt,
-                    context=context,
-                    cache=cache if generation_config.use_cache else None,
-                )
+                return_updated_cache = False
+                fused_prefix_len = None
+                fused_active_decode_len = None
+                fused_cache_keep_len = None
+                if fused_block_cache and pending_cache_inputs is not None and i == 0:
+                    fused_xt = torch.cat([pending_cache_inputs, xt], dim=-1)
+                    cache, fused_cache_len = self._trim_cache_for_fused_block(
+                        cache=cache,
+                        fused_input_len=fused_xt.shape[-1],
+                    )
+                    fused_prefix_len = pending_cache_inputs.shape[-1]
+                    fused_active_decode_len = xt.shape[-1]
+                    fused_cache_keep_len = fused_cache_len + fused_prefix_len
+                    fused_attention_mask = self._build_fused_block_cache_attention_mask(
+                        batch_size=fused_xt.shape[0],
+                        cache_len=fused_cache_len,
+                        prefix_len=fused_prefix_len,
+                        decode_len=fused_active_decode_len,
+                        device=fused_xt.device,
+                    )
+                    denoiser_inputs, cache = self._prepare_inputs_inference(
+                        input_ids=fused_xt,
+                        attention_mask=fused_attention_mask,
+                        context=context,
+                        cache=cache if generation_config.use_cache else None,
+                        return_updated_cache=True,
+                    )
+                    return_updated_cache = True
+                else:
+                    denoiser_inputs, cache = self._prepare_inputs_inference(
+                        input_ids=xt,
+                        context=context,
+                        cache=cache if generation_config.use_cache else None,
+                    )
                 next_t = (
                     timesteps[i + 1]
                     if i < timesteps.shape[-1] - 1
@@ -1648,11 +1710,17 @@ class MDLM(Denoiser):
                     tokenizer=tokenizer,
                     sample_indices=sample_indices,
                     input_indices=input_indices,
+                    return_updated_cache=return_updated_cache,
+                    cache_len=fused_prefix_len,
+                    active_decode_len=fused_active_decode_len,
                     confidence_state=confidence_state,
                     **kwargs,
                 )
 
                 xs, cache = generation_output
+                if fused_cache_keep_len is not None:
+                    cache = self._crop_cache_to_length(cache, fused_cache_keep_len)
+                    pending_cache_inputs = None
                 sample_confidence = confidence_state.get("sample_confidence")
                 block_pbar.set_postfix(
                     NFEs=total_NFEs,
@@ -1748,10 +1816,15 @@ class MDLM(Denoiser):
                 and getattr(self.config, "block_size", self.config.length)
                 < self.config.length
             ):
-                cache = self.update_cache(
-                    inputs=xt,
-                    cache=cache,
-                )
+                if fused_block_cache:
+                    pending_cache_inputs = (
+                        xt.detach().clone() if block_id < max_blocks - 1 else None
+                    )
+                else:
+                    cache = self.update_cache(
+                        inputs=xt,
+                        cache=cache,
+                    )
         parallelism_factor = (
             sum(num_tokens_generated_per_step) / len(num_tokens_generated_per_step)
             if len(num_tokens_generated_per_step) > 0
