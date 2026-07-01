@@ -13,10 +13,7 @@ except ImportError:
 import os
 
 import huggingface_hub
-from transformers.modeling_outputs import (
-    BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
-)
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 try:
     from transformers.utils import use_kernel_forward_from_hub
@@ -1116,9 +1113,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         fix_cache_length: bool = False,  # False for AR, True for diffusion models
         return_updated_cache=False,
         sigma=None,
-        return_hidden_states_before_output: bool = False,
         **kwargs,
-    ) -> CausalLMOutputWithPast | BaseModelOutputWithPast:
+    ) -> CausalLMOutputWithPast:
 
         x = self.vocab_embed(input_ids)
         if fix_cache_length:
@@ -1188,30 +1184,10 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 x, past_key_values = layer_output
             else:
                 x = layer_output
-        if return_hidden_states_before_output:
-            if fix_cache_length:
-                past_key_values.crop(cache_len)
-            return BaseModelOutputWithPast(
-                last_hidden_state=x,
-                past_key_values=past_key_values,
-            )
         x = self.output_layer(x, t_cond)
         if fix_cache_length:
             past_key_values.crop(cache_len)
         return CausalLMOutputWithPast(logits=x, past_key_values=past_key_values)
-
-    def project_hidden_states(self, hidden_states: torch.Tensor, sigma=None) -> torch.Tensor:
-        if self.adaLN:
-            if sigma is None:
-                sigma = torch.zeros(
-                    hidden_states.shape[0],
-                    device=hidden_states.device,
-                    dtype=hidden_states.dtype,
-                )
-            t_cond = F.silu(self.sigma_map(sigma))
-        else:
-            t_cond = None
-        return self.output_layer(hidden_states, t_cond)
 
     @torch.no_grad()
     def forward_sample(

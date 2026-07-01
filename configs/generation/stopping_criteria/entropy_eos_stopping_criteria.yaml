@@ -18,3 +18,7 @@ entropy_eos_stopping_criteria:
   # Shared generated-token floor for confidence, EOS, and entropy stops.
   confidence_min_tokens: 32
   confidence_patience: 1
+  # legacy: current behavior, stop and drop the last entropy block.
+  # stop_only: stop on low entropy but keep the full generated sequence.
+  # disabled: ignore low-entropy stopping entirely.
+  low_entropy_truncation: legacy

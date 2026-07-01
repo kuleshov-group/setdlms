@@ -17,6 +17,42 @@ CKPT_FILE="${CKPT_FILE:-best-rank0.pt}"
 USE_EMA="${USE_EMA:-true}"
 SEED="${SEED:-1}"
 
+is_setdlm_model() {
+  case "${MODEL_NAME:-} ${MODEL_PATH:-} ${EVAL_MODEL_KEY:-} ${LM1B_MODEL_KEY:-} ${LM1B_MODEL_PATH:-}" in
+    *SetDLM*|*setdlm*|*aoarm*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+infer_setdlm_desired_block_size() {
+  case "${MODEL_NAME:-} ${MODEL_PATH:-} ${EVAL_MODEL_KEY:-} ${LM1B_MODEL_KEY:-} ${LM1B_MODEL_PATH:-}" in
+    *d4*|*tgt4*|*smax8*) echo 4 ;;
+    *d8*|*tgt8*|*smax16*) echo 8 ;;
+    *d16*|*tgt16*|*smax32*) echo 16 ;;
+    *) echo "" ;;
+  esac
+}
+
+set_setdlm_ppl_noise_max_block_size() {
+  if is_setdlm_model; then
+    local desired_block_size="${SETDLM_DESIRED_BLOCK_SIZE:-$(infer_setdlm_desired_block_size)}"
+    if [ -z "${desired_block_size}" ]; then
+      echo "ERROR: Could not infer SetDLM desired block size for MODEL_NAME=${MODEL_NAME:-}, MODEL_PATH=${MODEL_PATH:-}." >&2
+      exit 1
+    fi
+    MAX_BLOCK_SIZE="${MAX_BLOCK_SIZE:-$((2 * desired_block_size))}"
+    MODEL_CONFIG_OVERRIDE_ARGS+=(+model_config_overrides.noise_config.max_block_size="${MAX_BLOCK_SIZE}")
+  fi
+}
+
+MODEL_NAME="${MODEL_NAME:-${RESOLVED_MODEL_LABEL:-}}"
+MODEL_CONFIG_OVERRIDE_ARGS=()
+set_setdlm_ppl_noise_max_block_size
+if is_setdlm_model; then
+  echo "setdlm_desired_block_size: ${SETDLM_DESIRED_BLOCK_SIZE:-$(infer_setdlm_desired_block_size)}"
+  echo "noise_max_block_size: ${MAX_BLOCK_SIZE}"
+fi
+
 composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   hydra.output_subdir=null \
   hydra.run.dir="${PWD}" \
@@ -45,4 +81,5 @@ composer -n ${NUM_VISIBLE_DEVICES} scripts/eval/likelihood_eval.py \
   ~generation@generation_config \
   ~generation/logits_processor@logits_processor_list \
   ~generation/stopping_criteria@stopping_criteria_list \
-  gen_kwargs=null
+  gen_kwargs=null \
+  "${MODEL_CONFIG_OVERRIDE_ARGS[@]}"

@@ -131,6 +131,7 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         confidence_window: int = 128,
         confidence_min_tokens: int = 32,
         confidence_patience: int = 1,
+        low_entropy_truncation: str = "legacy",
     ):
         super().__init__()
         self.tokenizer = maybe_add_missing_special_tokens(tokenizer)
@@ -150,6 +151,14 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
         self.confidence_window = max(int(confidence_window), 1)
         self.confidence_min_tokens = max(int(confidence_min_tokens), 1)
         self.confidence_patience = max(int(confidence_patience), 1)
+        valid_low_entropy_truncation = {"legacy", "stop_only", "disabled"}
+        if low_entropy_truncation not in valid_low_entropy_truncation:
+            raise ValueError(
+                "low_entropy_truncation must be one of "
+                f"{sorted(valid_low_entropy_truncation)}, got "
+                f"{low_entropy_truncation!r}"
+            )
+        self.low_entropy_truncation = low_entropy_truncation
 
         # For optional post-processing:
         # one entry per batch item, filled with either None or an int truncate index.
@@ -316,12 +325,18 @@ class EntropyEosStoppingCriteria(StoppingCriteria):
 
         # Criterion: low entropy => stop
         if entropy_val < self.entropy_threshold:
+            if self.low_entropy_truncation == "disabled":
+                return False
+
             stop_any = True
             if self.var_length:
-                min_truncate_idx = self._min_truncate_idx(seq_len)
                 for i in range(bsz):
-                    self.truncate_idx[i] = min(
-                        max(seq_len - self.block_size, min_truncate_idx), seq_len
-                    )
                     self.stop_reason[i] = "low_entropy"
+                    if self.low_entropy_truncation == "legacy":
+                        min_truncate_idx = self._min_truncate_idx(seq_len)
+                        self.truncate_idx[i] = min(
+                            max(seq_len - self.block_size, min_truncate_idx), seq_len
+                        )
+                    elif self.low_entropy_truncation == "stop_only":
+                        self.truncate_idx[i] = seq_len
         return stop_any

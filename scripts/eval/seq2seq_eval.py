@@ -33,22 +33,6 @@ THROUGHPUT_WARMUP = 50
 THROUGHPUT_NUM_MEASUREMENTS = 200
 
 
-def resolve_setdlm_fast_inference_mode(value) -> tuple[bool, str]:
-    if isinstance(value, str):
-        mode = value.strip().lower()
-        if mode in {"1", "true", "yes", "on", "force"}:
-            return True, "force"
-        if mode in {"0", "false", "no", "off", "none"}:
-            return False, "off"
-        if mode == "auto":
-            return False, "auto"
-        raise ValueError(
-            "setdlm_fast_inference must be a bool or one of "
-            "{true,false,force,auto}."
-        )
-    return bool(value), "force" if bool(value) else "off"
-
-
 def strip_generated_target_prompt(text: str, target_prompt_text: str | None) -> str:
     if not target_prompt_text:
         return text
@@ -200,12 +184,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     is_setdlm = model.__class__.__name__ == "SetDLM"
-    setdlm_fast_requested, setdlm_fast_mode = resolve_setdlm_fast_inference_mode(
-        getattr(cfg, "setdlm_fast_inference", False)
-    )
-    setdlm_fast_inference = is_setdlm and setdlm_fast_requested
     if is_setdlm:
-        model._setdlm_fast_inference = setdlm_fast_inference
         model._setdlm_profile_decode = bool(
             getattr(cfg, "setdlm_profile_decode", False)
         )
@@ -213,11 +192,6 @@ def main(cfg: DictConfig) -> None:
         if model._setdlm_profile_decode and profile_path is None:
             profile_path = f"{cfg.output_path}/setdlm_decode_profile_rank{local_rank}.jsonl"
         model._setdlm_decode_profile_path = profile_path
-        if setdlm_fast_mode == "auto" and local_rank == 0:
-            print(
-                "SetDLM fast inference auto resolved to non-fast: calibration "
-                "did not find a no-regression fast path for this branch."
-            )
     setdlm_max_autotune_compile = False
     if getattr(cfg, "compile_backbone", False):
         # SetDLM inference calls the backbone on small, variable-length decode
@@ -226,30 +200,21 @@ def main(cfg: DictConfig) -> None:
         # compilation for SetDLM, but use static buckets for explicit max-autotune.
         compile_mode = getattr(cfg, "compile_mode", None)
         if compile_mode is None:
-            if setdlm_fast_inference:
-                compile_mode = "max-autotune-no-cudagraphs"
-            else:
-                compile_mode = "default" if is_setdlm else "max-autotune-no-cudagraphs"
+            compile_mode = "default" if is_setdlm else "max-autotune-no-cudagraphs"
         setdlm_max_autotune_compile = is_setdlm and compile_mode in (
             "max-autotune",
             "max-autotune-no-cudagraphs",
         )
         compile_dynamic = getattr(cfg, "compile_dynamic", None)
         if compile_dynamic is None:
-            compile_dynamic = (
-                False
-                if setdlm_fast_inference
-                else is_setdlm and not setdlm_max_autotune_compile
-            )
+            compile_dynamic = is_setdlm and not setdlm_max_autotune_compile
         else:
             compile_dynamic = bool(compile_dynamic)
         compile_kwargs = {"dynamic": compile_dynamic}
         if compile_mode not in (None, "", "default"):
             compile_kwargs["mode"] = compile_mode
         if is_setdlm:
-            static_compile_cache = setdlm_fast_inference or bool(
-                getattr(cfg, "setdlm_static_compile_cache", False)
-            )
+            static_compile_cache = bool(getattr(cfg, "setdlm_static_compile_cache", False))
             clone_compile_cache_cfg = getattr(
                 cfg, "setdlm_clone_compile_cache", None
             )
@@ -257,7 +222,6 @@ def main(cfg: DictConfig) -> None:
                 use_clone_compile_cache = (
                     compile_mode == "reduce-overhead"
                     and not static_compile_cache
-                    and not setdlm_fast_inference
                 )
             else:
                 use_clone_compile_cache = bool(clone_compile_cache_cfg)
@@ -265,8 +229,7 @@ def main(cfg: DictConfig) -> None:
             model._setdlm_clone_compile_cache = use_clone_compile_cache
             print(
                 "SetDLM compile cache "
-                f"clone={use_clone_compile_cache}, static={static_compile_cache}, "
-                f"fast={setdlm_fast_inference}"
+                f"clone={use_clone_compile_cache}, static={static_compile_cache}"
             )
         print(f"Compiling model backbone with torch.compile({compile_kwargs})")
         model.backbone = torch.compile(model.backbone, **compile_kwargs)
@@ -280,25 +243,6 @@ def main(cfg: DictConfig) -> None:
     cnndm_generate_target_prompt = bool(
         getattr(cfg, "cnndm_generate_target_prompt", False)
     )
-    if setdlm_fast_inference:
-        gen_kwargs["generation_config"].setdlm_fast_inference = True
-        gen_kwargs["generation_config"].compile_stable_decode = True
-        if local_rank == 0:
-            print(
-                "Enabled SetDLM fast inference with stable decode/cache buckets."
-            )
-    if setdlm_max_autotune_compile:
-        gen_config_cfg = getattr(cfg.gen_kwargs, "generation_config", None)
-        stable_decode_explicit = (
-            gen_config_cfg is not None and "compile_stable_decode" in gen_config_cfg
-        )
-        if not stable_decode_explicit:
-            gen_kwargs["generation_config"].compile_stable_decode = True
-            if local_rank == 0:
-                print(
-                    "Enabled SetDLM compile_stable_decode for max-autotune "
-                    "inference compilation."
-                )
     gen_kwargs["generation_config"].pad_token_id = tokenizer.pad_token_id
     stop_tokens = ["<|endoftext|>"]
 

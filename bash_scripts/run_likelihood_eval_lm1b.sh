@@ -11,6 +11,42 @@ set -u
 REVISION=${REVISION:-null}
 BLOCK_SIZE=${BLOCK_SIZE:-128}
 BATCH_SIZE=${BATCH_SIZE:-16}
+if [ -z "${DATA_DIR:-}" ]; then
+  if [ -d /share/kuleshov/ma2238/dllm-data ]; then
+    DATA_DIR=/share/kuleshov/ma2238/dllm-data
+  else
+    DATA_DIR="${REPO_ROOT}/data"
+  fi
+fi
+export DATA_DIR
+
+is_setdlm_model() {
+  case "${MODEL_NAME:-} ${MODEL_PATH:-} ${EVAL_MODEL_KEY:-} ${LM1B_MODEL_KEY:-} ${LM1B_MODEL_PATH:-}" in
+    *SetDLM*|*setdlm*|*aoarm*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+infer_setdlm_desired_block_size() {
+  case "${MODEL_NAME:-} ${MODEL_PATH:-} ${EVAL_MODEL_KEY:-} ${LM1B_MODEL_KEY:-} ${LM1B_MODEL_PATH:-}" in
+    *d4*|*tgt4*|*smax8*) echo 4 ;;
+    *d8*|*tgt8*|*smax16*) echo 8 ;;
+    *d16*|*tgt16*|*smax32*) echo 16 ;;
+    *) echo "" ;;
+  esac
+}
+
+set_setdlm_ppl_noise_max_block_size() {
+  if is_setdlm_model; then
+    local desired_block_size="${SETDLM_DESIRED_BLOCK_SIZE:-$(infer_setdlm_desired_block_size)}"
+    if [ -z "${desired_block_size}" ]; then
+      echo "ERROR: Could not infer SetDLM desired block size for MODEL_NAME=${MODEL_NAME:-}, MODEL_PATH=${MODEL_PATH:-}." >&2
+      exit 1
+    fi
+    MAX_BLOCK_SIZE="${MAX_BLOCK_SIZE:-$((2 * desired_block_size))}"
+    MODEL_CONFIG_OVERRIDE_ARGS+=(+model_config_overrides.noise_config.max_block_size="${MAX_BLOCK_SIZE}")
+  fi
+}
 
 resolve_eval_model_path "${LM1B_MODEL_PATH:-${LM1B_MODEL_KEY:-${EVAL_MODEL_KEY:-}}}"
 LM1B_MODEL_PATH="${MODEL_PATH}"
@@ -24,10 +60,17 @@ SETDLM_CHECKPOINTS=(
 for checkpoint in "${SETDLM_CHECKPOINTS[@]}"; do
   IFS="|" read -r MODEL_NAME MODEL_PATH CKPT_FILE USE_EMA <<< "${checkpoint}"
 
+  MODEL_CONFIG_OVERRIDE_ARGS=()
+  set_setdlm_ppl_noise_max_block_size
+
   echo "Evaluating ${MODEL_NAME}"
   echo "  model: ${MODEL_PATH}"
   echo "  ckpt: ${CKPT_FILE}"
   echo "  use_ema: ${USE_EMA}"
+  if is_setdlm_model; then
+    echo "  setdlm_desired_block_size: ${SETDLM_DESIRED_BLOCK_SIZE:-$(infer_setdlm_desired_block_size)}"
+    echo "  noise_max_block_size: ${MAX_BLOCK_SIZE}"
+  fi
 
   composer -n "${NUM_VISIBLE_DEVICES}" scripts/eval/likelihood_eval.py \
     hydra.output_subdir=null \
@@ -57,5 +100,6 @@ for checkpoint in "${SETDLM_CHECKPOINTS[@]}"; do
     ~generation@generation_config \
     ~generation/logits_processor@logits_processor_list \
     ~generation/stopping_criteria@stopping_criteria_list \
-    gen_kwargs=null
+    gen_kwargs=null \
+    "${MODEL_CONFIG_OVERRIDE_ARGS[@]}"
 done

@@ -472,54 +472,6 @@ class MDLM(Denoiser):
         else:
             return filtered
 
-    def _project_backbone_hidden_states(
-        self,
-        hidden_states: torch.FloatTensor,
-        denoiser_inputs: DenoiserInput,
-        **kwargs: Any,
-    ) -> torch.FloatTensor:
-        backbone = getattr(self.backbone, "_orig_mod", self.backbone)
-        project_hidden_states = getattr(backbone, "project_hidden_states", None)
-        if project_hidden_states is None:
-            raise ValueError(
-                "Backbone does not support projecting cropped hidden states."
-            )
-        sigma = kwargs.get("sigma", denoiser_inputs.backbone_kwargs.get("sigma"))
-        return project_hidden_states(hidden_states, sigma=sigma)
-
-    @staticmethod
-    def _plain_repetition_penalty(logits_processor: Optional[LogitsProcessorList]):
-        if logits_processor is None or len(logits_processor) != 1:
-            return None
-        processor = logits_processor[0]
-        if processor.__class__.__name__ != "RepetitionPenaltyLogitsProcessor":
-            return None
-        penalty = getattr(processor, "penalty", None)
-        return None if penalty is None else float(penalty)
-
-    @staticmethod
-    def _apply_repetition_penalty_vectorized(
-        scores: torch.FloatTensor,
-        input_ids: torch.LongTensor,
-        penalty: float,
-    ) -> torch.FloatTensor:
-        if scores.dim() != 3:
-            raise ValueError(f"Expected scores dim 3, got {scores.dim()}.")
-        batch_size, decode_len, vocab_size = scores.shape
-        if input_ids.shape[0] != batch_size:
-            raise ValueError("input_ids batch size must match scores batch size.")
-
-        scores_2d = scores.reshape(batch_size * decode_len, vocab_size)
-        expanded_ids = (
-            input_ids[:, None, :]
-            .expand(batch_size, decode_len, input_ids.shape[-1])
-            .reshape(batch_size * decode_len, input_ids.shape[-1])
-        )
-        gathered = torch.gather(scores_2d, 1, expanded_ids)
-        penalized = torch.where(gathered < 0, gathered * penalty, gathered / penalty)
-        scores_2d = scores_2d.scatter(1, expanded_ids, penalized)
-        return scores_2d.view(batch_size, decode_len, vocab_size)
-
     @staticmethod
     def _visible_infill_context(
         accumulated_samples: torch.LongTensor,
@@ -691,21 +643,6 @@ class MDLM(Denoiser):
             "visible_ngram_count": visible_ngram_count,
             "generated_ngram_count": generated_ngram_count,
         }
-
-    @staticmethod
-    def _can_use_deterministic_predict_and_noise_fastpath(
-        generation_config: DiffusionGenerationConfig,
-    ) -> bool:
-        return (
-            bool(getattr(generation_config, "setdlm_deterministic_sampler_fastpath", False))
-            and generation_config.sampling_strategy == "predict_and_noise"
-            and not bool(getattr(generation_config, "do_sample", True))
-            and float(getattr(generation_config, "nucleus_p", 1.0)) >= 1.0
-            and not bool(getattr(generation_config, "confidence_based_noising", False))
-            and not bool(
-                getattr(generation_config, "confidence_margin_based_noising", False)
-            )
-        )
 
     @staticmethod
     def _length_penalty_prefix_lengths(
@@ -939,12 +876,9 @@ class MDLM(Denoiser):
         block_size: int = 0,
         confidence_state: Optional[Dict[str, torch.Tensor]] = None,
         active_decode_len: Optional[int] = None,
-        project_active_logits: bool = False,
         **kwargs: Any,
     ) -> Tuple[torch.LongTensor, Dict[str, torch.FloatTensor], Dict[str, Any]]:
         cache = cache if cache is not None else {}
-        if project_active_logits:
-            denoiser_inputs.backbone_kwargs["return_hidden_states_before_output"] = True
         backbone_cache = {
             k: v
             for k, v in cache.items()
@@ -962,17 +896,15 @@ class MDLM(Denoiser):
             **backbone_cache,
             **kwargs,
         )
-        hidden_states = None
         if isinstance(backbone_output, torch.Tensor):
             logits = backbone_output
         else:
             backbone_output = {k: v for k, v in backbone_output.items()}
             logits = backbone_output.pop("logits", None)
-            hidden_states = backbone_output.pop("last_hidden_state", None)
-            if logits is None and hidden_states is None:
-                raise ValueError("Backbone output must include logits or hidden states.")
+            if logits is None:
+                raise ValueError("Backbone output must include logits.")
             cache = cache | backbone_output
-        model_output = hidden_states if hidden_states is not None else logits
+        model_output = logits
         prefix_lengths_cover_full_window = (
             length_penalty_prefix_lengths is not None
             and length_penalty_prefix_lengths.shape[-1] == model_output.shape[1]
@@ -1027,20 +959,10 @@ class MDLM(Denoiser):
                     denoiser_inputs.backbone_kwargs[key] = value[
                         ..., :active_position_len
                     ]
-        if hidden_states is not None:
-            logits = self._project_backbone_hidden_states(
-                model_output,
-                denoiser_inputs,
-                **kwargs,
-            )
-        else:
-            logits = model_output
+        logits = model_output
 
         if logits_processor is not None and len(logits_processor) > 0:
             log_x_theta = logits
-            repetition_penalty = None
-            if getattr(generation_config, "setdlm_vectorized_repetition_penalty", False):
-                repetition_penalty = MDLM._plain_repetition_penalty(logits_processor)
             sample_idx = (
                 sample_indices[0] if sample_indices.ndim == 2 else sample_indices
             )
@@ -1108,85 +1030,66 @@ class MDLM(Denoiser):
                         processor_running_generation = processor_running_generation[
                             ..., inputs_offset_value:
                         ]
-            if repetition_penalty is not None:
-                log_x_theta = MDLM._apply_repetition_penalty_vectorized(
-                    log_x_theta,
-                    repetition_processor_input_ids,
-                    repetition_penalty,
-                )
-            else:
-                for lp in logits_processor:
-                    if isinstance(lp, MinNewTokensLengthLogitsProcessor):
-                        eos_token_id = getattr(lp, "eos_token_id", None)
-                        if isinstance(eos_token_id, torch.Tensor):
-                            lp.eos_token_id = eos_token_id.to(
-                                device=log_x_theta.device
+            for lp in logits_processor:
+                if isinstance(lp, MinNewTokensLengthLogitsProcessor):
+                    eos_token_id = getattr(lp, "eos_token_id", None)
+                    if isinstance(eos_token_id, torch.Tensor):
+                        lp.eos_token_id = eos_token_id.to(device=log_x_theta.device)
+                for j in range(log_x_theta.shape[1]):
+                    if isinstance(lp, (ExponentialDecayLengthPenalty, MinNewTokensLengthLogitsProcessor)):
+                        if length_penalty_prefix_lengths_for_processor is not None:
+                            prefix_lengths = length_penalty_prefix_lengths_for_processor[
+                                :, j
+                            ].clamp(
+                                min=0,
+                                max=processor_running_generation.shape[-1],
                             )
-                    for j in range(log_x_theta.shape[1]):
-                        if isinstance(
-                            lp,
-                            (
-                                ExponentialDecayLengthPenalty,
-                                MinNewTokensLengthLogitsProcessor,
-                            ),
-                        ):
-                            if length_penalty_prefix_lengths_for_processor is not None:
-                                prefix_lengths = length_penalty_prefix_lengths_for_processor[
-                                    :, j
-                                ].clamp(
-                                    min=0,
-                                    max=processor_running_generation.shape[-1],
-                                )
-                                if bool(torch.all(prefix_lengths == prefix_lengths[0]).item()):
-                                    prefix_len = int(prefix_lengths[0].item())
-                                    log_x_theta[:, j] = lp(
-                                        input_ids=processor_running_generation[
-                                            ..., :prefix_len
-                                        ],
-                                        scores=log_x_theta[:, j],
-                                    )
-                                else:
-                                    row_scores = []
-                                    for row_idx, row_prefix_len in enumerate(
-                                        prefix_lengths
-                                    ):
-                                        prefix_len = int(row_prefix_len.item())
-                                        row_scores.append(
-                                            lp(
-                                                input_ids=processor_running_generation[
-                                                    row_idx : row_idx + 1, :prefix_len
-                                                ],
-                                                scores=log_x_theta[
-                                                    row_idx : row_idx + 1, j
-                                                ],
-                                            )
-                                        )
-                                    log_x_theta[:, j] = torch.cat(row_scores, dim=0)
-                            else:
-                                prefix_len = int(
-                                    target_relative_sample_idx[j]
-                                    .clamp(
-                                        min=0,
-                                        max=processor_running_generation.shape[-1],
-                                    )
-                                    .item()
-                                )
+                            if bool(torch.all(prefix_lengths == prefix_lengths[0]).item()):
+                                prefix_len = int(prefix_lengths[0].item())
                                 log_x_theta[:, j] = lp(
                                     input_ids=processor_running_generation[
                                         ..., :prefix_len
                                     ],
                                     scores=log_x_theta[:, j],
                                 )
+                            else:
+                                row_scores = []
+                                for row_idx, row_prefix_len in enumerate(prefix_lengths):
+                                    prefix_len = int(row_prefix_len.item())
+                                    row_scores.append(
+                                        lp(
+                                            input_ids=processor_running_generation[
+                                                row_idx : row_idx + 1, :prefix_len
+                                            ],
+                                            scores=log_x_theta[
+                                                row_idx : row_idx + 1, j
+                                            ],
+                                        )
+                                    )
+                                log_x_theta[:, j] = torch.cat(row_scores, dim=0)
                         else:
-                            lp_input_ids = (
-                                repetition_processor_input_ids
-                                if lp.__class__.__name__ == "RepetitionPenaltyLogitsProcessor"
-                                else running_generation
+                            prefix_len = int(
+                                target_relative_sample_idx[j]
+                                .clamp(
+                                    min=0,
+                                    max=processor_running_generation.shape[-1],
+                                )
+                                .item()
                             )
                             log_x_theta[:, j] = lp(
-                                input_ids=lp_input_ids,
+                                input_ids=processor_running_generation[..., :prefix_len],
                                 scores=log_x_theta[:, j],
                             )
+                    else:
+                        lp_input_ids = (
+                            repetition_processor_input_ids
+                            if lp.__class__.__name__ == "RepetitionPenaltyLogitsProcessor"
+                            else running_generation
+                        )
+                        log_x_theta[:, j] = lp(
+                            input_ids=lp_input_ids,
+                            scores=log_x_theta[:, j],
+                        )
             # renormalize
             log_x_theta[..., self.mask_token_id] = self.neg_infinity
             log_x_theta = log_x_theta - torch.logsumexp(
@@ -1230,39 +1133,6 @@ class MDLM(Denoiser):
                     sample_indices=sample_indices,
                 )
             )
-
-        if MDLM._can_use_deterministic_predict_and_noise_fastpath(generation_config):
-            xs = log_x_theta.argmax(dim=-1)
-            xs_log_probs = log_x_theta.gather(-1, xs[..., None]).squeeze(-1)
-            sample_confidence = xs_log_probs.exp()
-            output = xs.clone()
-
-            est_noise_indices_next = (next_t * block_size).round().to(torch.int)
-            est_noise_indices_curr = (t * block_size).round().to(torch.int)
-            num_to_decode = est_noise_indices_curr - est_noise_indices_next
-            conf = torch.where(
-                (denoiser_inputs.xt == self.mask_token_id).bool(),  # type: ignore
-                xs_log_probs,
-                torch.inf,
-            )
-            num_clean_indices = (denoiser_inputs.xt != self.mask_token_id).sum(
-                -1
-            ) + num_to_decode
-            noise_indices = conf.argsort(dim=-1)[..., : -num_clean_indices[0]]
-            output[..., noise_indices] = self.mask_token_id
-            output = torch.where(
-                sample_confidence >= generation_config.confidence_threshold,
-                xs,
-                output,
-            )
-            output = torch.where(
-                denoiser_inputs.xt == self.mask_token_id, output, denoiser_inputs.xt
-            )
-            if confidence_state is not None:
-                confidence_state.clear()
-                confidence_state.update(confidence_updates)
-                confidence_state["sample_confidence"] = sample_confidence.detach()
-            return output, cache  # type: ignore
 
         x_theta = log_x_theta.exp()
 
@@ -1444,7 +1314,6 @@ class MDLM(Denoiser):
                 ),
                 cache={},
             )
-
         if is_infill_task:
             inputs_offset = (
                 (accumulated_samples == self.mask_token_id)[0].nonzero().min()
@@ -1573,6 +1442,7 @@ class MDLM(Denoiser):
                 # Used for logit processing
                 block_NFEs += 1
                 total_NFEs += 1
+                return_updated_cache = False
                 denoiser_inputs, cache = self._prepare_inputs_inference(
                     input_ids=xt,
                     context=context,
@@ -1648,6 +1518,7 @@ class MDLM(Denoiser):
                     tokenizer=tokenizer,
                     sample_indices=sample_indices,
                     input_indices=input_indices,
+                    return_updated_cache=return_updated_cache,
                     confidence_state=confidence_state,
                     **kwargs,
                 )

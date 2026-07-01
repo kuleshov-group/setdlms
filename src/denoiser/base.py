@@ -100,12 +100,13 @@ class DenoiserConfig(PretrainedConfig):
             "eos_token_id",
             "pad_vocab_size_multiple",
         ]:
+            current_value = getattr(self, v, None)
             if tokenization_config is not None and (
-                getattr(self, v, None) is None or v in tokenization_config
+                current_value is None or v in tokenization_config
             ):
-                setattr(self, v, tokenization_config.get(v, None))
+                setattr(self, v, tokenization_config.get(v, current_value))
             else:
-                setattr(self, v, None)
+                setattr(self, v, current_value)
         self.backbone_config = backbone_config
         self.noise_config = noise_config
         self.tokenization_config = tokenization_config

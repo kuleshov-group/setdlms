@@ -129,47 +129,6 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
         use_first_hitting_order_in_decode: bool = False,
         setdlm_legacy_active_window_order: bool = False,
         profile_throughput: bool = False,
-        compile_stable_decode: bool = False,
-        compile_decode_bucket_sizes: tuple[int, ...] = (
-            4,
-            8,
-            12,
-            16,
-            20,
-            24,
-            28,
-            32,
-            40,
-            48,
-            56,
-            64,
-            80,
-            96,
-            128,
-        ),
-        setdlm_fast_inference: bool = False,
-        setdlm_fast_cache_bucket_sizes: tuple[int, ...] = (
-            16,
-            24,
-            32,
-            40,
-            48,
-            56,
-            64,
-            80,
-            96,
-            128,
-            192,
-            256,
-            512,
-            1024,
-        ),
-        setdlm_fast_active_logits: bool = False,
-        setdlm_fast_logical_cache: bool = False,
-        setdlm_fast_tensor_cache: bool = False,
-        setdlm_dynamic_active_logits: bool = False,
-        setdlm_deterministic_sampler_fastpath: bool = False,
-        setdlm_vectorized_repetition_penalty: bool = False,
         infill_repetition_penalty_include_right_context: bool = False,
         infill_context_no_repeat_ngram_size: int = 0,
         infill_context_no_repeat_ngram_diagnostic_log: bool = False,
@@ -189,8 +148,6 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
         setdlm_infill_cache_promotion_trace: bool = False,
         setdlm_infill_cache_promotion_trace_input_length: Optional[int] = None,
         setdlm_infill_cache_promotion_trace_max_steps: int = 8,
-        setdlm_dynamic_tensor_attention_mask: bool = False,
-        setdlm_dynamic_full_window_fastpath: bool = False,
         **kwargs,
     ):
         """Generation config with additional parameters for set diffusion sampling.
@@ -211,26 +168,6 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
                 decoding should reuse the Jan 2026 active-window first-hitting order.
             profile_throughput (bool): Whether to skip token sampling and only
                 benchmark backbone NFEs, mirroring upstream throughput profiling.
-            compile_stable_decode (bool): Whether to pad SetDLM decode windows to
-                fixed buckets so torch.compile can specialize fewer inference shapes.
-            compile_decode_bucket_sizes (tuple[int, ...]): Candidate decode window
-                sizes used when `compile_stable_decode` is enabled.
-            setdlm_fast_inference (bool): Whether to enable the opt-in SetDLM
-                infilling fast path for compiled inference.
-            setdlm_fast_cache_bucket_sizes (tuple[int, ...]): Candidate logical cache
-                lengths used by the SetDLM fast path.
-            setdlm_fast_active_logits (bool): Whether the SetDLM fast path should skip
-                padded logits by projecting only active decode hidden states.
-            setdlm_fast_logical_cache (bool): Whether the SetDLM fast path should
-                avoid per-step cache compaction by padding after logical cache writes.
-            setdlm_fast_tensor_cache (bool): Whether the SetDLM fast path should
-                reuse bucketed attention masks and related tensor templates.
-            setdlm_dynamic_active_logits (bool): Whether the non-fast SetDLM
-                dynamic compiled path should project logits only for real decode rows.
-            setdlm_deterministic_sampler_fastpath (bool): Whether to use the exact
-                deterministic predict-and-noise sampler path when sampling is disabled.
-            setdlm_vectorized_repetition_penalty (bool): Whether to batch the plain
-                repetition-penalty logits processor across decode positions.
             infill_repetition_penalty_include_right_context (bool): Whether
                 infilling repetition penalty should also see fixed right-context
                 tokens after the masked span.
@@ -276,14 +213,6 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
                 input length filter for promotion tracing.
             setdlm_infill_cache_promotion_trace_max_steps (int): Maximum number
                 of promotion steps to trace per generated example.
-            setdlm_dynamic_tensor_attention_mask (bool): Whether the non-fast SetDLM
-                dynamic path should patch per-step decode attention masks from
-                tensor mask indicators, avoiding GPU-to-CPU synchronization for
-                first-mask-token discovery.
-            setdlm_dynamic_full_window_fastpath (bool): Whether the non-fast SetDLM
-                dynamic path should skip first-hitting cache-promotion bookkeeping
-                and per-step decode-count synchronization when the infilling window
-                already covers all masked positions.
         """
         super().__init__(**kwargs)
         self.max_window_size = max_window_size
@@ -297,16 +226,6 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
         self.use_first_hitting_order_in_decode = use_first_hitting_order_in_decode
         self.setdlm_legacy_active_window_order = setdlm_legacy_active_window_order
         self.profile_throughput = profile_throughput
-        self.compile_stable_decode = compile_stable_decode
-        self.compile_decode_bucket_sizes = tuple(compile_decode_bucket_sizes)
-        self.setdlm_fast_inference = setdlm_fast_inference
-        self.setdlm_fast_cache_bucket_sizes = tuple(setdlm_fast_cache_bucket_sizes)
-        self.setdlm_fast_active_logits = setdlm_fast_active_logits
-        self.setdlm_fast_logical_cache = setdlm_fast_logical_cache
-        self.setdlm_fast_tensor_cache = setdlm_fast_tensor_cache
-        self.setdlm_dynamic_active_logits = setdlm_dynamic_active_logits
-        self.setdlm_deterministic_sampler_fastpath = setdlm_deterministic_sampler_fastpath
-        self.setdlm_vectorized_repetition_penalty = setdlm_vectorized_repetition_penalty
         self.infill_repetition_penalty_include_right_context = (
             infill_repetition_penalty_include_right_context
         )
@@ -363,12 +282,6 @@ class SetDiffusionGenerationConfig(DiffusionGenerationConfig):
         )
         self.setdlm_infill_cache_promotion_trace_max_steps = (
             setdlm_infill_cache_promotion_trace_max_steps
-        )
-        self.setdlm_dynamic_tensor_attention_mask = (
-            setdlm_dynamic_tensor_attention_mask
-        )
-        self.setdlm_dynamic_full_window_fastpath = (
-            setdlm_dynamic_full_window_fastpath
         )
 
 

@@ -90,7 +90,7 @@ EVAL_MODELS: tuple[ModelSpec, ...] = (
     ModelSpec("cnndm", "SetDLM-d16", run_dir("cnn_block768_lr3e-4_bsz128_warm1000ba_layers28_hidden256_inter768_aoarm_tgt16_len768_v1"), "best-rank0.pt", True, "cnndm-setdlm-d16"),
     # GSM8K accuracy / likelihood / throughput targets.
     ModelSpec("gsm8k", "AR", run_dir("gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_distill_v6"), "best-rank0.pt", True, "gsm8k-ar"),
-    ModelSpec("gsm8k", "MDLM", run_dir("gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v6"), "best-rank0.pt", True, "gsm8k-mdlm"),
+    ModelSpec("gsm8k", "MDLM", run_dir("gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v5"), "best-rank0.pt", True, "gsm8k-mdlm"),
     ModelSpec("gsm8k", "BD3LM-s4", run_dir("gsm8k-shot_block4_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs4_v10"), "best-rank0.pt", True, "gsm8k-bd3lm-s4"),
     ModelSpec("gsm8k", "BD3LM-s8", run_dir("gsm8k-shot_block8_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs8_v10"), "best-rank0.pt", True, "gsm8k-bd3lm-s8"),
     ModelSpec("gsm8k", "BD3LM-s16", run_dir("gsm8k-shot_block16_lr1e-5_bsz1_warm100ba_max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs16_v10"), "best-rank0.pt", True, "gsm8k-bd3lm-s16"),

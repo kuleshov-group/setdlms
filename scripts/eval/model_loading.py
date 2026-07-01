@@ -207,6 +207,7 @@ def _load_project_hf_model(
     pretrained_model_name_or_path: str,
     pretrained_model_revision: str | None = None,
     model_config_overrides: dict[str, Any] | None = None,
+    tokenizer: Any | None = None,
 ):
     snapshot_path = _snapshot_hf_repo_if_needed(
         pretrained_model_name_or_path,
@@ -219,7 +220,11 @@ def _load_project_hf_model(
         config = config_cls.from_pretrained(snapshot_path)
         _apply_model_config_overrides_to_hf_config(config, model_config_overrides)
         _restore_flattened_hf_config_targets(config)
-        return model_cls.from_pretrained(snapshot_path, config=config), "project_hf"
+        return model_cls.from_pretrained(
+            snapshot_path,
+            config=config,
+            tokenizer=tokenizer,
+        ), "project_hf"
     except Exception:
         return None, None
 
@@ -320,6 +325,7 @@ def _load_hf_model(
     pretrained_model_revision: str | None = None,
     allow_masked_lm: bool = True,
     model_config_overrides: dict[str, Any] | None = None,
+    tokenizer: Any | None = None,
 ):
     pretrained_model_revision = _normalize_revision(pretrained_model_revision)
     pretrained_kwargs = {
@@ -353,6 +359,7 @@ def _load_hf_model(
             pretrained_model_name_or_path,
             pretrained_model_revision,
             model_config_overrides,
+            tokenizer=tokenizer,
         )
         if project_model is not None:
             return project_model, project_model_type
@@ -539,6 +546,7 @@ def load_eval_model(
                 pretrained_model_name_or_path=pretrained_model_name_or_path,
                 pretrained_model_revision=pretrained_model_revision,
                 model_config_overrides=model_config_overrides,
+                tokenizer=tokenizer,
             )
         )
 

@@ -96,9 +96,13 @@ def _ensure_tokenizer_eos_token(tokenizer: PreTrainedTokenizer):
     if eos_token is None and "<|endoftext|>" in _tokenizer_vocab(tokenizer):
         eos_token = "<|endoftext|>"
     if eos_token is None:
+        # BERT-style tokenizers used by LM1B define [SEP] but no EOS token.
+        # Reuse the existing separator token instead of adding a new token.
+        eos_token = _get_tokenizer_special_token(tokenizer, "sep_token")
+    if eos_token is None:
         raise AttributeError(
-            "Tokenizer must define eos_token or _eos_token before missing "
-            "special tokens can be filled."
+            "Tokenizer must define eos_token, _eos_token, sep_token, or "
+            "_sep_token before missing special tokens can be filled."
         )
     if getattr(tokenizer, "eos_token", None) is None:
         tokenizer.eos_token = eos_token

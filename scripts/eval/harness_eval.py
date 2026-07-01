@@ -373,24 +373,6 @@ class LMEvalHarnessModel(LM):
                 "compile_supported": self.compile_supported,
                 "compile_mode": self.compile_mode,
                 "compile_dynamic": self.compile_dynamic,
-                "setdlm_fast_inference": self._generation_config_value(
-                    "setdlm_fast_inference"
-                ),
-                "setdlm_dynamic_active_logits": self._generation_config_value(
-                    "setdlm_dynamic_active_logits"
-                ),
-                "setdlm_deterministic_sampler_fastpath": self._generation_config_value(
-                    "setdlm_deterministic_sampler_fastpath"
-                ),
-                "setdlm_vectorized_repetition_penalty": self._generation_config_value(
-                    "setdlm_vectorized_repetition_penalty"
-                ),
-                "setdlm_dynamic_tensor_attention_mask": self._generation_config_value(
-                    "setdlm_dynamic_tensor_attention_mask"
-                ),
-                "setdlm_dynamic_full_window_fastpath": self._generation_config_value(
-                    "setdlm_dynamic_full_window_fastpath"
-                ),
             }
             with open(
                 f"{self.generated_samples_output_path}/throughput-all.json", "w"
