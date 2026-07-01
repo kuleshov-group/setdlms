@@ -149,6 +149,7 @@ TORCHRUN_ARGS=(
   +throughput_num_measurements=${THROUGHPUT_MEASUREMENTS}
   +throughput_global_measurements=${THROUGHPUT_GLOBAL_MEASUREMENTS}
   +model_config_overrides.attn_backend=sdpa
+  +model_config_overrides.block_size=${BLOCK_SIZE}
   +model_config_overrides.backbone_config.attn_backend=sdpa
   generation/logits_processor@logits_processor_list='[repetition_penalty_logits_processor]'
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY}

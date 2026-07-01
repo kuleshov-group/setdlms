@@ -418,6 +418,8 @@ class Denoiser(ABC, PreTrainedModel):
 
     @staticmethod
     def _preprocess_attention_mask(attention_mask, dtype):
+        if attention_mask is None or not torch.is_tensor(attention_mask):
+            return None
         min_dtype = torch.finfo(dtype).min
         attention_mask = torch.where(
             (attention_mask == 0.0).bool(),  # type: ignore

@@ -13,7 +13,7 @@ import mauve
 import numpy as np
 import torch
 import torch.distributed as dist
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 from transformers import (
     AutoTokenizer,
@@ -438,6 +438,12 @@ def generate_samples(
         print(f"Num. trainable params: {format_number(count_parameters(model))}")
     model.eval()
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
+    instantiated_generation_config = gen_kwargs.get("generation_config")
+    cfg_max_window_size = OmegaConf.select(cfg, "generation_config.max_window_size")
+    if cfg_max_window_size is not None:
+        gen_kwargs["max_window_size"] = cfg_max_window_size
+        if instantiated_generation_config is not None:
+            instantiated_generation_config.max_window_size = cfg_max_window_size
     if model.tokenizer.bos_token_id is None:
         if model.tokenizer.eos_token_id is None:
             model.tokenizer.bos_token = model.tokenizer.cls_token

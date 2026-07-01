@@ -181,6 +181,68 @@ def _apply_model_config_overrides_to_hf_config(
             setattr(config, key, value)
 
 
+def _hydrate_project_hf_config(config: Any, snapshot_path: str) -> None:
+    config_path = Path(snapshot_path) / "config.json"
+    try:
+        raw_config = json.loads(config_path.read_text())
+    except Exception:
+        raw_config = {}
+
+    tokenization_config = getattr(config, "tokenization_config", None)
+    if isinstance(tokenization_config, DictConfig):
+        tokenization_config = OmegaConf.to_container(tokenization_config, resolve=False)
+    if not isinstance(tokenization_config, dict):
+        tokenization_config = {}
+
+    for key in (
+        "vocab_size",
+        "mask_token_id",
+        "pad_token_id",
+        "bos_token_id",
+        "eos_token_id",
+        "pad_vocab_size_multiple",
+    ):
+        value = tokenization_config.get(key, raw_config.get(key))
+        if getattr(config, key, None) is None and value is not None:
+            setattr(config, key, value)
+
+    if getattr(config, "tokenizer_name", None) is None:
+        config.tokenizer_name = snapshot_path
+
+
+def _align_model_tokenization_with_tokenizer(model: Any, tokenizer: Any) -> None:
+    if model is None or tokenizer is None or not hasattr(model, "config"):
+        return
+    if not hasattr(model, "backbone"):
+        return
+
+    for key in (
+        "mask_token_id",
+        "pad_token_id",
+        "bos_token_id",
+        "eos_token_id",
+    ):
+        value = getattr(tokenizer, key, None)
+        if value is not None:
+            value = int(value)
+            setattr(model.config, key, value)
+            if hasattr(model, key):
+                setattr(model, key, value)
+
+    try:
+        vocab_size = len(tokenizer)
+    except Exception:
+        vocab_size = getattr(model.config, "vocab_size", None)
+    if vocab_size is not None:
+        vocab_size = int(vocab_size)
+        setattr(model.config, "vocab_size", vocab_size)
+        if hasattr(model, "vocab_size"):
+            model.vocab_size = vocab_size
+
+    if hasattr(model, "tokenizer"):
+        model.tokenizer = tokenizer
+
+
 def _project_hf_model_class_and_config(snapshot_path: str):
     config_path = Path(snapshot_path) / "config.json"
     if not config_path.exists():
@@ -218,6 +280,7 @@ def _load_project_hf_model(
     try:
         config = config_cls.from_pretrained(snapshot_path)
         _apply_model_config_overrides_to_hf_config(config, model_config_overrides)
+        _hydrate_project_hf_config(config, snapshot_path)
         _restore_flattened_hf_config_targets(config)
         return model_cls.from_pretrained(snapshot_path, config=config), "project_hf"
     except Exception:
@@ -419,9 +482,7 @@ def _load_legacy_denoiser(
     backbone_config.length = length
     backbone_config.vocab_size = vocab_size
     backbone_config.block_size = block_size
-    backbone_config.pretrained_model_name_or_path = (
-        pretrained_model_name_or_path if model is not None else None
-    )
+    backbone_config.pretrained_model_name_or_path = None
     backbone_config.num_layers = 12
     backbone_config.n_heads = 12
     backbone_config.hidden_size = 768
@@ -453,6 +514,12 @@ def _load_legacy_denoiser(
     elif "ar-" in pretrained_model_name_or_path:
         denoiser_config = ARConfig(**common_config_kwargs)
         denoiser_cls = AR
+    elif "setdlm" in os.path.basename(str(pretrained_model_name_or_path)).lower():
+        denoiser_config = BD3LMConfig(
+            **common_config_kwargs,
+            block_size=block_size,
+        )
+        denoiser_cls = SetDLM
     else:
         denoiser_config = BD3LMConfig(
             **common_config_kwargs,
@@ -542,11 +609,17 @@ def load_eval_model(
             )
         )
 
+    _align_model_tokenization_with_tokenizer(model, tokenizer)
+
+    force_local_wrapper_for_hf_backbone = (
+        "setdlm" in os.path.basename(str(pretrained_model_name_or_path)).lower()
+        and model is not None
+    )
     is_sedd_path = _is_sedd_model_path(pretrained_model_name_or_path)
     if is_sedd_path and isinstance(model, SEDD):
         return model.to(device)
 
-    if model is None or (
+    if force_local_wrapper_for_hf_backbone or model is None or (
         is_sedd_path
         and not isinstance(model, SEDD)
     ) or (

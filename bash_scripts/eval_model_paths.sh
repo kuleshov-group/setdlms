@@ -51,6 +51,23 @@ resolve_eval_model_path() {
     fi
   done
 
+  local cache_root="${HF_HOME:-${repo_root}/.hf_cache}"
+  local cache_repo="${requested//\//--}"
+  local cache_snapshots="${cache_root}/models--${cache_repo}/snapshots"
+  if [ -d "${cache_snapshots}" ]; then
+    local cached_snapshot=""
+    cached_snapshot="$(ls -dt "${cache_snapshots}"/* 2>/dev/null | head -n 1 || true)"
+    if [ -n "${cached_snapshot}" ] && [ -d "${cached_snapshot}" ]; then
+      RESOLVED_MODEL_PATH="${cached_snapshot}"
+      RESOLVED_MODEL_SOURCE="hf-cache"
+      RESOLVED_MODEL_REPO_ID="${requested}"
+      MODEL_PATH="${RESOLVED_MODEL_PATH}"
+      echo "Resolved MODEL_PATH (${RESOLVED_MODEL_SOURCE}): ${MODEL_PATH}"
+      echo "  HF resolver unavailable, using cached snapshot for ${requested}."
+      return 0
+    fi
+  fi
+
   echo "ERROR: Could not resolve model path '${requested}'." >&2
   echo "       Tried resolver: ${resolver}" >&2
   return 1

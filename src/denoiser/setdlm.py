@@ -1644,9 +1644,17 @@ class SetDLM(BD3LM):
         timesteps = timesteps[None, :].repeat(batch_size, 1)
         xt_position_ids = all_position_ids[:, inputs_offset:]
         all_masked_positions = xt == self.mask_token_id
-        window_size = min(
-            self.noise_schedule.compute_window_size(), generation_config.max_window_size
-        )
+        max_window_size = getattr(generation_config, "max_window_size", None)
+        if max_window_size is None:
+            max_window_size = kwargs.get("max_window_size")
+        schedule_window_size = self.noise_schedule.compute_window_size()
+        if max_window_size is None:
+            max_window_size = schedule_window_size
+        if max_window_size is None:
+            max_window_size = self.config.block_size
+        if schedule_window_size is None:
+            schedule_window_size = max_window_size
+        window_size = min(int(schedule_window_size), int(max_window_size))
         if use_first_hitting_order_in_decode and decode_train_order_ranks is not None:
             masked_positions, clean_len = self._train_order_active_mask(
                 accumulated_samples=accumulated_samples,

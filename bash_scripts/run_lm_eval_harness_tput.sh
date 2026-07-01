@@ -17,7 +17,7 @@ T="${T:-${BLOCK_SIZE}}"
 
 echo "MODEL_PATH: ${MODEL_PATH}"
 
-KV_CACHING=true
+KV_CACHING="${KV_CACHING:-true}"
 USE_EMA=true
 OUTPUT_DIR="outputs/${MODEL_PATH}/lm_eval_harness_output"
 REVISION=null
