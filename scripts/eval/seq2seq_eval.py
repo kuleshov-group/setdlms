@@ -158,6 +158,22 @@ def main(cfg: DictConfig) -> None:
     model_config_overrides = normalize_model_config_overrides(
         getattr(cfg, "model_config_overrides", None)
     )
+    model_path_for_overrides = str(
+        getattr(cfg, "pretrained_model_name_or_path", "")
+    ).lower()
+    needs_construction_block_size = (
+        "bd3lm" in model_path_for_overrides
+        or "setdlm" in model_path_for_overrides
+    )
+    if (
+        "block_size" not in model_config_overrides
+        and getattr(cfg, "block_size", None) is not None
+        and needs_construction_block_size
+    ):
+        # HF diffusion checkpoints wrapped by the local denoiser need the eval
+        # block size before construction because BD3LM/SetDLM build their
+        # static attention mask in __init__.
+        model_config_overrides["block_size"] = cfg.block_size
 
     # Load the dataset
     dataset = hydra.utils.instantiate(
@@ -242,6 +258,9 @@ def main(cfg: DictConfig) -> None:
     gen_kwargs = hydra.utils.instantiate(cfg.gen_kwargs)
     cnndm_generate_target_prompt = bool(
         getattr(cfg, "cnndm_generate_target_prompt", False)
+    )
+    cnndm_disable_stop_token_postprocess = bool(
+        getattr(cfg, "cnndm_disable_stop_token_postprocess", False)
     )
     gen_kwargs["generation_config"].pad_token_id = tokenizer.pad_token_id
     stop_tokens = ["<|endoftext|>"]
@@ -486,8 +505,9 @@ def main(cfg: DictConfig) -> None:
         decoded_outputs_before_postprocess = tokenizer.decode(outputs)
         outputs = decoded_outputs_before_postprocess
         # Post-process:
-        for st in stop_tokens:
-            outputs = outputs.split(st)[0]
+        if not cnndm_disable_stop_token_postprocess:
+            for st in stop_tokens:
+                outputs = outputs.split(st)[0]
         if cnndm_generate_target_prompt:
             outputs = strip_generated_target_prompt(outputs, target_prompt_text)
         decoded_samples = outputs.strip()

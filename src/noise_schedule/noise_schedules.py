@@ -74,8 +74,8 @@ class LinearNoise(Noise):
             eps = torch.finfo(dtype).tiny
             u = torch.rand(batch_size, device=device).clamp_min(eps)
             next_t = timesteps[:, -1] * torch.exp(torch.log(u) / i)
-            timesteps = torch.cat((timesteps, next_t), dim=0)
-        return timesteps[1:].to(device, dtype=dtype)  # type: ignore
+            timesteps = torch.cat((timesteps, next_t[:, None]), dim=1)
+        return timesteps[:, 1:].to(device, dtype=dtype)  # type: ignore
 
     def sample_permutation_order(
         self,

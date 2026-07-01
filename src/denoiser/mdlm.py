@@ -1745,9 +1745,13 @@ class MDLM(Denoiser):
                     xt = xs
                 if input_indices is not None:
                     sample_values = xt[..., relative_sample_indices]
+                    scatter_indices = sample_indices.to(
+                        device=accumulated_samples.device,
+                        dtype=torch.long,
+                    )[None, :]
                     accumulated_samples.scatter_(
                         dim=-1,
-                        index=sample_indices[None, :],
+                        index=scatter_indices,
                         src=sample_values,
                     )
                     if sample_confidence is not None:
@@ -1759,13 +1763,17 @@ class MDLM(Denoiser):
                         )
                         accumulated_confidence.scatter_(
                             dim=-1,
-                            index=sample_indices[None, :],
+                            index=scatter_indices,
                             src=confidence_values,
                         )
                 else:
                     sample_values = xt[:, -sample_indices.shape[-1] :]
+                    scatter_indices = sample_indices.to(
+                        device=accumulated_samples.device,
+                        dtype=torch.long,
+                    )[None, :]
                     accumulated_samples.scatter_(
-                        dim=-1, index=sample_indices[None, :], src=sample_values
+                        dim=-1, index=scatter_indices, src=sample_values
                     )
                     if sample_confidence is not None:
                         confidence_values = sample_confidence.to(accumulated_confidence)
@@ -1780,7 +1788,7 @@ class MDLM(Denoiser):
                         )
                         accumulated_confidence.scatter_(
                             dim=-1,
-                            index=sample_indices[None, :],
+                            index=scatter_indices,
                             src=confidence_values,
                         )
                 if ((xt == self.mask_token_id).sum().item() == 0) or (

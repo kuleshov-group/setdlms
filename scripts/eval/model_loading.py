@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ from src.denoiser.ar import AR, ARConfig
 from src.denoiser.bd3lm import BD3LM, BD3LMConfig
 from src.denoiser.setdlm import SetDLM
 from src.denoiser.mdlm import MDLM, SEDD, MDLMConfig
-from src.noise_schedule.noise_schedules import LinearNoise
+from src.noise_schedule.noise_schedules import LinearNoise, StaggeredNoise
 from src.utils import fsspec_exists
 
 
@@ -447,6 +448,166 @@ def _legacy_backbone_config_name(pretrained_model_name_or_path: str) -> str:
     return "dit_legacy.yaml"
 
 
+
+
+def _config_get(value: Any, *keys: str) -> Any | None:
+    for key in keys:
+        if value is None:
+            return None
+        if isinstance(value, DictConfig):
+            value = OmegaConf.to_container(value, resolve=True)
+        if isinstance(value, dict):
+            value = value.get(key)
+        else:
+            value = getattr(value, key, None)
+    return value
+
+
+def _coerce_int(value: Any | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "none", "null"}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: Any | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "none", "null"}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_int(*values: Any | None) -> int | None:
+    for value in values:
+        coerced = _coerce_int(value)
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def _infer_setdlm_desired_block_size(model_type_key: str) -> int | None:
+    for pattern in (
+        r"(?:^|[^a-z0-9])d(\d+)(?:$|[^a-z0-9])",
+        r"(?:^|[^a-z0-9])tgt(\d+)(?:$|[^a-z0-9])",
+    ):
+        match = re.search(pattern, model_type_key)
+        if match:
+            return int(match.group(1))
+    match = re.search(r"(?:^|[^a-z0-9])smax(\d+)(?:$|[^a-z0-9])", model_type_key)
+    if match:
+        return int(match.group(1)) // 2
+    return None
+
+
+def _build_setdlm_staggered_noise_schedule(
+    *,
+    denoiser: Any,
+    source_model: Any | None,
+    model_config_overrides: dict[str, Any],
+    model_type_key: str,
+) -> StaggeredNoise:
+    config = getattr(denoiser, "config", None)
+    source_config = getattr(source_model, "config", None)
+    override_noise_config = _config_get(model_config_overrides, "noise_config")
+    source_noise_config = _config_get(source_config, "noise_config")
+    runtime_noise_config = _config_get(config, "noise_config")
+
+    length = _first_int(
+        _config_get(override_noise_config, "length"),
+        _config_get(source_noise_config, "length"),
+        _config_get(runtime_noise_config, "length"),
+        _config_get(config, "length"),
+    )
+    block_size = _first_int(
+        _config_get(override_noise_config, "block_size"),
+        _config_get(source_noise_config, "block_size"),
+        _config_get(runtime_noise_config, "block_size"),
+        _config_get(config, "eval_block_size"),
+        _config_get(config, "block_size"),
+        length,
+    )
+    desired_block_size = _first_int(
+        _config_get(override_noise_config, "desired_block_size"),
+        os.environ.get("SETDLM_DESIRED_BLOCK_SIZE"),
+        _config_get(source_noise_config, "desired_block_size"),
+        _config_get(runtime_noise_config, "desired_block_size"),
+        _config_get(config, "desired_block_size"),
+        _infer_setdlm_desired_block_size(model_type_key),
+    )
+    if desired_block_size is None:
+        desired_block_size = block_size
+
+    explicit_max_block_size = _first_int(
+        _config_get(override_noise_config, "max_block_size"),
+        os.environ.get("MAX_BLOCK_SIZE"),
+        os.environ.get("NOISE_MAX_BLOCK_SIZE"),
+    )
+    config_max_block_size = _first_int(
+        _config_get(source_noise_config, "max_block_size"),
+        _config_get(runtime_noise_config, "max_block_size"),
+    )
+    if explicit_max_block_size is not None:
+        max_block_size = explicit_max_block_size
+    elif (
+        config_max_block_size is not None
+        and block_size is not None
+        and config_max_block_size <= block_size
+        and config_max_block_size != block_size
+    ):
+        max_block_size = config_max_block_size
+    elif desired_block_size is not None and block_size is not None:
+        # Exported HF SetDLM configs can contain max_block_size == length even
+        # though the repo default/eval scripts use 2 * desired_block_size.
+        max_block_size = min(2 * desired_block_size, block_size)
+    else:
+        max_block_size = config_max_block_size
+
+    if block_size is None or length is None:
+        raise ValueError(
+            "SetDLM StaggeredNoise requires block_size and length; "
+            f"got block_size={block_size}, length={length}."
+        )
+    if max_block_size is None:
+        max_block_size = block_size
+    if desired_block_size is None:
+        desired_block_size = block_size
+    if max_block_size > block_size:
+        raise ValueError(
+            "SetDLM StaggeredNoise max_block_size must be <= block_size; "
+            f"got max_block_size={max_block_size}, block_size={block_size}."
+        )
+
+    eps = _coerce_float(
+        _config_get(override_noise_config, "eps")
+        if _config_get(override_noise_config, "eps") is not None
+        else _config_get(source_noise_config, "eps")
+    )
+    kwargs: dict[str, Any] = {}
+    if eps is not None:
+        kwargs["eps"] = eps
+    for key in ("k", "b"):
+        value = _config_get(override_noise_config, key)
+        if value is None:
+            value = _config_get(source_noise_config, key)
+        if value is not None:
+            kwargs[key] = _coerce_float(value)
+
+    return StaggeredNoise(
+        block_size=block_size,
+        desired_block_size=desired_block_size,
+        max_block_size=max_block_size,
+        length=length,
+        **kwargs,
+    )
+
 def _load_legacy_denoiser(
     pretrained_model_name_or_path: str,
     tokenizer,
@@ -454,9 +615,15 @@ def _load_legacy_denoiser(
     model: Any | None = None,
     model_config_overrides: dict[str, Any] | None = None,
     load_ema_weights: bool = False,
+    model_type_hint: str | None = None,
 ):
     model_config_overrides = (
         {} if model_config_overrides is None else model_config_overrides
+    )
+    model_type_key = " ".join(
+        str(part).lower()
+        for part in (pretrained_model_name_or_path, model_type_hint)
+        if part is not None
     )
     ckpt = None
     checkpoint_vocab_size = None
@@ -484,8 +651,20 @@ def _load_legacy_denoiser(
     )
     backbone_config = OmegaConf.load(backbone_config_path)
 
-    length = model_config_overrides.get("length") or 1024
-    block_size = model_config_overrides.get("block_size")
+    source_config = getattr(model, "config", None)
+    length = (
+        model_config_overrides.get("length")
+        or _config_get(source_config, "length")
+        or 1024
+    )
+    block_size = (
+        model_config_overrides.get("block_size")
+        or _config_get(source_config, "block_size")
+    )
+    eval_block_size = (
+        model_config_overrides.get("eval_block_size")
+        or _config_get(source_config, "eval_block_size")
+    )
     backbone_config.length = length
     backbone_config.vocab_size = vocab_size
     backbone_config.block_size = block_size
@@ -493,7 +672,7 @@ def _load_legacy_denoiser(
     backbone_config.num_layers = 12
     backbone_config.n_heads = 12
     backbone_config.hidden_size = 768
-    if "-ar-" in pretrained_model_name_or_path:
+    if "-ar-" in model_type_key or "/ar-" in model_type_key:
         backbone_config.adaln = False
         backbone_config.causal_attention = True
         backbone_config.attn_backend = "flash_attn"
@@ -512,25 +691,27 @@ def _load_legacy_denoiser(
         "length": length,
         "backbone_config": OmegaConf.to_container(backbone_config, resolve=True),
     }
-    if _is_sedd_model_path(pretrained_model_name_or_path):
+    if _is_sedd_model_path(model_type_key):
         denoiser_config = MDLMConfig(**common_config_kwargs)
         denoiser_cls = SEDD
-    elif "mdlm-" in pretrained_model_name_or_path:
+    elif "mdlm" in model_type_key:
         denoiser_config = MDLMConfig(**common_config_kwargs)
         denoiser_cls = MDLM
-    elif "ar-" in pretrained_model_name_or_path:
+    elif "ar-" in model_type_key or "/ar" in model_type_key:
         denoiser_config = ARConfig(**common_config_kwargs)
         denoiser_cls = AR
-    elif "setdlm" in os.path.basename(str(pretrained_model_name_or_path)).lower():
+    elif "setdlm" in model_type_key:
         denoiser_config = BD3LMConfig(
             **common_config_kwargs,
             block_size=block_size,
+            eval_block_size=eval_block_size,
         )
         denoiser_cls = SetDLM
     else:
         denoiser_config = BD3LMConfig(
             **common_config_kwargs,
             block_size=block_size,
+            eval_block_size=eval_block_size,
         )
         denoiser_cls = BD3LM
 
@@ -571,10 +752,18 @@ def _load_legacy_denoiser(
     noise_block_size = getattr(denoiser.config, "eval_block_size", None)
     if noise_block_size is None:
         noise_block_size = getattr(denoiser.config, "block_size", None)
-    denoiser.noise_schedule = LinearNoise(
-        block_size=noise_block_size,
-        length=getattr(denoiser.config, "length", None),
-    )
+    if denoiser_cls is SetDLM:
+        denoiser.noise_schedule = _build_setdlm_staggered_noise_schedule(
+            denoiser=denoiser,
+            source_model=model,
+            model_config_overrides=model_config_overrides,
+            model_type_key=model_type_key,
+        )
+    else:
+        denoiser.noise_schedule = LinearNoise(
+            block_size=noise_block_size,
+            length=getattr(denoiser.config, "length", None),
+        )
     return denoiser
 
 
@@ -640,5 +829,6 @@ def load_eval_model(
             model=model,
             model_config_overrides=model_config_overrides,
             load_ema_weights=load_ema_weights,
+            model_type_hint=pretrained_model_name_or_path,
         )
     return model.to(device)

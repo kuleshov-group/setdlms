@@ -34,6 +34,10 @@ SETDLM_L2R_EOS_FRONTIER_CONSTRAINT="${SETDLM_L2R_EOS_FRONTIER_CONSTRAINT:-false}
 CNNDM_GENERATE_TARGET_PROMPT="${CNNDM_GENERATE_TARGET_PROMPT:-false}"
 CNNDM_DIAGNOSTIC_LOG="${CNNDM_DIAGNOSTIC_LOG:-false}"
 CNNDM_DISABLE_STOPPING_CRITERIA="${CNNDM_DISABLE_STOPPING_CRITERIA:-false}"
+CNNDM_DISABLE_STOP_TOKEN_POSTPROCESS="${CNNDM_DISABLE_STOP_TOKEN_POSTPROCESS:-false}"
+CNNDM_MIN_NEW_TOKENS="${CNNDM_MIN_NEW_TOKENS:-null}"
+CNNDM_MIN_NEW_TOKENS_SOURCE="${CNNDM_MIN_NEW_TOKENS_SOURCE:-}"
+CNNDM_EOS_TOKEN_ID="${CNNDM_EOS_TOKEN_ID:-151643}"
 
 OUTPUT_DIR="outputs/${MODEL_PATH}/cnn_dailymail_t1"
 REVISION=null
@@ -76,6 +80,10 @@ echo "SETDLM_L2R_EOS_FRONTIER_CONSTRAINT: ${SETDLM_L2R_EOS_FRONTIER_CONSTRAINT}"
 echo "CNNDM_GENERATE_TARGET_PROMPT: ${CNNDM_GENERATE_TARGET_PROMPT}"
 echo "CNNDM_DIAGNOSTIC_LOG: ${CNNDM_DIAGNOSTIC_LOG}"
 echo "CNNDM_DISABLE_STOPPING_CRITERIA: ${CNNDM_DISABLE_STOPPING_CRITERIA}"
+echo "CNNDM_DISABLE_STOP_TOKEN_POSTPROCESS: ${CNNDM_DISABLE_STOP_TOKEN_POSTPROCESS}"
+echo "CNNDM_MIN_NEW_TOKENS: ${CNNDM_MIN_NEW_TOKENS}"
+echo "CNNDM_MIN_NEW_TOKENS_SOURCE: ${CNNDM_MIN_NEW_TOKENS_SOURCE}"
+echo "CNNDM_EOS_TOKEN_ID: ${CNNDM_EOS_TOKEN_ID}"
 echo "REGULATION_START: ${REGULATION_START}"
 echo "REPETITION_PENALTY: ${REPETITION_PENALTY}"
 echo "CONF_THRESHOLD: ${CONF_THRESHOLD}"
@@ -113,7 +121,14 @@ NO_STOP_SUFFIX=""
 if [[ "${CNNDM_DISABLE_STOPPING_CRITERIA}" == "true" ]]; then
   NO_STOP_SUFFIX="_no-stoptrue"
 fi
-DEFAULT_OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}${DECODE_ORDER_SUFFIX}${EOS_FRONTIER_SUFFIX}${TARGET_PROMPT_SUFFIX}${SNAPSHOT_SUFFIX}${NO_STOP_SUFFIX}"
+MIN_NEW_SUFFIX=""
+if [[ "${CNNDM_MIN_NEW_TOKENS}" != "null" && -n "${CNNDM_MIN_NEW_TOKENS}" ]]; then
+  MIN_NEW_SUFFIX="_min-new-${CNNDM_MIN_NEW_TOKENS}"
+  if [[ -n "${CNNDM_MIN_NEW_TOKENS_SOURCE}" ]]; then
+    MIN_NEW_SUFFIX="${MIN_NEW_SUFFIX}-${CNNDM_MIN_NEW_TOKENS_SOURCE}"
+  fi
+fi
+DEFAULT_OUTPUT_PATH="${OUTPUT_DIR}/L-${L}-block_size-${BLOCK_SIZE}-do_sample-${DO_SAMPLE}-sampling_strategy-${SAMPLING_STRATEGY}-first_hitting-${FIRST_HITTING}-confidence_based_noising-${CONFIDENCE_BASED_NOISING}-align_inputs_to_blocks${ALIGN_INPUTS_TO_BLOCKS}-ckpt${CKPT}-ema${USE_EMA}rep-penalty-${REPETITION_PENALTY}_len-penalty-${LEN_PENALTY}_reg-start${REGULATION_START}${DECODE_ORDER_SUFFIX}${EOS_FRONTIER_SUFFIX}${TARGET_PROMPT_SUFFIX}${SNAPSHOT_SUFFIX}${NO_STOP_SUFFIX}${MIN_NEW_SUFFIX}"
 OUTPUT_PATH="${OUTPUT_PATH:-${DEFAULT_OUTPUT_PATH}}"
 if [[ -n "${OUTPUT_PATH_OVERRIDE}" ]]; then
   OUTPUT_PATH="${OUTPUT_PATH_OVERRIDE}"
@@ -133,6 +148,14 @@ LOGITS_PROCESSOR_ARGS=(
   logits_processor_list.repetition_penalty_logits_processor.penalty=${REPETITION_PENALTY}
   logits_processor_list.exponential_decay_length_penalty.exponential_decay_length_penalty="[${REGULATION_START},${LEN_PENALTY}]"
 )
+if [[ "${CNNDM_MIN_NEW_TOKENS}" != "null" && -n "${CNNDM_MIN_NEW_TOKENS}" ]]; then
+  LOGITS_PROCESSOR_ARGS+=(
+    +logits_processor_list.min_new_tokens_length_logits_processor._target_=transformers.generation.MinNewTokensLengthLogitsProcessor
+    +logits_processor_list.min_new_tokens_length_logits_processor.prompt_length_to_skip=0
+    +logits_processor_list.min_new_tokens_length_logits_processor.min_new_tokens=${CNNDM_MIN_NEW_TOKENS}
+    +logits_processor_list.min_new_tokens_length_logits_processor.eos_token_id=${CNNDM_EOS_TOKEN_ID}
+  )
+fi
 EXTRA_ARGS=(
   +compile_backbone=${COMPILE_BACKBONE}
   +throughput_run=${THROUGHPUT_RUN}
@@ -190,6 +213,7 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   ++generation_config.setdlm_l2r_eos_frontier_constraint=${SETDLM_L2R_EOS_FRONTIER_CONSTRAINT} \
   +cnndm_generate_target_prompt=${CNNDM_GENERATE_TARGET_PROMPT} \
   +cnndm_diagnostic_log=${CNNDM_DIAGNOSTIC_LOG} \
+  +cnndm_disable_stop_token_postprocess=${CNNDM_DISABLE_STOP_TOKEN_POSTPROCESS} \
   "${STOPPING_ARGS[@]}" \
   "${LOGITS_PROCESSOR_ARGS[@]}" \
   "${EXTRA_ARGS[@]}"
