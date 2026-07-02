@@ -121,22 +121,17 @@ use [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh). The task-sp
 wrappers below document the supported evaluation entry points. Plotting utilities are kept
 out of this release repo; generate plots from exported metrics/TSV artifacts downstream.
 
-Evaluation scripts resolve checkpoints through [`bash_scripts/eval_model_paths.sh`](bash_scripts/eval_model_paths.sh).
-For known paper checkpoints, the resolver prefers the Hugging Face model id, falls back
-to the corresponding local checkpoint path if the Hub model is unavailable, and errors
-before launching evaluation if neither is available. Select a known checkpoint with
-`EVAL_MODEL_KEY`, an HF id, or a local checkpoint path in `MODEL_PATH`:
+Evaluation scripts resolve checkpoint keys through [`bash_scripts/eval_model_paths.sh`](bash_scripts/eval_model_paths.sh).
+Select a known checkpoint with `EVAL_MODEL_KEY`, or pass an explicit HF id or local
+checkpoint path in `MODEL_PATH`:
 
 ```bash
-# Prefer kuleshov-group/setdlm-gsm8k-smax32, fall back to the matching local run dir.
+# Resolve to kuleshov-group/setdlm-gsm8k-smax32.
 EVAL_MODEL_KEY=gsm8k:setdlm-d16 bash bash_scripts/run_lm_eval_harness.sh
 
-# Explicit local paths are also resolved to their HF ids when available.
+# Explicit HF ids and local paths are also accepted.
+MODEL_PATH=kuleshov-group/cnndm-setdlm-smax16 bash bash_scripts/run_seq2seq_eval_cnndm.sh
 MODEL_PATH=/share/kuleshov/ma2238/runs/dllm-dev/<run-dir> bash bash_scripts/run_lm_eval_harness.sh
-
-# Force local checkpoints, or skip the live Hub availability check when needed.
-EVAL_MODEL_PREFER_LOCAL=true EVAL_MODEL_KEY=cnndm:setdlm-d8 bash bash_scripts/run_seq2seq_eval_cnndm.sh
-EVAL_MODEL_SKIP_HF_CHECK=true EVAL_MODEL_KEY=gsm8k:setdlm-d16 bash bash_scripts/run_lm_eval_harness.sh
 ```
 
 Dataset configs read from `DLLM_DATA_DIR` and default to `data/`. Set
@@ -165,25 +160,9 @@ and option scores to `predictions.json`, and saves aggregate accuracies plus a
 summary table to `metrics.json` / `metrics.txt`. By default, answer options are
 ranked by average log-probability per answer token to reduce length bias.
 
-## 3. HuggingFace Integration
-Evaluation checkpoints are mapped in [`scripts/push_hf_models.py`](scripts/push_hf_models.py).
-The script converts the old notebook workflow into a reproducible command-line tool and
-covers the 32 local checkpoint-backed models used by the evaluation matrix across GSM8K,
-CNN/DM, OpenWebText, and LM1B.
-
-```bash
-# List every checkpoint that would be pushed, with HF repo id and local path.
-python scripts/push_hf_models.py
-
-# Filter the list, or resolve a key/path exactly as the eval scripts do.
-python scripts/push_hf_models.py --only gsm8k
-python scripts/push_hf_models.py --resolve gsm8k:setdlm-d16
-
-# Push to Hugging Face. Repos are private by default; add --public for public repos.
-python scripts/push_hf_models.py --yes
-```
-
-The GSM8K SetDLM release ids are:
+## 3. Hugging Face Checkpoints
+SetDLM Hugging Face repo ids use `smax{2 * desired_block_size}` naming. For example,
+`SetDLM-d16` is published as `*-setdlm-smax32`. The GSM8K SetDLM release ids are:
 - `kuleshov-group/setdlm-gsm8k-smax8`
 - `kuleshov-group/setdlm-gsm8k-smax16`
 - `kuleshov-group/setdlm-gsm8k-smax32`

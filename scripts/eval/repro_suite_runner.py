@@ -100,30 +100,11 @@ def _truthy_env(name: str, default: str = "false") -> bool:
     return os.environ.get(name, default).lower() in {"1", "true", "yes"}
 
 
-@functools.lru_cache(maxsize=1)
-def _push_hf_models_module():
-    module_path = REPO_ROOT / "scripts" / "push_hf_models.py"
-    spec = importlib.util.spec_from_file_location("push_hf_models", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not import {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 @functools.lru_cache(maxsize=None)
 def resolve_model_path_for_eval(model_path: str) -> str:
     if not model_path or model_path == "N/A":
         return model_path
-    module = _push_hf_models_module()
-    resolved = module.resolve_requested_model(
-        requested=model_path,
-        repo_prefix=os.environ.get("EVAL_MODEL_HF_PREFIX", module.DEFAULT_REPO_PREFIX),
-        prefer_hf=not _truthy_env("EVAL_MODEL_PREFER_LOCAL"),
-        check_hf=not _truthy_env("EVAL_MODEL_SKIP_HF_CHECK"),
-    )
-    return resolved["RESOLVED_MODEL_PATH"]
+    return model_path
 
 
 @dataclass(frozen=True)
