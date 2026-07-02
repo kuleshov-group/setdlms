@@ -603,6 +603,7 @@ def generate_samples(
                 else:
                     outputs = generation_output
                     parallelism_factor = -1.0
+                raw_outputs = outputs
                 raw_length = outputs.numel() - input_ids.numel()
                 length = raw_length
                 stop_reason = None
@@ -650,6 +651,34 @@ def generate_samples(
             generated_samples.append(output_text)
             generated_sample_indices.append(int(global_sample_index))
             if bool(getattr(cfg, "diagnostic_stop_reasons", False)):
+                raw_tail64_entropy = float(
+                    _compute_entropy(
+                        raw_outputs[:, -min(64, raw_outputs.shape[1]) :],
+                        model.tokenizer.mask_token_id,
+                        model.tokenizer.pad_token_id,
+                    )[0]
+                )
+                raw_tail128_entropy = float(
+                    _compute_entropy(
+                        raw_outputs[:, -min(128, raw_outputs.shape[1]) :],
+                        model.tokenizer.mask_token_id,
+                        model.tokenizer.pad_token_id,
+                    )[0]
+                )
+                final_tail64_entropy = float(
+                    _compute_entropy(
+                        outputs[:, -min(64, outputs.shape[1]) :],
+                        model.tokenizer.mask_token_id,
+                        model.tokenizer.pad_token_id,
+                    )[0]
+                )
+                final_tail128_entropy = float(
+                    _compute_entropy(
+                        outputs[:, -min(128, outputs.shape[1]) :],
+                        model.tokenizer.mask_token_id,
+                        model.tokenizer.pad_token_id,
+                    )[0]
+                )
                 diagnostic_stop_records.append(
                     {
                         "global_sample_index": int(global_sample_index),
@@ -659,6 +688,10 @@ def generate_samples(
                         "raw_generated_tokens": int(raw_length),
                         "raw_output_text": raw_output_text,
                         "truncated_output_text": output_text,
+                        "raw_tail64_entropy": raw_tail64_entropy,
+                        "raw_tail128_entropy": raw_tail128_entropy,
+                        "final_tail64_entropy": final_tail64_entropy,
+                        "final_tail128_entropy": final_tail128_entropy,
                         "stop_reason": stop_reason,
                         "truncate_idx": int(truncate_idx) if truncate_idx is not None else None,
                         "generation_attempt": int(generation_attempt),

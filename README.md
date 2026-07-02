@@ -116,9 +116,10 @@ specified.
 For example, to train SetDLM on the GSM8K dataset, use
 [`run_train_setdlm_gsm8k.sh`](bash_scripts/run_train_setdlm_gsm8k.sh).
 - Once models have been trained or downloaded, the provided evaluation scripts can be used
-to reproduce tables and figures from our work. For example, to evaluate GSM8K models,
+to reproduce the reported metrics from our work. For example, to evaluate GSM8K models,
 use [`run_lm_eval_harness.sh`](bash_scripts/run_lm_eval_harness.sh). The task-specific
-wrappers below document the supported evaluation entry points.
+wrappers below document the supported evaluation entry points. Plotting utilities are kept
+out of this release repo; generate plots from exported metrics/TSV artifacts downstream.
 
 Evaluation scripts resolve checkpoints through [`bash_scripts/eval_model_paths.sh`](bash_scripts/eval_model_paths.sh).
 For known paper checkpoints, the resolver prefers the Hugging Face model id, falls back
@@ -187,10 +188,17 @@ The GSM8K SetDLM release ids are:
 - `kuleshov-group/setdlm-gsm8k-smax16`
 - `kuleshov-group/setdlm-gsm8k-smax32`
 
+The corresponding OWT, LM1B, and CNN/DM ids are:
+- `kuleshov-group/owt-setdlm-smax8`, `kuleshov-group/owt-setdlm-smax16`, `kuleshov-group/owt-setdlm-smax32`
+- `kuleshov-group/lm1b-setdlm-smax8`, `kuleshov-group/lm1b-setdlm-smax16`, `kuleshov-group/lm1b-setdlm-smax32`
+- `kuleshov-group/cnndm-setdlm-smax8`, `kuleshov-group/cnndm-setdlm-smax16`, `kuleshov-group/cnndm-setdlm-smax32`
+
 Other evaluated checkpoints use the `kuleshov-group/<dataset>-<model>` naming
-scheme, for example `kuleshov-group/cnndm-setdlm-d8` and
-`kuleshov-group/owt-bd3lm-s16`. The resolver accepts either these HF ids or compact
-keys such as `cnndm:setdlm-d8`, `owt:bd3lm-s16`, and `lm1b:ar`.
+scheme, for example `kuleshov-group/owt-bd3lm-s16`. The resolver accepts either
+these HF ids or compact keys such as `cnndm:setdlm-d8`, `owt:bd3lm-s16`, and
+`lm1b:ar`. For exact GSM8K SetDLM Pareto reproduction, use the repo evaluation
+loader/scripts rather than plain `AutoModel.from_pretrained`, because the loader
+normalizes legacy checkpoint config and eval-time SetDLM noise/cache-order settings.
 
 ## Citation
 ```
