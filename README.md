@@ -167,10 +167,10 @@ SetDLM Hugging Face repo ids use `smax{2 * desired_block_size}` naming. For exam
 - `kuleshov-group/setdlm-gsm8k-smax16`
 - `kuleshov-group/setdlm-gsm8k-smax32`
 
-The corresponding OWT, LM1B, and CNN/DM ids are:
+The corresponding CNN/DM, OWT, and LM1B ids are:
+- `kuleshov-group/cnndm-setdlm-smax8`, `kuleshov-group/cnndm-setdlm-smax16`, `kuleshov-group/cnndm-setdlm-smax32`
 - `kuleshov-group/owt-setdlm-smax8`, `kuleshov-group/owt-setdlm-smax16`, `kuleshov-group/owt-setdlm-smax32`
 - `kuleshov-group/lm1b-setdlm-smax8`, `kuleshov-group/lm1b-setdlm-smax16`, `kuleshov-group/lm1b-setdlm-smax32`
-- `kuleshov-group/cnndm-setdlm-smax8`, `kuleshov-group/cnndm-setdlm-smax16`, `kuleshov-group/cnndm-setdlm-smax32`
 
 Other evaluated checkpoints use the `kuleshov-group/<dataset>-<model>` naming
 scheme, for example `kuleshov-group/owt-bd3lm-s16`. The resolver accepts either
