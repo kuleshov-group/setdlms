@@ -55,9 +55,11 @@ if [ -n "${OUTPUT_PATH_OVERRIDE:-}" ]; then
 fi
 mkdir -p ${OUTPUT_PATH}
 
-MODEL_ARGS=(
-  +task.model.model_config_overrides.block_size=${BLOCK_SIZE}
-)
+MODEL_ARGS=()
+MODEL_PATH_LOWER="$(printf '%s' "${MODEL_PATH}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${MODEL_PATH_LOWER}" == *bd3lm* || "${MODEL_PATH_LOWER}" == *setdlm* ]]; then
+  MODEL_ARGS+=(+task.model.model_config_overrides.block_size=${BLOCK_SIZE})
+fi
 COMPILE_ARGS=(+task.model.compile_backbone=${COMPILE_BACKBONE})
 if [ -n "${COMPILE_MODE}" ]; then
   COMPILE_ARGS+=(+task.model.compile_mode=${COMPILE_MODE})
