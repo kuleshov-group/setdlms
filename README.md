@@ -2,7 +2,7 @@
 
 [![deploy](https://img.shields.io/badge/Paper_📃-green)](https://arxiv.org/abs/2510.22852)
 [![deploy](https://img.shields.io/badge/Blog_📝%20%20-8A2BE2)](https://m-arriola.com/setdlms)
-[![deploy](https://img.shields.io/badge/HuggingFace_🤗%20-E2D2%20-orange)](https://huggingface.co/collections/kuleshov-group/setdlms)
+[![deploy](https://img.shields.io/badge/HuggingFace_🤗%20-SetDLMs%20-orange)](https://huggingface.co/collections/kuleshov-group/setdlms)
 
 ## 0. Setup
 
