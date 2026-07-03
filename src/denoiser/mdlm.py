@@ -1217,7 +1217,6 @@ class MDLM(Denoiser):
             disable=disable_pbar,
         )
         num_tokens_generated_per_step = []
-        inf_budget_per_step = []
         sample_indices = None
         input_indices = None
         if mdlm_inference:
@@ -1416,9 +1415,6 @@ class MDLM(Denoiser):
                 num_tokens_generated_per_step.append(
                     (xs != denoiser_inputs.xt).sum().item()
                 )
-                if generation_config.compute_inf_budget:
-                    inf_budget = (denoiser_inputs.xt == self.mask_token_id).sum().item()
-                    inf_budget_per_step.append(inf_budget)
                 if input_indices is not None:
                     relative_sample_indices = self._relative_sample_positions(
                         sample_indices=sample_indices,
@@ -1484,9 +1480,6 @@ class MDLM(Denoiser):
                     and mdlm_inference
                     and (xt[:, :-pad_length] == self.mask_token_id).sum().item() == 0
                 ):
-                    if generation_config.compute_inf_budget:
-                        remaining_steps = timesteps.shape[0] - len(inf_budget_per_step)
-                        inf_budget_per_step.extend([0] * remaining_steps)
                     break
             if stopping_criteria is not None:
                 is_done = stopping_criteria(
@@ -1525,9 +1518,6 @@ class MDLM(Denoiser):
             if len(num_tokens_generated_per_step) > 0
             else 0
         )
-        inf_budget = None
-        if generation_config.compute_inf_budget:
-            inf_budget = sum(inf_budget_per_step) / len(inf_budget_per_step)
         accumulated_samples = accumulated_samples[
             accumulated_samples != self.mask_token_id
         ].unsqueeze(0)
@@ -1535,8 +1525,6 @@ class MDLM(Denoiser):
             return DiffusionGenerationOutput(
                 sequences=accumulated_samples,
                 parallelism_factor=parallelism_factor,
-                inf_budget=inf_budget,
-                inf_budgets=inf_budget_per_step,
             )
         return accumulated_samples  # type: ignore
 

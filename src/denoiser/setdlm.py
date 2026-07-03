@@ -1058,7 +1058,6 @@ class SetDLM(BD3LM):
         total_NFEs = 0
         is_done = torch.Tensor([False])
         num_tokens_generated_per_step = []
-        inf_budget_per_step = []
         block_NFEs = 0
         clean_len = 0
         for i in range(timesteps.shape[-1]):
@@ -1339,27 +1338,12 @@ class SetDLM(BD3LM):
             num_tokens_generated_per_step.append(
                 (xs != self.mask_token_id).sum().item()
             )
-            if generation_config.compute_inf_budget:
-                t_for_budget = t.unsqueeze(1).repeat(1, num_mask_tokens)
-                next_t_for_budget = next_t.unsqueeze(1).repeat(1, num_mask_tokens)
-                alpha_t_schedule, _ = self.noise_schedule(t_for_budget)
-                alpha_s_schedule, _ = self.noise_schedule(next_t_for_budget)
-                alpha_t_prime = (alpha_s_schedule - alpha_t_schedule).abs()
-                inf_budget = (
-                    ((xt == self.mask_token_id) & (alpha_t_prime != 0.0)).sum().item()
-                )
-                inf_budget_per_step.append(inf_budget)
             done_decoding = (xt == self.mask_token_id).sum().item() == 0
             if done_decoding:
-                if generation_config.compute_inf_budget:
-                    # for inf budget calculation avg over all timesteps
-                    remaining_steps = timesteps.shape[-1] - len(inf_budget_per_step)
-                    inf_budget_per_step.extend([0] * remaining_steps)
                 break
             check_stopping_criteria = (i % window_size == 0) and (i > 0)
             if (
                 check_stopping_criteria
-                and (not generation_config.compute_inf_budget)
                 and stopping_criteria is not None
             ):
                 is_done = stopping_criteria(
@@ -1383,9 +1367,6 @@ class SetDLM(BD3LM):
         parallelism_factor = sum(num_tokens_generated_per_step) / len(
             num_tokens_generated_per_step
         )
-        inf_budget = None
-        if generation_config.compute_inf_budget:
-            inf_budget = sum(inf_budget_per_step) / len(inf_budget_per_step)
         accumulated_samples = accumulated_samples[
             accumulated_samples != self.mask_token_id
         ].unsqueeze(0)
@@ -1393,8 +1374,6 @@ class SetDLM(BD3LM):
             return DiffusionGenerationOutput(
                 sequences=accumulated_samples,
                 parallelism_factor=parallelism_factor,
-                inf_budget=inf_budget,
-                inf_budgets=inf_budget_per_step,
             )
         return accumulated_samples  # type: ignore
 

@@ -24,7 +24,6 @@ REVISION=null
 
 L=1024
 RETURN_DICT_IN_GENERATE=true
-COMPUTE_INF_BUDGET=false
 DO_SAMPLE="${DO_SAMPLE:-false}"
 SAMPLING_STRATEGY="${SAMPLING_STRATEGY:-predict_and_noise}"  # "predict_and_noise" or "posterior"
 FIRST_HITTING="${FIRST_HITTING:-false}"
@@ -108,7 +107,6 @@ torchrun --nproc_per_node ${NUM_VISIBLE_DEVICES} --master_port=${PORT} scripts/e
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS} \
   generation_config.max_window_size=${MAX_WINDOW_SIZE} \
   gen_kwargs.return_dict_in_generate=${RETURN_DICT_IN_GENERATE} \
-  generation_config.compute_inf_budget=${COMPUTE_INF_BUDGET} \
   generation_config.linear_unmasking=${LINEAR_UNMASKING} \
   ~generation/logits_processor@logits_processor_list \
   gen_kwargs.logits_processor=null \

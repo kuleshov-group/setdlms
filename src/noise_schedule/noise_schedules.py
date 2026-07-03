@@ -48,9 +48,6 @@ class LinearNoise(Noise):
         move_chance = move_chance.clamp(0.0, 1.0)
         return move_chance
 
-    def compute_inf_budget(self):
-        return self.block_size / 2
-
     def __call__(self, t):
         t = t.to(torch.float32)
         move_chance = self.total_noise(t)
@@ -230,9 +227,6 @@ class StaggeredNoise(Noise):
         move_chance = self.total_noise(t)
         alpha_t_prime = self.rate_noise(t)
         return 1 - move_chance, alpha_t_prime
-
-    def compute_inf_budget(self):
-        return self.block_size * self.b * self.k / (self.k + 1)
 
     def compute_first_hitting_times(
         self, batch_size, length, device, dtype=torch.float64

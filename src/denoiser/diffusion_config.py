@@ -32,7 +32,6 @@ class DiffusionGenerationConfig(GenerationConfig):
         confidence_margin_based_noising: bool = False,
         confidence_threshold: float = 1e6,
         align_inputs_to_blocks: bool = True,
-        compute_inf_budget: bool = False,
         nucleus_p: float = 1.0,
         fused_block_cache: Optional[bool] = None,
         **kwargs,
@@ -93,8 +92,6 @@ class DiffusionGenerationConfig(GenerationConfig):
                 e.g., for an input of length C and block size S, context will be C // S,
                 and generation will begin with a block whose first C % S tokens come
                 from the input.
-            compute_inf_budget (bool): Whether to compute the information budget.
-                Defaults to False.
             nucleus_p (float): Nucleus sampling probability.
                 Defaults to 1.0.
             fused_block_cache (bool): Whether cached blockwise generation should
@@ -120,7 +117,6 @@ class DiffusionGenerationConfig(GenerationConfig):
         self.confidence_margin_based_noising = confidence_margin_based_noising
         self.confidence_threshold = confidence_threshold
         self.align_inputs_to_blocks = align_inputs_to_blocks
-        self.compute_inf_budget = compute_inf_budget
         self.nucleus_p = nucleus_p
         self.fused_block_cache = fused_block_cache
 
@@ -227,9 +223,6 @@ class DiffusionGenerationOutput(ModelOutput):
             Usually, a [`~cache_utils.Cache`] instance.
         parallelism_factor (float): The heuristic parallelism factor of the generation.
             Defaults to -1.0.
-        non_ar_tokens_per_step (float): The average number of finalized tokens per
-            scheduler step that come from the fully parallel, non-AR stage of decoding.
-            Defaults to None.
     """
 
     sequences: torch.LongTensor
@@ -239,6 +232,3 @@ class DiffusionGenerationOutput(ModelOutput):
     hidden_states: Optional[tuple[tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Cache] = None
     parallelism_factor: Optional[float] = None
-    non_ar_tokens_per_step: Optional[float] = None
-    inf_budget: Optional[float] = None
-    inf_budgets: Optional[list[float]] = None

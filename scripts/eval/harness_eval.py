@@ -268,8 +268,6 @@ class LMEvalHarnessModel(LM):
         latencies: list[float],
         response_lengths: list[float],
         parallelism_factors: list[float],
-        non_ar_tokens_per_step_values: list[float],
-        inf_budgets: list[float],
         local_measurement_target: int,
     ) -> None:
         rank_summary = {
@@ -296,10 +294,6 @@ class LMEvalHarnessModel(LM):
         all_latencies = gather_results(latencies, self.world_size)
         all_response_lengths = gather_results(response_lengths, self.world_size)
         all_parallelism_factors = gather_results(parallelism_factors, self.world_size)
-        all_non_ar_tokens_per_step_values = gather_results(
-            non_ar_tokens_per_step_values, self.world_size
-        )
-        all_inf_budgets = gather_results(inf_budgets, self.world_size)
 
         if self.throughput_global_measurements:
             limit = self.throughput_samples
@@ -307,10 +301,6 @@ class LMEvalHarnessModel(LM):
             all_latencies = all_latencies[:limit]
             all_response_lengths = all_response_lengths[:limit]
             all_parallelism_factors = all_parallelism_factors[:limit]
-            all_non_ar_tokens_per_step_values = all_non_ar_tokens_per_step_values[
-                :limit
-            ]
-            all_inf_budgets = all_inf_budgets[:limit]
 
         output_lengths_from_timing = [
             float(throughput) * float(latency)
@@ -325,8 +315,6 @@ class LMEvalHarnessModel(LM):
         out_len_mean, out_len_std = _numeric_summary(output_lengths_from_timing)
         resp_len_mean, resp_len_std = _numeric_summary(all_response_lengths)
         pf_mean, pf_std = _numeric_summary(valid_parallelism_factors)
-        non_ar_mean, non_ar_std = _numeric_summary(all_non_ar_tokens_per_step_values)
-        inf_budget_mean, inf_budget_std = _numeric_summary(all_inf_budgets)
         zero_frac = (
             float(np.mean([1.0 if length <= 0 else 0.0 for length in all_response_lengths]))
             if all_response_lengths
@@ -349,10 +337,6 @@ class LMEvalHarnessModel(LM):
                 "parallelism_factor_mean": pf_mean,
                 "parallelism_factor_std": pf_std,
                 "parallelism_factor_all": valid_parallelism_factors,
-                "non_ar_tokens_per_step_mean": non_ar_mean,
-                "non_ar_tokens_per_step_std": non_ar_std,
-                "inf_budget_mean": inf_budget_mean,
-                "inf_budget_std": inf_budget_std,
                 "warmup_examples_per_rank": self.throughput_warmup,
                 "measured_examples": len(all_tputs),
                 "requested_measured_examples": self.throughput_samples,
@@ -452,12 +436,8 @@ class LMEvalHarnessModel(LM):
         tputs = []
         response_lengths = []
         parallelism_factors = []
-        non_ar_tokens_per_step_values = []
-        inf_budgets = []
         latencies = []
         measured_parallelism_factors = []
-        measured_non_ar_tokens_per_step_values = []
-        measured_inf_budgets = []
         if self.throughput_global_measurements:
             local_measurement_target = int(
                 np.ceil(self.throughput_samples / max(self.world_size, 1))
@@ -473,8 +453,6 @@ class LMEvalHarnessModel(LM):
                     latencies=latencies,
                     response_lengths=response_lengths,
                     parallelism_factors=measured_parallelism_factors,
-                    non_ar_tokens_per_step_values=measured_non_ar_tokens_per_step_values,
-                    inf_budgets=measured_inf_budgets,
                     local_measurement_target=local_measurement_target,
                 )
                 if dist.is_initialized():
@@ -502,27 +480,13 @@ class LMEvalHarnessModel(LM):
                 parallelism_factor = generation_outputs.get("parallelism_factor", -1.0)
                 if parallelism_factor is None:
                     parallelism_factor = -1.0
-                non_ar_tokens_per_step = generation_outputs.get(
-                    "non_ar_tokens_per_step"
-                )
-                inf_budget = generation_outputs.get("inf_budget")
             else:
                 sample = generation_outputs
                 parallelism_factor = -1.0
-                non_ar_tokens_per_step = None
-                inf_budget = None
             parallelism_factor_value = _as_float(parallelism_factor)
             parallelism_factors.append(
                 parallelism_factor_value if parallelism_factor_value is not None else -1.0
             )
-            if non_ar_tokens_per_step is not None:
-                non_ar_tokens_per_step_value = _as_float(non_ar_tokens_per_step)
-                if non_ar_tokens_per_step_value is not None:
-                    non_ar_tokens_per_step_values.append(non_ar_tokens_per_step_value)
-            if inf_budget is not None:
-                inf_budget_value = _as_float(inf_budget)
-                if inf_budget_value is not None:
-                    inf_budgets.append(inf_budget_value)
             end_event.record()
             torch.cuda.synchronize()
             elapsed_time_s = start_event.elapsed_time(end_event) / 1000
@@ -534,16 +498,6 @@ class LMEvalHarnessModel(LM):
                 response_lengths.append(float(response_length))
                 if parallelism_factor_value is not None:
                     measured_parallelism_factors.append(parallelism_factor_value)
-                if non_ar_tokens_per_step is not None:
-                    non_ar_tokens_per_step_value = _as_float(non_ar_tokens_per_step)
-                    if non_ar_tokens_per_step_value is not None:
-                        measured_non_ar_tokens_per_step_values.append(
-                            non_ar_tokens_per_step_value
-                        )
-                if inf_budget is not None:
-                    inf_budget_value = _as_float(inf_budget)
-                    if inf_budget_value is not None:
-                        measured_inf_budgets.append(inf_budget_value)
             result = self.tokenizer.decode(sample[0, len(elem["prefix"]) :])
             stop_strings = list(elem["target"]["until"]) + ["<|eot_id|>"]
             if self.stop_on_im_end:
@@ -567,17 +521,6 @@ class LMEvalHarnessModel(LM):
                     f"Parallelism factor: {np.mean(parallelism_factors):0.2f} "
                     f"+/- {np.std(parallelism_factors):0.2f}"
                 )
-                if non_ar_tokens_per_step_values:
-                    print(
-                        "Fully parallel non-AR tokens per step: "
-                        f"{np.mean(non_ar_tokens_per_step_values):0.2f} "
-                        f"+/- {np.std(non_ar_tokens_per_step_values):0.2f}"
-                    )
-                if inf_budget is not None:
-                    print(
-                        f"Inference prediction budget: {np.mean(inf_budgets):0.2f} "
-                        f"+/- {np.std(inf_budgets):0.2f}"
-                    )
             res.append(result)
 
             # log accuracy
@@ -615,12 +558,7 @@ class LMEvalHarnessModel(LM):
             )
         print(f"RANK {self.rank} completed!")
         parallelism_factors = gather_results(parallelism_factors, self.world_size)
-        non_ar_tokens_per_step_values = gather_results(
-            non_ar_tokens_per_step_values, self.world_size
-        )
         throughputs = gather_results(tputs, self.world_size)
-        if inf_budgets:
-            inf_budgets = gather_results(inf_budgets, self.world_size)
         response_lengths = gather_results(response_lengths, self.world_size)
         if self.rank == 0:
             print("=" * 20)
@@ -629,12 +567,6 @@ class LMEvalHarnessModel(LM):
                 f"Parallelism factor: {np.mean(parallelism_factors):0.2f} "
                 f"+/- {np.std(parallelism_factors):0.2f}"
             )
-            if non_ar_tokens_per_step_values:
-                print(
-                    "Fully parallel non-AR tokens per step: "
-                    f"{np.mean(non_ar_tokens_per_step_values):0.2f} "
-                    f"+/- {np.std(non_ar_tokens_per_step_values):0.2f}"
-                )
             print(
                 f"Thput (tok/s): {np.mean(throughputs):0.2f} "
                 f"+/- {np.std(throughputs):0.2f}"
@@ -643,11 +575,6 @@ class LMEvalHarnessModel(LM):
                 f"Response length: {np.mean(response_lengths):0.2f} "
                 f"+/- {np.std(response_lengths):0.2f}"
             )
-            if inf_budgets:
-                print(
-                    f"Inference prediction budget: {np.mean(inf_budgets):0.2f} "
-                    f"+/- {np.std(inf_budgets):0.2f}"
-                )
         return res
 
 
