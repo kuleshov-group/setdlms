@@ -27,7 +27,7 @@ source "${REPO_ROOT}/bash_scripts/eval_model_paths.sh"
 
 # SetDLM preset
 BLOCK_SIZE="${BLOCK_SIZE:-8}"
-resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-cnndm:setdlm-d8}}"
+resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-cnndm:setdlm-smax16}}"
 KV_CACHING="${KV_CACHING:-true}"
 ALIGN_INPUTS_TO_BLOCKS="${ALIGN_INPUTS_TO_BLOCKS:-false}"
 

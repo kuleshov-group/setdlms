@@ -229,24 +229,6 @@ def main(cfg: DictConfig) -> None:
         compile_kwargs = {"dynamic": compile_dynamic}
         if compile_mode not in (None, "", "default"):
             compile_kwargs["mode"] = compile_mode
-        if is_setdlm:
-            static_compile_cache = bool(getattr(cfg, "setdlm_static_compile_cache", False))
-            clone_compile_cache_cfg = getattr(
-                cfg, "setdlm_clone_compile_cache", None
-            )
-            if clone_compile_cache_cfg is None:
-                use_clone_compile_cache = (
-                    compile_mode == "reduce-overhead"
-                    and not static_compile_cache
-                )
-            else:
-                use_clone_compile_cache = bool(clone_compile_cache_cfg)
-            model._setdlm_static_compile_cache = static_compile_cache
-            model._setdlm_clone_compile_cache = use_clone_compile_cache
-            print(
-                "SetDLM compile cache "
-                f"clone={use_clone_compile_cache}, static={static_compile_cache}"
-            )
         print(f"Compiling model backbone with torch.compile({compile_kwargs})")
         model.backbone = torch.compile(model.backbone, **compile_kwargs)
 
@@ -352,14 +334,6 @@ def main(cfg: DictConfig) -> None:
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()
-            generation_config = gen_kwargs.get("generation_config")
-            if is_setdlm and generation_config is not None:
-                if (
-                    bool(getattr(generation_config, "setdlm_decode_diagnostic_log", False))
-                    or bool(getattr(generation_config, "setdlm_decode_order_trace", False))
-                    or bool(getattr(generation_config, "setdlm_decode_snapshot_log", False))
-                ):
-                    generation_config.setdlm_decode_diagnostic_example_id = int(ex_id)
             generation_outputs = model.generate(
                 inputs=input_ids,
                 disable_pbar=True,

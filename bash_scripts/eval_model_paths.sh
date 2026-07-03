@@ -23,36 +23,36 @@ resolve_eval_model_path() {
     gsm8k:bd3lm-s4) RESOLVED_MODEL_PATH="${repo_prefix}/gsm8k-bd3lm-s4" ;;
     gsm8k:bd3lm-s8) RESOLVED_MODEL_PATH="${repo_prefix}/gsm8k-bd3lm-s8" ;;
     gsm8k:bd3lm-s16) RESOLVED_MODEL_PATH="${repo_prefix}/gsm8k-bd3lm-s16" ;;
-    gsm8k:setdlm-d4) RESOLVED_MODEL_PATH="${repo_prefix}/setdlm-gsm8k-smax8" ;;
-    gsm8k:setdlm-d8) RESOLVED_MODEL_PATH="${repo_prefix}/setdlm-gsm8k-smax16" ;;
-    gsm8k:setdlm-d16) RESOLVED_MODEL_PATH="${repo_prefix}/setdlm-gsm8k-smax32" ;;
+    gsm8k:setdlm-d4|gsm8k:setdlm-smax8) RESOLVED_MODEL_PATH="${repo_prefix}/setdlm-gsm8k-smax8" ;;
+    gsm8k:setdlm-d8|gsm8k:setdlm-smax16) RESOLVED_MODEL_PATH="${repo_prefix}/setdlm-gsm8k-smax16" ;;
+    gsm8k:setdlm-d16|gsm8k:setdlm-smax32) RESOLVED_MODEL_PATH="${repo_prefix}/setdlm-gsm8k-smax32" ;;
 
     owt:ar) RESOLVED_MODEL_PATH="${repo_prefix}/owt-ar" ;;
     owt:mdlm) RESOLVED_MODEL_PATH="${repo_prefix}/owt-mdlm" ;;
     owt:bd3lm-s4) RESOLVED_MODEL_PATH="${repo_prefix}/owt-bd3lm-s4" ;;
     owt:bd3lm-s8) RESOLVED_MODEL_PATH="${repo_prefix}/owt-bd3lm-s8" ;;
     owt:bd3lm-s16) RESOLVED_MODEL_PATH="${repo_prefix}/owt-bd3lm-s16" ;;
-    owt:setdlm-d4) RESOLVED_MODEL_PATH="${repo_prefix}/owt-setdlm-smax8" ;;
-    owt:setdlm-d8) RESOLVED_MODEL_PATH="${repo_prefix}/owt-setdlm-smax16" ;;
-    owt:setdlm-d16) RESOLVED_MODEL_PATH="${repo_prefix}/owt-setdlm-smax32" ;;
+    owt:setdlm-d4|owt:setdlm-smax8) RESOLVED_MODEL_PATH="${repo_prefix}/owt-setdlm-smax8" ;;
+    owt:setdlm-d8|owt:setdlm-smax16) RESOLVED_MODEL_PATH="${repo_prefix}/owt-setdlm-smax16" ;;
+    owt:setdlm-d16|owt:setdlm-smax32) RESOLVED_MODEL_PATH="${repo_prefix}/owt-setdlm-smax32" ;;
 
     lm1b:ar) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-ar" ;;
     lm1b:mdlm) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-mdlm" ;;
     lm1b:bd3lm-s4) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-bd3lm-s4" ;;
     lm1b:bd3lm-s8) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-bd3lm-s8" ;;
     lm1b:bd3lm-s16) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-bd3lm-s16" ;;
-    lm1b:setdlm-d4) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-setdlm-smax8" ;;
-    lm1b:setdlm-d8) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-setdlm-smax16" ;;
-    lm1b:setdlm-d16) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-setdlm-smax32" ;;
+    lm1b:setdlm-d4|lm1b:setdlm-smax8) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-setdlm-smax8" ;;
+    lm1b:setdlm-d8|lm1b:setdlm-smax16) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-setdlm-smax16" ;;
+    lm1b:setdlm-d16|lm1b:setdlm-smax32) RESOLVED_MODEL_PATH="${repo_prefix}/lm1b-setdlm-smax32" ;;
 
     cnndm:ar) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-ar" ;;
     cnndm:mdlm) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-mdlm" ;;
     cnndm:bd3lm-s4) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-bd3lm-s4" ;;
     cnndm:bd3lm-s8) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-bd3lm-s8" ;;
     cnndm:bd3lm-s16) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-bd3lm-s16" ;;
-    cnndm:setdlm-d4) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-setdlm-smax8" ;;
-    cnndm:setdlm-d8) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-setdlm-smax16" ;;
-    cnndm:setdlm-d16) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-setdlm-smax32" ;;
+    cnndm:setdlm-d4|cnndm:setdlm-smax8) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-setdlm-smax8" ;;
+    cnndm:setdlm-d8|cnndm:setdlm-smax16) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-setdlm-smax16" ;;
+    cnndm:setdlm-d16|cnndm:setdlm-smax32) RESOLVED_MODEL_PATH="${repo_prefix}/cnndm-setdlm-smax32" ;;
 
     *)
       echo "ERROR: Unknown EVAL_MODEL_KEY . Pass a full HF id or local path in MODEL_PATH, or use a known key." >&2

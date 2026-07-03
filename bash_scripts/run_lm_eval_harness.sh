@@ -6,6 +6,10 @@ cd "${REPO_ROOT}" || exit
 source "${REPO_ROOT}/setup_env.sh"
 source "${REPO_ROOT}/bash_scripts/eval_model_paths.sh"
 
+SEED="${SEED:-1234}"
+export LM_EVAL_RANK_INVARIANT_SEED="${LM_EVAL_RANK_INVARIANT_SEED:-true}"
+export LM_EVAL_BASE_SEED="${LM_EVAL_BASE_SEED:-${SEED}}"
+
 resolve_eval_model_path "${MODEL_PATH:-${EVAL_MODEL_KEY:-}}"
 
 is_setdlm_model_path() {
@@ -78,10 +82,9 @@ SAMPLING_STRATEGY="predict_and_noise"  # "predict_and_noise" or "posterior"
 FIRST_HITTING=false
 CONFIDENCE_BASED_NOISING="${CONFIDENCE_BASED_NOISING:-false}"
 CONFIDENCE_MARGIN_BASED_NOISING="${CONFIDENCE_MARGIN_BASED_NOISING:-false}"
-CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-0.8}"
+CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-0.9}"
 CKPT="best"
 LINEAR_UNMASKING=true
-SETDLM_LEGACY_ACTIVE_WINDOW_ORDER="${SETDLM_LEGACY_ACTIVE_WINDOW_ORDER:-false}"
 if is_setdlm_model_path; then
   SETDLM_FHT_CACHE_ORDER="${SETDLM_FHT_CACHE_ORDER:-true}"
 else
@@ -98,7 +101,9 @@ echo "MATCH_TRAINING_CONTEXT_LENGTH: ${MATCH_TRAINING_CONTEXT_LENGTH}"
 echo "STOP_ON_IM_END: ${STOP_ON_IM_END}"
 echo "MAX_WINDOW_SIZE: ${MAX_WINDOW_SIZE}"
 echo "NUM_VISIBLE_DEVICES: ${NUM_VISIBLE_DEVICES}"
-echo "SETDLM_LEGACY_ACTIVE_WINDOW_ORDER: ${SETDLM_LEGACY_ACTIVE_WINDOW_ORDER}"
+echo "SEED: ${SEED}"
+echo "LM_EVAL_RANK_INVARIANT_SEED: ${LM_EVAL_RANK_INVARIANT_SEED}"
+echo "LM_EVAL_BASE_SEED: ${LM_EVAL_BASE_SEED}"
 echo "SETDLM_FHT_CACHE_ORDER: ${SETDLM_FHT_CACHE_ORDER}"
 if [ -n "${NOISE_MAX_BLOCK_SIZE}" ]; then
   echo "NOISE_MAX_BLOCK_SIZE: ${NOISE_MAX_BLOCK_SIZE}"
@@ -136,9 +141,6 @@ fi
 if [ "${STOP_ON_IM_END}" = true ]; then
   OUTPUT_PATH="${OUTPUT_PATH}_stop_im_end"
 fi
-if [ "${SETDLM_LEGACY_ACTIVE_WINDOW_ORDER}" = true ]; then
-  OUTPUT_PATH="${OUTPUT_PATH}_legacy_active_window_order"
-fi
 if [ -n "${LM_EVAL_LIMIT}" ]; then
   OUTPUT_PATH="${OUTPUT_PATH}_limit${LM_EVAL_LIMIT}"
 fi
@@ -165,7 +167,6 @@ GENERATION_ARGS=(
   generation_config.align_inputs_to_blocks=${ALIGN_INPUTS_TO_BLOCKS}
   generation_config.max_window_size=${MAX_WINDOW_SIZE}
   generation_config.linear_unmasking=${LINEAR_UNMASKING}
-  generation_config.setdlm_legacy_active_window_order=${SETDLM_LEGACY_ACTIVE_WINDOW_ORDER}
 )
 
 if [ -n "${MASTER_PORT:-}" ]; then

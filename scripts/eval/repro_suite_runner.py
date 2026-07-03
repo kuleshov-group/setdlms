@@ -30,10 +30,56 @@ TEXTDIFFUSION_CKPT_DIR = Path("/share/kuleshov/ma2238/textdiffusion/checkpoints"
 LM1B_DATA_DIR = Path("/share/kuleshov/ma2238/dllm-data")
 LM1B_EVAL_DATASET = LM1B_DATA_DIR / "lm1b_test_bs128_wrapped.dat"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "outputs" / "repro_eval_suite"
+EVAL_MODEL_HF_PREFIX = os.environ.get("EVAL_MODEL_HF_PREFIX", "kuleshov-group")
+
+KNOWN_EVAL_MODEL_KEYS = {
+    "gsm8k:ar": "gsm8k-ar",
+    "gsm8k:mdlm": "gsm8k-mdlm",
+    "gsm8k:bd3lm-s4": "gsm8k-bd3lm-s4",
+    "gsm8k:bd3lm-s8": "gsm8k-bd3lm-s8",
+    "gsm8k:bd3lm-s16": "gsm8k-bd3lm-s16",
+    "gsm8k:setdlm-d4": "setdlm-gsm8k-smax8",
+    "gsm8k:setdlm-d8": "setdlm-gsm8k-smax16",
+    "gsm8k:setdlm-d16": "setdlm-gsm8k-smax32",
+    "gsm8k:setdlm-smax8": "setdlm-gsm8k-smax8",
+    "gsm8k:setdlm-smax16": "setdlm-gsm8k-smax16",
+    "gsm8k:setdlm-smax32": "setdlm-gsm8k-smax32",
+    "owt:ar": "owt-ar",
+    "owt:mdlm": "owt-mdlm",
+    "owt:bd3lm-s4": "owt-bd3lm-s4",
+    "owt:bd3lm-s8": "owt-bd3lm-s8",
+    "owt:bd3lm-s16": "owt-bd3lm-s16",
+    "owt:setdlm-d4": "owt-setdlm-smax8",
+    "owt:setdlm-d8": "owt-setdlm-smax16",
+    "owt:setdlm-d16": "owt-setdlm-smax32",
+    "owt:setdlm-smax8": "owt-setdlm-smax8",
+    "owt:setdlm-smax16": "owt-setdlm-smax16",
+    "owt:setdlm-smax32": "owt-setdlm-smax32",
+    "lm1b:setdlm-d4": "lm1b-setdlm-smax8",
+    "lm1b:setdlm-d8": "lm1b-setdlm-smax16",
+    "lm1b:setdlm-d16": "lm1b-setdlm-smax32",
+    "lm1b:setdlm-smax8": "lm1b-setdlm-smax8",
+    "lm1b:setdlm-smax16": "lm1b-setdlm-smax16",
+    "lm1b:setdlm-smax32": "lm1b-setdlm-smax32",
+    "cnndm:setdlm-d4": "cnndm-setdlm-smax8",
+    "cnndm:setdlm-d8": "cnndm-setdlm-smax16",
+    "cnndm:setdlm-d16": "cnndm-setdlm-smax32",
+    "cnndm:setdlm-smax8": "cnndm-setdlm-smax8",
+    "cnndm:setdlm-smax16": "cnndm-setdlm-smax16",
+    "cnndm:setdlm-smax32": "cnndm-setdlm-smax32",
+}
 THROUGHPUT_NUM_GPUS = os.environ.get("THROUGHPUT_NUM_GPUS", "4")
 THROUGHPUT_MEASURED_EXAMPLES = os.environ.get("THROUGHPUT_MEASURED_EXAMPLES", "200")
 THROUGHPUT_WARMUP_EXAMPLES_PER_RANK = os.environ.get("THROUGHPUT_WARMUP_EXAMPLES_PER_RANK", "50")
 THROUGHPUT_SAMPLES_PER_RANK = os.environ.get("THROUGHPUT_SAMPLES_PER_RANK", "250")
+OWT_TABLE4_REFERENCE_SEED = os.environ.get("OWT_TABLE4_REFERENCE_SEED", "20260701")
+OWT_TABLE4_REFERENCE_SIZE = os.environ.get("OWT_TABLE4_REFERENCE_SIZE", "1000")
+OWT_TABLE4_REFERENCE_SUBSETS = os.environ.get("OWT_TABLE4_REFERENCE_SUBSETS", "5")
+OWT_TABLE4_MAUVE_SEED = os.environ.get("OWT_TABLE4_MAUVE_SEED", "1234")
+OWT_TABLE4_DATASET_PATH = os.environ.get(
+    "OWT_TABLE4_DATASET_PATH",
+    str(REPO_ROOT / "data/gpt2_tokenizer/openwebtext-valid_validation_bs1024_wrapped_specialFalse.dat"),
+)
 GSM8K_PARETO_THRESHOLDS = (
     "1e6",
     "0.99",
@@ -49,6 +95,7 @@ GSM8K_PARETO_THRESHOLDS = (
 INFILL_THROUGHPUT_TASKS = {"infilling1_throughput", "infilling_throughput"}
 THROUGHPUT_TASKS = {
     "throughput_owt",
+    "throughput_owt_table4",
     "throughput_lm1b",
     "gsm8k_pareto_throughput",
     "cnndm_summarization_throughput",
@@ -72,7 +119,9 @@ MDLM_SAMPLING_TASKS = {
     "gsm8k_pareto_accuracy",
     "gsm8k_pareto_throughput",
     "mauve",
+    "mauve_owt_table4",
     "throughput_owt",
+    "throughput_owt_table4",
     "throughput_lm1b",
 }
 GSM8K_TASKS = {
@@ -85,7 +134,9 @@ OWT_RELATED_A6000_TASKS = {
     "owt_ppl",
     "commonsense",
     "mauve",
+    "mauve_owt_table4",
     "throughput_owt",
+    "throughput_owt_table4",
     "infilling",
     "infilling1",
     "infilling_legacy",
@@ -104,7 +155,29 @@ def _truthy_env(name: str, default: str = "false") -> bool:
 def resolve_model_path_for_eval(model_path: str) -> str:
     if not model_path or model_path == "N/A":
         return model_path
+    if model_path in KNOWN_EVAL_MODEL_KEYS:
+        return f"{EVAL_MODEL_HF_PREFIX}/{KNOWN_EVAL_MODEL_KEYS[model_path]}"
     return model_path
+
+
+def is_remote_or_known_eval_model(model_path: str) -> bool:
+    if model_path in KNOWN_EVAL_MODEL_KEYS:
+        return True
+    return (
+        "/" in model_path
+        and not model_path.startswith("/")
+        and not model_path.startswith("./")
+        and not model_path.startswith("../")
+    )
+
+
+def rank_invariant_generation_env() -> dict[str, str]:
+    return {
+        "LM_EVAL_RANK_INVARIANT_SEED": os.environ.get(
+            "LM_EVAL_RANK_INVARIANT_SEED", "true"
+        ),
+        "LM_EVAL_BASE_SEED": os.environ.get("LM_EVAL_BASE_SEED", "1234"),
+    }
 
 
 @dataclass(frozen=True)
@@ -130,6 +203,8 @@ class Target:
     def checkpoint_path(self) -> str:
         if not self.model_path or self.model_path == "N/A":
             return "N/A"
+        if is_remote_or_known_eval_model(self.model_path):
+            return resolve_model_path_for_eval(self.model_path)
         path = Path(self.model_path)
         if path.suffix == ".ckpt" or path.suffix == ".pt":
             return str(path)
@@ -143,7 +218,10 @@ class Target:
         if self.variant == "BD3LM":
             label = f"BD3LM-s{self.block_size}"
         elif self.variant == "SetDLM":
-            label = f"SetDLM-d{self.desired_block_size}"
+            if self.desired_block_size != "N/A":
+                label = f"SetDLM-smax{2 * int(self.desired_block_size)}"
+            else:
+                label = "SetDLM-smaxN/A"
         else:
             label = self.variant
         if self.confidence_threshold != "N/A":
@@ -190,7 +268,6 @@ class MatrixRow:
     compile_mode: str
     compile_dynamic: str
     compile_supported: str
-    setdlm_l2r_eos_frontier_constraint: str
     cnndm_generate_target_prompt: str
     setdlm_throughput_run_name: str
     status: str
@@ -329,11 +406,13 @@ def setdlm_throughput_env(target: Target) -> dict[str, str]:
 
 def setdlm_output_id(target: Target, env: dict[str, str]) -> str:
     size = target.desired_block_size if target.desired_block_size != "N/A" else target.block_size
+    if size != "N/A":
+        size = f"smax{2 * int(size)}"
     run_name = env.get("SETDLM_THROUGHPUT_RUN_NAME", "setdlm_dynamic_all")
     confidence = env.get("CONFIDENCE_THRESHOLD", target.confidence_threshold)
     if confidence and confidence != "N/A":
-        return f"{run_name}_d{size}_conf{confidence}"
-    return f"{run_name}_d{size}"
+        return f"{run_name}_{size}_conf{confidence}"
+    return f"{run_name}_{size}"
 
 
 def output_under_model(model_path: str, suffix: str) -> str:
@@ -525,7 +604,7 @@ def build_infill_legacy_env(target: Target) -> dict[str, str]:
         }
     )
     if target.variant == "SetDLM" and target.desired_block_size == "16":
-        # Earlier successful SetDLM-d16 infilling used a 32-token generation window.
+        # Earlier successful SetDLM-smax32 infilling used a 32-token generation window.
         # Keep compilation enabled for throughput comparability.
         env["MAX_WINDOW_SIZE"] = "32"
         env["OUTPUT_TAG"] = infill_output_tag("legacy_mw32")
@@ -557,7 +636,7 @@ def _diag_cache_promotion_order(target: Target) -> str:
         return "first_hitting"
     if "-cache-l2r-" in target.variant:
         return "l2r"
-    return "legacy"
+    return "l2r"
 
 
 def _diag_family(target: Target) -> str:
@@ -596,14 +675,9 @@ def build_setdlm_infill3_first_hitting_diagnostic_env(
         "REPEAT_PENALTY": "1.5",
         "FIRST_HITTING": "false",
         "COMPILE_BACKBONE": "false",
-        "SETDLM_INFILL_DIAGNOSTIC_LOG": "true",
-        "SETDLM_INFILL_FIRST_HITTING_CACHE_DIAGNOSTIC": "false",
         "SETDLM_INFILL_CACHE_PROMOTION_ORDER": _diag_cache_promotion_order(
             target
         ),
-        "SETDLM_INFILL_CACHE_PROMOTION_TRACE": "true",
-        "SETDLM_INFILL_CACHE_PROMOTION_TRACE_INPUT_LENGTH": "56",
-        "SETDLM_INFILL_CACHE_PROMOTION_TRACE_MAX_STEPS": "8",
         "USE_EOS_STOPPING_CRITERIA": _diag_use_eos(target),
         "OUTPUT_TAG": _diag_output_tag(target),
         "NUM_VISIBLE_DEVICES": target.num_visible_devices,
@@ -671,14 +745,12 @@ def build_cnndm_env(target: Target) -> dict[str, str]:
         env["CONF_THRESHOLD"] = confidence_threshold
         env["CONFIDENCE_THRESHOLD"] = confidence_threshold
     if target.variant == "SetDLM":
-        env["SETDLM_L2R_EOS_FRONTIER_CONSTRAINT"] = os.environ.get(
-            "CNNDM_SETDLM_L2R_EOS_FRONTIER_CONSTRAINT", "false"
-        )
         generate_target_prompt = os.environ.get(
             "CNNDM_SETDLM_GENERATE_TARGET_PROMPT", ""
         )
         if generate_target_prompt:
             env["CNNDM_GENERATE_TARGET_PROMPT"] = generate_target_prompt
+    env.update(rank_invariant_generation_env())
     return env
 
 
@@ -709,7 +781,7 @@ def build_gsm8k_accuracy_env(target: Target) -> dict[str, str]:
         if target.confidence_based_noising != "N/A"
         else "false"
     )
-    return {
+    env = {
         "MODEL_PATH": resolve_model_path_for_eval(target.model_path),
         "BLOCK_SIZE": target.eval_block_size,
         "MAX_WINDOW_SIZE": target.max_window_size,
@@ -722,6 +794,8 @@ def build_gsm8k_accuracy_env(target: Target) -> dict[str, str]:
         "MATCH_TRAINING_CONTEXT_LENGTH": "true",
         "STOP_ON_IM_END": "true",
     }
+    env.update(rank_invariant_generation_env())
+    return env
 
 
 def build_gsm8k_pareto_accuracy_env(target: Target) -> dict[str, str]:
@@ -795,6 +869,84 @@ def build_throughput_owt_env(target: Target) -> dict[str, str]:
     env.update(throughput_compile_env(target))
     env.update(setdlm_throughput_env(target))
     return env
+
+
+def table4_decode_overrides(target: Target) -> dict[str, str]:
+    if target.variant == "AR":
+        return {
+            "NUCLEUS_P": "0.90",
+            "REPETITION_PENALTY": "1.00",
+            "STOPPING_CONFIDENCE_THRESHOLD": "0.005",
+        }
+    if target.label in {"BD3LM-s16", "SetDLM-smax32"}:
+        return {
+            "NUCLEUS_P": "0.95",
+            "REPETITION_PENALTY": "1.05",
+            "STOPPING_CONFIDENCE_THRESHOLD": "0.01",
+        }
+    return {}
+
+
+def build_mauve_owt_table4_env(target: Target) -> dict[str, str]:
+    env = build_mauve_env(target)
+    env.update(table4_decode_overrides(target))
+    env.update(rank_invariant_generation_env())
+    return env
+
+
+def build_throughput_owt_table4_env(target: Target) -> dict[str, str]:
+    env = build_mauve_owt_table4_env(target)
+    env.update(
+        {
+            "THROUGHPUT_RUN": "true",
+            "THROUGHPUT_WARMUP": THROUGHPUT_WARMUP_EXAMPLES_PER_RANK,
+            "THROUGHPUT_MEASUREMENTS": THROUGHPUT_MEASURED_EXAMPLES,
+            "THROUGHPUT_GLOBAL_MEASUREMENTS": "true",
+            "THROUGHPUT_SAMPLES_PER_RANK": THROUGHPUT_SAMPLES_PER_RANK,
+            "NUM_VISIBLE_DEVICES": THROUGHPUT_NUM_GPUS,
+            "NUM_SAMPLES": THROUGHPUT_MEASURED_EXAMPLES,
+            "OUTPUT_NUM_SAMPLES": THROUGHPUT_MEASURED_EXAMPLES,
+        }
+    )
+    env.update(throughput_compile_env(target))
+    env.update(setdlm_throughput_env(target))
+    return env
+
+
+def table4_bootstrap_label(target: Target) -> str:
+    if target.variant == "AR":
+        return "ar_p090_rp100_stop0005"
+    if target.variant == "BD3LM":
+        return f"bd3lm_s{target.block_size}"
+    if target.variant == "SetDLM":
+        if target.desired_block_size != "N/A":
+            return f"setdlm_smax{2 * int(target.desired_block_size)}"
+        return "setdlm_smaxN/A"
+    return safe_id(target.label).lower()
+
+
+def build_mauve_owt_table4_bootstrap_env(target: Target) -> dict[str, str]:
+    output_dir = DEFAULT_OUTPUT_ROOT / "owt_table4_bootstrap_mauve"
+    return {
+        "TABLE4_LABEL": table4_bootstrap_label(target),
+        "TABLE4_INPUT": f"{build_mauve_owt_table4_output(target)}/generated_samples.json",
+        "TABLE4_OUTPUT_DIR": str(output_dir),
+        "TABLE4_DATASET_PATH": OWT_TABLE4_DATASET_PATH,
+        "TABLE4_REFERENCE_SUBSETS_JSON": str(
+            output_dir
+            / f"reference_subsets_seed{OWT_TABLE4_REFERENCE_SEED}_n{OWT_TABLE4_REFERENCE_SIZE}_k{OWT_TABLE4_REFERENCE_SUBSETS}.json"
+        ),
+        "TABLE4_REFERENCE_SIZE": OWT_TABLE4_REFERENCE_SIZE,
+        "TABLE4_REFERENCE_SUBSETS": OWT_TABLE4_REFERENCE_SUBSETS,
+        "TABLE4_REFERENCE_SEED": OWT_TABLE4_REFERENCE_SEED,
+        "TABLE4_MAUVE_SEED": OWT_TABLE4_MAUVE_SEED,
+        "TABLE4_MAX_GENERATED": "1000",
+        "NUM_VISIBLE_DEVICES": target.num_visible_devices,
+    }
+
+
+def build_mauve_owt_table4_bootstrap_output(target: Target) -> str:
+    return str(DEFAULT_OUTPUT_ROOT / "owt_table4_bootstrap_mauve" / f"{table4_bootstrap_label(target)}_summary.json")
 
 
 def build_throughput_lm1b_env(target: Target) -> dict[str, str]:
@@ -942,14 +1094,6 @@ def build_setdlm_infill3_first_hitting_diagnostic_output(target: Target) -> str:
 
 
 def build_cnndm_output(target: Target) -> str:
-    eos_frontier_enabled = os.environ.get(
-        "CNNDM_SETDLM_L2R_EOS_FRONTIER_CONSTRAINT", "false"
-    ).lower() == "true"
-    eos_frontier_suffix = (
-        "_eos-frontiertrue"
-        if target.variant == "SetDLM" and eos_frontier_enabled
-        else ""
-    )
     generate_target_prompt_enabled = os.environ.get(
         "CNNDM_SETDLM_GENERATE_TARGET_PROMPT", "false"
     ).lower() == "true"
@@ -965,7 +1109,7 @@ def build_cnndm_output(target: Target) -> str:
         "confidence_based_noising-false-"
         f"align_inputs_to_blocks{target.align_inputs_to_blocks}-"
         "ckptbest-ematruerep-penalty-1.2_len-penalty-1.1_reg-start80"
-        f"{eos_frontier_suffix}{target_prompt_suffix}"
+        f"{target_prompt_suffix}"
     )
     return output_under_model(target.model_path, suffix)
 
@@ -1066,6 +1210,53 @@ def build_mauve_output(target: Target) -> str:
     return output_under_model(target.model_path, suffix)
 
 
+def build_owt_uncond_output_for_env(target: Target, env: dict[str, str]) -> str:
+    sampling_strategy = "analytic" if target.variant == "SEDD" else "predict_and_noise"
+    noise_removal = "true" if target.variant == "SEDD" else "false"
+    output_num_samples = env.get("OUTPUT_NUM_SAMPLES", env.get("NUM_SAMPLES", "1000"))
+    suffix = (
+        f"owt-L-1024-NUM_SAMPLES{output_num_samples}/"
+        f"block_size-{env.get('BLOCK_SIZE', target.eval_block_size)}-"
+        f"T{env.get('GENERATION_NUM_STEPS', env.get('BLOCK_SIZE', target.eval_block_size))}-"
+        f"sampling_strategy-{env.get('SAMPLING_STRATEGY', sampling_strategy)}-"
+        f"noise_removal-{env.get('NOISE_REMOVAL', noise_removal)}-"
+        "do_sample-true-first_hitting-false-"
+        f"align_inputs_to_blocks{env.get('ALIGN_INPUTS_TO_BLOCKS', target.align_inputs_to_blocks)}-"
+        f"ckpt{env.get('CKPT_FILE', target.ckpt_file)}-ema{env.get('USE_EMA', target.use_ema)}-"
+        f"nucleus_p{env.get('NUCLEUS_P', '0.95')}-"
+        f"repetition_penalty{env.get('REPETITION_PENALTY', '1.05')}-"
+        f"conf{env.get('CONFIDENCE_THRESHOLD', '1e6')}-"
+        f"max_window_size{env.get('MAX_WINDOW_SIZE', target.max_window_size)}"
+    )
+    stop_conf = env.get("STOPPING_CONFIDENCE_THRESHOLD", "0.005")
+    if stop_conf != "null":
+        suffix += (
+            f"-stop_conf{stop_conf}-"
+            f"stop_win{env.get('STOPPING_CONFIDENCE_WINDOW', '128')}-"
+            f"stop_min{env.get('STOPPING_CONFIDENCE_MIN_TOKENS', '128')}-"
+            f"stop_patience{env.get('STOPPING_CONFIDENCE_PATIENCE', '4')}"
+        )
+    if env.get("THROUGHPUT_RUN") == "true":
+        suffix += "-throughput_run"
+    if env.get("LOW_ENTROPY_TRUNCATION", "legacy") != "legacy":
+        suffix += f"-low_entropy_{env['LOW_ENTROPY_TRUNCATION']}"
+    if target.variant == "SetDLM":
+        max_block_size = env.get("MAX_BLOCK_SIZE")
+        if not max_block_size and target.desired_block_size != "N/A":
+            max_block_size = str(2 * int(target.desired_block_size))
+        if max_block_size:
+            suffix += f"-noise_max_block_size{max_block_size}"
+    return output_under_model(env.get("MODEL_PATH", target.model_path), suffix)
+
+
+def build_mauve_owt_table4_output(target: Target) -> str:
+    return build_owt_uncond_output_for_env(target, build_mauve_owt_table4_env(target))
+
+
+def build_throughput_owt_table4_output(target: Target) -> str:
+    return build_owt_uncond_output_for_env(target, build_throughput_owt_table4_env(target))
+
+
 def sedd_owt_target() -> Target:
     return Target(
         variant="SEDD",
@@ -1162,8 +1353,45 @@ def owt_targets() -> list[Target]:
 
 
 def legacy_infill_targets() -> list[Target]:
-    keep = {"AR", "MDLM", "BD3LM-s16", "SetDLM-d16"}
+    keep = {"AR", "MDLM", "BD3LM-s16", "SetDLM-smax32"}
     return [target for target in owt_targets() if target.label in keep]
+
+
+def owt_table4_targets() -> list[Target]:
+    return [
+        Target(
+            "AR",
+            "kuleshov-group/owt-ar",
+            "none",
+            "false",
+            "1",
+            "1",
+            kv_caching="true",
+            align_inputs_to_blocks="true",
+        ),
+        Target(
+            "BD3LM",
+            "kuleshov-group/owt-bd3lm-s16",
+            "none",
+            "false",
+            "16",
+            "16",
+            block_size="16",
+            kv_caching="true",
+            align_inputs_to_blocks="false",
+        ),
+        Target(
+            "SetDLM",
+            "kuleshov-group/owt-setdlm-smax32",
+            "none",
+            "false",
+            "1024",
+            "16",
+            desired_block_size="16",
+            kv_caching="true",
+            align_inputs_to_blocks="false",
+        ),
+    ]
 
 
 def setdlm_infill3_first_hitting_diagnostic_targets() -> list[Target]:
@@ -1334,7 +1562,7 @@ def gsm8k_targets() -> list[Target]:
     return [
         Target(
             "AR",
-            str(BASE_RUN_DIR / "gsm8k-0shot_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_ar_distill_v6"),
+            "gsm8k:ar",
             "best-rank0.pt",
             "true",
             "1",
@@ -1342,7 +1570,7 @@ def gsm8k_targets() -> list[Target]:
         ),
         Target(
             "MDLM",
-            str(BASE_RUN_DIR / "gsm8k-0shot_block_lr1e-5_bsz1_warm100ba_alphaf0.5_max-dur75000ba_amp_bf16_layers28_mdlm_distill_v6"),
+            "gsm8k:mdlm",
             "best-rank0.pt",
             "true",
             "32",
@@ -1352,13 +1580,7 @@ def gsm8k_targets() -> list[Target]:
         *[
             Target(
                 "BD3LM",
-                str(
-                    BASE_RUN_DIR
-                    / (
-                        f"gsm8k-shot_block{size}_lr1e-5_bsz1_warm100ba_"
-                        f"max-dur75000ba_amp_bf16_layers28_bd3lm_distill_anneal0ba_maxbs{size}_v10"
-                    )
-                ),
+                f"gsm8k:bd3lm-s{size}",
                 "best-rank0.pt",
                 "true",
                 str(size),
@@ -1370,20 +1592,7 @@ def gsm8k_targets() -> list[Target]:
         *[
             Target(
                 "SetDLM",
-                str(
-                    BASE_RUN_DIR
-                    / (
-                        "gsm8k-0shot_block1024_lr1e-5_bsz1_warm100ba_alphaf0.5_"
-                        "max-dur75000ba_amp_bf16_layers28_aoarm_"
-                        + (
-                            "tgt4_max1024_distill_again_v2"
-                            if size == 4
-                            else "tgt8_max1024_distill_v23"
-                            if size == 8
-                            else "tgt16_max1024_distill_again_v2"
-                        )
-                    )
-                ),
+                f"gsm8k:setdlm-smax{2 * size}",
                 "best-rank0.pt",
                 "true",
                 "1024",
@@ -1573,11 +1782,32 @@ TASKS: list[TaskSpec] = [
         build_mauve_output,
     ),
     TaskSpec(
+        "mauve_owt_table4",
+        "bash_scripts/run_uncond_gen_ppl_owt.sh",
+        "owt_table4",
+        build_mauve_owt_table4_env,
+        build_mauve_owt_table4_output,
+    ),
+    TaskSpec(
+        "mauve_owt_table4_bootstrap",
+        "bash_scripts/run_mauve_owt_table4_bootstrap.sh",
+        "owt_table4",
+        build_mauve_owt_table4_bootstrap_env,
+        build_mauve_owt_table4_bootstrap_output,
+    ),
+    TaskSpec(
         "throughput_owt",
         "bash_scripts/run_uncond_gen_ppl_owt.sh",
         "owt",
         build_throughput_owt_env,
         build_mauve_output,
+    ),
+    TaskSpec(
+        "throughput_owt_table4",
+        "bash_scripts/run_uncond_gen_ppl_owt.sh",
+        "owt_table4",
+        build_throughput_owt_table4_env,
+        build_throughput_owt_table4_output,
     ),
     TaskSpec(
         "throughput_lm1b",
@@ -1591,6 +1821,7 @@ TASKS: list[TaskSpec] = [
 
 GROUP_TARGETS = {
     "owt": owt_targets,
+    "owt_table4": owt_table4_targets,
     "owt_infill_legacy": legacy_infill_targets,
     "setdlm_infill3_first_hitting_diagnostic": setdlm_infill3_first_hitting_diagnostic_targets,
     "lm1b": lm1b_targets,
@@ -1604,6 +1835,8 @@ GROUP_TARGETS = {
 def verify_target(target: Target) -> tuple[str, str]:
     if target.status != "ready":
         return target.status, target.reason
+    if is_remote_or_known_eval_model(target.model_path):
+        return "ready", ""
     model_path = Path(target.model_path)
     if model_path.suffix == ".ckpt":
         if not model_path.exists():
@@ -1761,9 +1994,6 @@ def build_row(
         compile_mode=env.get("COMPILE_MODE", "N/A"),
         compile_dynamic=env.get("COMPILE_DYNAMIC", "N/A"),
         compile_supported=env.get("COMPILE_SUPPORTED", "N/A"),
-        setdlm_l2r_eos_frontier_constraint=env.get(
-            "SETDLM_L2R_EOS_FRONTIER_CONSTRAINT", "N/A"
-        ),
         cnndm_generate_target_prompt=env.get("CNNDM_GENERATE_TARGET_PROMPT", "N/A"),
         setdlm_throughput_run_name=env.get("SETDLM_THROUGHPUT_RUN_NAME", "N/A"),
         status=status,
@@ -1851,7 +2081,6 @@ def print_tsv(rows: list[MatrixRow]) -> None:
         "compile_mode",
         "compile_dynamic",
         "compile_supported",
-        "setdlm_l2r_eos_frontier_constraint",
         "cnndm_generate_target_prompt",
         "setdlm_throughput_run_name",
         "command",

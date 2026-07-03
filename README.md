@@ -127,7 +127,7 @@ checkpoint path in `MODEL_PATH`:
 
 ```bash
 # Resolve to kuleshov-group/setdlm-gsm8k-smax32.
-EVAL_MODEL_KEY=gsm8k:setdlm-d16 bash bash_scripts/run_lm_eval_harness.sh
+EVAL_MODEL_KEY=gsm8k:setdlm-smax32 bash bash_scripts/run_lm_eval_harness.sh
 
 # Explicit HF ids and local paths are also accepted.
 MODEL_PATH=kuleshov-group/cnndm-setdlm-smax16 bash bash_scripts/run_seq2seq_eval_cnndm.sh
@@ -152,6 +152,21 @@ For full experiment sweeps, [`scripts/eval/repro_suite_runner.py`](scripts/eval/
 builds the evaluation matrix and uses the same HF-first checkpoint resolver, so generated
 commands and expected output paths agree with the shell wrappers.
 
+### Paper H100 Throughput Reproduction
+
+For the H100 throughput numbers reported in the paper, use the paper-specific
+wrappers:
+
+- [`repro_paper_infill_rouge_tput_h100.sh`](bash_scripts/repro_paper_infill_rouge_tput_h100.sh) for ROCStories infilling.
+- [`repro_paper_cnndm_tput_h100.sh`](bash_scripts/repro_paper_cnndm_tput_h100.sh) for CNN/DailyMail summarization.
+- [`repro_paper_gsm8k_tput_h100.sh`](bash_scripts/repro_paper_gsm8k_tput_h100.sh) for GSM8K throughput.
+
+All three wrappers use 50 warmup examples. CNN/DailyMail and ROCStories use
+1000 measured examples; the GSM8K helper defaults to 200 measured examples and
+accepts `EVAL_MODEL_KEY`, `MODEL_PATH`, `CONFIDENCE_THRESHOLD`, `BLOCK_SIZE`, and
+`MAX_WINDOW_SIZE` overrides for the other Pareto points.
+
+
 The MCQA evaluation flow uses Hydra overrides in the same style as the other eval
 frameworks, for example `+eval/mcqa@task=all` or `+eval/mcqa@task=hellaswag`.
 It evaluates the validation splits of HellaSwag, PIQA, and Social IQa with
@@ -162,7 +177,7 @@ ranked by average log-probability per answer token to reduce length bias.
 
 ## 3. Hugging Face Checkpoints
 SetDLM Hugging Face repo ids use `smax{2 * desired_block_size}` naming. For example,
-`SetDLM-d16` is published as `*-setdlm-smax32`. The GSM8K SetDLM release ids are:
+`SetDLM-smax32` is published as `*-setdlm-smax32`. The GSM8K SetDLM release ids are:
 - `kuleshov-group/setdlm-gsm8k-smax8`
 - `kuleshov-group/setdlm-gsm8k-smax16`
 - `kuleshov-group/setdlm-gsm8k-smax32`
@@ -174,7 +189,7 @@ The corresponding CNN/DM, OWT, and LM1B ids are:
 
 Other evaluated checkpoints use the `kuleshov-group/<dataset>-<model>` naming
 scheme, for example `kuleshov-group/owt-bd3lm-s16`. The resolver accepts either
-these HF ids or compact keys such as `cnndm:setdlm-d8`, `owt:bd3lm-s16`, and
+these HF ids or compact keys such as `cnndm:setdlm-smax16`, `owt:bd3lm-s16`, and
 `lm1b:ar`. For exact GSM8K SetDLM Pareto reproduction, use the repo evaluation
 loader/scripts rather than plain `AutoModel.from_pretrained`, because the loader
 normalizes legacy checkpoint config and eval-time SetDLM noise/cache-order settings.

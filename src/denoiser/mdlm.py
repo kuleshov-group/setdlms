@@ -500,151 +500,6 @@ class MDLM(Denoiser):
         return visible_context
 
     @staticmethod
-    def _apply_infill_context_no_repeat_ngram(
-        log_x_theta: torch.FloatTensor,
-        current_tokens: torch.LongTensor,
-        context_ids: torch.LongTensor,
-        ngram_size: int,
-        neg_infinity: float,
-        mask_token_id: int,
-        pad_token_id: Optional[int] = None,
-        sample_indices: Optional[torch.LongTensor] = None,
-    ) -> tuple[torch.FloatTensor, Dict[str, int]]:
-        """Block tokens that would complete n-grams from visible infill context.
-
-        This processor is intentionally simple and CPU-assisted. It is disabled
-        by default and is meant for small qualitative checks of infill
-        prefix/suffix copying rather than optimized production decoding.
-        """
-        if ngram_size <= 1 or context_ids is None:
-            return log_x_theta, {
-                "blocked_count": 0,
-                "positions_with_blocks": 0,
-                "visible_ngram_count": 0,
-                "generated_ngram_count": 0,
-            }
-        if log_x_theta.ndim != 3 or current_tokens.ndim != 2:
-            raise ValueError("Expected logits [batch, decode, vocab] and tokens [batch, decode].")
-        if log_x_theta.shape[:2] != current_tokens.shape:
-            raise ValueError("current_tokens must match logits batch/decode dimensions.")
-        if context_ids.shape[0] != log_x_theta.shape[0]:
-            if context_ids.shape[0] == 1 and log_x_theta.shape[0] > 1:
-                context_ids = context_ids.expand(log_x_theta.shape[0], -1)
-            else:
-                raise ValueError("context_ids batch size must match logits batch size.")
-
-        adjusted = log_x_theta.clone()
-        batch_size, decode_len, vocab_size = adjusted.shape
-        mask_id = int(mask_token_id)
-        pad_id = None if pad_token_id is None else int(pad_token_id)
-        context_cpu = context_ids.detach().to("cpu")
-        current_cpu = current_tokens.detach().to("cpu")
-        sample_indices_cpu = None
-        if sample_indices is not None:
-            sample_indices_cpu = sample_indices.detach().to("cpu")
-            if sample_indices_cpu.ndim == 1:
-                sample_indices_cpu = sample_indices_cpu.unsqueeze(0).expand(
-                    batch_size, -1
-                )
-            elif (
-                sample_indices_cpu.ndim == 2
-                and sample_indices_cpu.shape[0] == 1
-                and batch_size > 1
-            ):
-                sample_indices_cpu = sample_indices_cpu.expand(batch_size, -1)
-            if sample_indices_cpu.shape[:2] != current_cpu.shape:
-                sample_indices_cpu = None
-        total_blocked = 0
-        positions_with_blocks = 0
-        visible_ngram_count = 0
-        generated_ngram_count = 0
-
-        for batch_idx in range(batch_size):
-            context_row = context_cpu[batch_idx]
-            working_row = context_row.clone()
-            visible_history = []
-            for token in context_row.tolist():
-                token = int(token)
-                if token == mask_id or (pad_id is not None and token == pad_id):
-                    continue
-                visible_history.append(token)
-
-            banned: Dict[tuple[int, ...], set[int]] = {}
-            if len(visible_history) >= ngram_size:
-                for start in range(len(visible_history) - ngram_size + 1):
-                    prefix = tuple(visible_history[start : start + ngram_size - 1])
-                    next_token = int(visible_history[start + ngram_size - 1])
-                    banned.setdefault(prefix, set()).add(next_token)
-                visible_ngram_count += sum(len(tokens) for tokens in banned.values())
-
-            fallback_history = list(visible_history)
-            for decode_idx in range(decode_len):
-                token_at_position = int(current_cpu[batch_idx, decode_idx].item())
-                if token_at_position != mask_id:
-                    continue
-
-                absolute_position = None
-                if sample_indices_cpu is not None:
-                    absolute_position = int(sample_indices_cpu[batch_idx, decode_idx].item())
-                    if absolute_position < 0 or absolute_position >= working_row.shape[-1]:
-                        absolute_position = None
-
-                if absolute_position is None:
-                    prefix_history = fallback_history
-                else:
-                    prefix_history = []
-                    for token in working_row[:absolute_position].tolist():
-                        token = int(token)
-                        if token == mask_id or (pad_id is not None and token == pad_id):
-                            continue
-                        prefix_history.append(token)
-
-                banned_tokens = None
-                if len(prefix_history) >= ngram_size - 1:
-                    prefix = tuple(prefix_history[-(ngram_size - 1) :])
-                    banned_tokens = banned.get(prefix)
-
-                if banned_tokens:
-                    valid_banned = [
-                        token for token in banned_tokens if 0 <= token < vocab_size
-                    ]
-                    if valid_banned:
-                        banned_tensor = torch.tensor(
-                            valid_banned,
-                            device=adjusted.device,
-                            dtype=torch.long,
-                        )
-                        adjusted[batch_idx, decode_idx, banned_tensor] = neg_infinity
-                        total_blocked += len(valid_banned)
-                        positions_with_blocks += 1
-
-                selected_token = int(torch.argmax(adjusted[batch_idx, decode_idx]).item())
-                if selected_token == mask_id or (
-                    pad_id is not None and selected_token == pad_id
-                ):
-                    continue
-                if absolute_position is not None:
-                    working_row[absolute_position] = selected_token
-                    updated_history = prefix_history + [selected_token]
-                else:
-                    fallback_history.append(selected_token)
-                    updated_history = fallback_history
-                if len(updated_history) >= ngram_size:
-                    prefix = tuple(updated_history[-ngram_size:-1])
-                    banned.setdefault(prefix, set()).add(selected_token)
-                    generated_ngram_count += 1
-
-        finite_rows = torch.isfinite(adjusted).any(dim=-1, keepdim=True)
-        normalized = adjusted - torch.logsumexp(adjusted, dim=-1, keepdim=True)
-        adjusted = torch.where(finite_rows, normalized, log_x_theta)
-        return adjusted, {
-            "blocked_count": total_blocked,
-            "positions_with_blocks": positions_with_blocks,
-            "visible_ngram_count": visible_ngram_count,
-            "generated_ngram_count": generated_ngram_count,
-        }
-
-    @staticmethod
     def _length_penalty_prefix_lengths(
         accumulated_samples: torch.LongTensor,
         sample_indices: torch.LongTensor,
@@ -691,114 +546,6 @@ class MDLM(Denoiser):
         visible = visible & (positions.unsqueeze(0) >= target_start)
         exclusive_prefix_counts = F.pad(visible.to(torch.long).cumsum(dim=-1), (1, 0))
         return torch.gather(exclusive_prefix_counts, 1, candidate_indices)
-
-
-    @staticmethod
-    def _l2r_eos_frontier_mask(
-        accumulated_samples: torch.LongTensor,
-        sample_indices: torch.LongTensor,
-        target_start_idx: int | torch.Tensor,
-        mask_token_id: int,
-        pad_token_id: Optional[int] = None,
-    ) -> tuple[torch.LongTensor, torch.BoolTensor]:
-        if accumulated_samples.ndim != 2:
-            raise ValueError(
-                "accumulated_samples must have shape [batch, sequence]."
-            )
-        if sample_indices.ndim == 1:
-            candidate_indices = sample_indices.unsqueeze(0).expand(
-                accumulated_samples.shape[0], -1
-            )
-        elif sample_indices.ndim == 2:
-            candidate_indices = sample_indices
-            if candidate_indices.shape[0] == 1 and accumulated_samples.shape[0] > 1:
-                candidate_indices = candidate_indices.expand(
-                    accumulated_samples.shape[0], -1
-                )
-            elif candidate_indices.shape[0] != accumulated_samples.shape[0]:
-                raise ValueError(
-                    "sample_indices batch size must match accumulated_samples."
-                )
-        else:
-            raise ValueError("sample_indices must be rank 1 or rank 2.")
-
-        target_start = (
-            int(target_start_idx.item())
-            if hasattr(target_start_idx, "item")
-            else int(target_start_idx)
-        )
-        seq_len = accumulated_samples.shape[-1]
-        target_start = max(0, min(target_start, seq_len))
-        candidate_indices = candidate_indices.to(
-            device=accumulated_samples.device, dtype=torch.long
-        )
-
-        visible = accumulated_samples != mask_token_id
-        if pad_token_id is not None:
-            visible = visible & (accumulated_samples != pad_token_id)
-        target_visible = visible[:, target_start:]
-        if target_visible.shape[-1] == 0:
-            prefix_lengths = torch.zeros(
-                accumulated_samples.shape[0],
-                device=accumulated_samples.device,
-                dtype=torch.long,
-            )
-        else:
-            first_hidden = (~target_visible).to(torch.long).argmax(dim=-1)
-            all_visible = target_visible.all(dim=-1)
-            full_len = torch.full_like(first_hidden, target_visible.shape[-1])
-            prefix_lengths = torch.where(all_visible, full_len, first_hidden)
-
-        target_offsets = candidate_indices - target_start
-        eos_allowed = (target_offsets >= 0) & (
-            target_offsets <= prefix_lengths[:, None]
-        )
-        return prefix_lengths, eos_allowed
-
-    @staticmethod
-    def _normalize_candidate_mask(
-        candidate_mask: torch.BoolTensor,
-        target_shape: torch.Size | tuple[int, int],
-        device: torch.device,
-    ) -> torch.BoolTensor:
-        if candidate_mask.ndim == 1:
-            candidate_mask = candidate_mask.unsqueeze(0)
-        elif candidate_mask.ndim != 2:
-            raise ValueError("candidate mask must have rank 1 or rank 2.")
-        candidate_mask = candidate_mask.to(device=device, dtype=torch.bool)
-        batch_size, decode_len = int(target_shape[0]), int(target_shape[1])
-        if candidate_mask.shape[0] == 1 and batch_size > 1:
-            candidate_mask = candidate_mask.expand(batch_size, -1)
-        if candidate_mask.shape[0] != batch_size:
-            raise ValueError("candidate mask batch size must match logits batch size.")
-        if candidate_mask.shape[1] > decode_len:
-            candidate_mask = candidate_mask[..., :decode_len]
-        if candidate_mask.shape[1] != decode_len:
-            raise ValueError("candidate mask must have shape [batch, decode_len].")
-        return candidate_mask
-
-    @staticmethod
-    def _apply_eos_allowed_mask(
-        log_x_theta: torch.FloatTensor,
-        eos_allowed_mask: torch.BoolTensor,
-        eos_token_id: int,
-        neg_infinity: float,
-    ) -> tuple[torch.FloatTensor, torch.BoolTensor]:
-        eos_allowed_mask = MDLM._normalize_candidate_mask(
-            eos_allowed_mask, log_x_theta.shape[:2], log_x_theta.device
-        )
-        if eos_token_id < 0 or eos_token_id >= log_x_theta.shape[-1]:
-            return log_x_theta, eos_allowed_mask
-        eos_scores = log_x_theta[..., eos_token_id]
-        suppressed = torch.full_like(eos_scores, neg_infinity)
-        log_x_theta = log_x_theta.clone()
-        log_x_theta[..., eos_token_id] = torch.where(
-            eos_allowed_mask, eos_scores, suppressed
-        )
-        log_x_theta = log_x_theta - torch.logsumexp(
-            log_x_theta, dim=-1, keepdim=True
-        )
-        return log_x_theta, eos_allowed_mask
 
 
     @staticmethod
@@ -1011,12 +758,9 @@ class MDLM(Denoiser):
         cache: Optional[Dict[str, Any]] = None,
         running_generation: Optional[torch.LongTensor] = None,
         repetition_penalty_context: Optional[torch.LongTensor] = None,
-        infill_context_no_repeat_ngram_context: Optional[torch.LongTensor] = None,
         inputs_offset: Optional[int] = 0,
         logits_processor_inputs_offset: Optional[int] = None,
         length_penalty_prefix_lengths: Optional[torch.LongTensor] = None,
-        eos_allowed_mask: Optional[torch.BoolTensor] = None,
-        eos_token_id: Optional[int] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         sample_indices: Optional[Tuple[int, int]] = None,
         input_indices: Optional[Tuple[int, int]] = None,
@@ -1249,41 +993,6 @@ class MDLM(Denoiser):
             log_x_theta = self._forward(logits, denoiser_inputs, **kwargs)
 
         confidence_updates: Dict[str, torch.Tensor] = {}
-        if eos_allowed_mask is not None and eos_token_id is not None:
-            eos_token_id = int(eos_token_id)
-            if 0 <= eos_token_id < log_x_theta.shape[-1]:
-                eos_allowed_for_processor = MDLM._normalize_candidate_mask(
-                    eos_allowed_mask, log_x_theta.shape[:2], log_x_theta.device
-                )
-                log_x_theta, eos_allowed_for_processor = (
-                    MDLM._apply_eos_allowed_mask(
-                        log_x_theta,
-                        eos_allowed_for_processor,
-                        eos_token_id,
-                        self.neg_infinity,
-                    )
-                )
-
-        infill_context_ngram_size = int(
-            getattr(generation_config, "infill_context_no_repeat_ngram_size", 0) or 0
-        )
-        if (
-            infill_context_ngram_size > 0
-            and infill_context_no_repeat_ngram_context is not None
-        ):
-            log_x_theta, _ = (
-                MDLM._apply_infill_context_no_repeat_ngram(
-                    log_x_theta=log_x_theta,
-                    current_tokens=denoiser_inputs.xt,
-                    context_ids=infill_context_no_repeat_ngram_context,
-                    ngram_size=infill_context_ngram_size,
-                    neg_infinity=self.neg_infinity,
-                    mask_token_id=self.mask_token_id,
-                    pad_token_id=self.pad_token_id,
-                    sample_indices=sample_indices,
-                )
-            )
-
         x_theta = log_x_theta.exp()
 
         # nucleus sampling
@@ -1651,37 +1360,16 @@ class MDLM(Denoiser):
                     else accumulated_samples[:, : input_indices[-1] + 1]
                 )
                 repetition_penalty_context = None
-                infill_context_no_repeat_ngram_context = None
-                infill_context_ngram_size = int(
-                    getattr(
-                        generation_config,
-                        "infill_context_no_repeat_ngram_size",
-                        0,
-                    )
-                    or 0
-                )
-                needs_visible_infill_context = is_infill_task and (
-                    getattr(
-                        generation_config,
-                        "infill_repetition_penalty_include_right_context",
-                        False,
-                    )
-                    or infill_context_ngram_size > 0
-                )
-                if needs_visible_infill_context:
-                    visible_infill_context = self._visible_infill_context(
+                if is_infill_task and getattr(
+                    generation_config,
+                    "infill_repetition_penalty_include_right_context",
+                    False,
+                ):
+                    repetition_penalty_context = self._visible_infill_context(
                         accumulated_samples=accumulated_samples,
                         mask_token_id=self.mask_token_id,
                         pad_token_id=self.pad_token_id,
                     )
-                    if getattr(
-                        generation_config,
-                        "infill_repetition_penalty_include_right_context",
-                        False,
-                    ):
-                        repetition_penalty_context = visible_infill_context
-                    if infill_context_ngram_size > 0:
-                        infill_context_no_repeat_ngram_context = accumulated_samples
 
                 length_penalty_prefix_lengths = None
                 if logits_processor is not None and len(logits_processor) > 0:
@@ -1702,7 +1390,6 @@ class MDLM(Denoiser):
                     cache=cache,
                     running_generation=running_generation,  # type: ignore
                     repetition_penalty_context=repetition_penalty_context,
-                    infill_context_no_repeat_ngram_context=infill_context_no_repeat_ngram_context,
                     inputs_offset=inputs_offset,
                     logits_processor_inputs_offset=logits_processor_inputs_offset,
                     length_penalty_prefix_lengths=length_penalty_prefix_lengths,

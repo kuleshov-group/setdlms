@@ -5,9 +5,6 @@ _target_: src.denoiser.diffusion.SetDiffusionGenerationConfig
 max_window_size: ${block_size}
 cache_full_infill_context: false
 use_first_hitting_order_in_decode: false
-setdlm_legacy_active_window_order: false
 infill_repetition_penalty_include_right_context: false
-infill_context_no_repeat_ngram_size: 0
-setdlm_l2r_eos_frontier_constraint: false
-setdlm_infill_cache_promotion_order: legacy
+setdlm_infill_cache_promotion_order: l2r
 fused_block_cache: null

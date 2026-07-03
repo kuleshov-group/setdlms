@@ -23,201 +23,6 @@ from src.denoiser.diffusion_config import (
 )
 
 
-class SetDLMStaticCache:
-    """Append-only KV cache with stable backing storage for compiled SetDLM eval.
-
-    DynamicCache returns tensors allocated inside the compiled/captured backbone. In
-    reduce-overhead mode those graph-owned tensors must be cloned before the next
-    replay. This cache instead copies each layer update into persistent tensors and
-    returns active views with the same logical shape/order as DynamicCache.
-    """
-
-    def __init__(self, max_cache_len: int):
-        self.max_cache_len = int(max_cache_len)
-        self.key_cache: list[torch.Tensor] = []
-        self.value_cache: list[torch.Tensor] = []
-        self._seq_length = 0
-        self._write_start = 0
-        self._write_end = 0
-        self._logical_write_start = 0
-        self._prepared_physical_write_start: int | None = None
-        self._prepared_return_length: int | None = None
-        self._logical_bucket_write = False
-        self._return_length: int | None = None
-        self._pending_physical_write_start: int | None = None
-        self._pending_logical_write_start: int | None = None
-
-    @staticmethod
-    def _as_int(value: Any) -> int:
-        return int(value.item()) if hasattr(value, "item") else int(value)
-
-    def __len__(self) -> int:
-        return len(self.key_cache)
-
-    def __getitem__(self, layer_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        read_length = (
-            self._return_length if self._return_length is not None else self._seq_length
-        )
-        return (
-            self.key_cache[layer_idx][..., :read_length, :],
-            self.value_cache[layer_idx][..., :read_length, :],
-        )
-
-    def _allocate_layer(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        cache_shape = (
-            key_states.shape[0],
-            key_states.shape[1],
-            self.max_cache_len,
-            key_states.shape[-1],
-        )
-        key_cache = torch.zeros(
-            cache_shape,
-            dtype=key_states.dtype,
-            device=key_states.device,
-        )
-        value_cache = torch.zeros(
-            cache_shape,
-            dtype=value_states.dtype,
-            device=value_states.device,
-        )
-        torch._dynamo.mark_static_address(key_cache)
-        torch._dynamo.mark_static_address(value_cache)
-        return key_cache, value_cache
-
-    def initialize(
-        self,
-        batch_size: int,
-        num_layers: int,
-        num_heads: int,
-        head_dim: int,
-        device: torch.device | str,
-        dtype: torch.dtype,
-    ) -> None:
-        cache_shape = (batch_size, num_heads, self.max_cache_len, head_dim)
-        for _ in range(num_layers):
-            key_cache = torch.zeros(cache_shape, dtype=dtype, device=device)
-            value_cache = torch.zeros(cache_shape, dtype=dtype, device=device)
-            torch._dynamo.mark_static_address(key_cache)
-            torch._dynamo.mark_static_address(value_cache)
-            self.key_cache.append(key_cache)
-            self.value_cache.append(value_cache)
-
-    def _ensure_layer(
-        self,
-        layer_idx: int,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-    ) -> None:
-        while len(self.key_cache) <= layer_idx:
-            key_cache, value_cache = self._allocate_layer(key_states, value_states)
-            self.key_cache.append(key_cache)
-            self.value_cache.append(value_cache)
-
-    def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
-        del layer_idx
-        return self._seq_length
-
-    def prepare_write(self, physical_write_start: int | None = None) -> None:
-        self._prepared_physical_write_start = (
-            None
-            if physical_write_start is None
-            else self._as_int(physical_write_start)
-        )
-        self._prepared_return_length = None
-        self._logical_bucket_write = False
-
-    def prepare_logical_write(self, return_length: int | None = None) -> None:
-        self._prepared_physical_write_start = None
-        self._prepared_return_length = (
-            None if return_length is None else self._as_int(return_length)
-        )
-        self._logical_bucket_write = True
-
-    def crop(self, max_length: int) -> None:
-        max_length = self._as_int(max_length)
-        if max_length < 0:
-            max_length = max(self._seq_length + max_length, 0)
-        if (
-            self._pending_physical_write_start is not None
-            and self._pending_logical_write_start is not None
-            and self._pending_physical_write_start != self._pending_logical_write_start
-            and max_length > self._pending_logical_write_start
-        ):
-            keep_len = max_length - self._pending_logical_write_start
-            src_start = self._pending_physical_write_start
-            src_end = src_start + keep_len
-            dst_start = self._pending_logical_write_start
-            dst_end = dst_start + keep_len
-            for layer_idx in range(len(self.key_cache)):
-                self.key_cache[layer_idx][..., dst_start:dst_end, :].copy_(
-                    self.key_cache[layer_idx][..., src_start:src_end, :]
-                )
-                self.value_cache[layer_idx][..., dst_start:dst_end, :].copy_(
-                    self.value_cache[layer_idx][..., src_start:src_end, :]
-                )
-        self._seq_length = min(max_length, self._seq_length)
-        self._return_length = None
-        self._prepared_physical_write_start = None
-        self._prepared_return_length = None
-        self._logical_bucket_write = False
-        self._pending_physical_write_start = None
-        self._pending_logical_write_start = None
-
-    def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        layer_idx: int,
-        cache_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        del cache_kwargs
-        self._ensure_layer(layer_idx, key_states, value_states)
-        incoming_len = key_states.shape[-2]
-        if layer_idx == 0:
-            self._logical_write_start = self._seq_length
-            logical_bucket_write = self._logical_bucket_write
-            if logical_bucket_write:
-                self._write_start = self._logical_write_start
-            else:
-                self._write_start = (
-                    self._prepared_physical_write_start
-                    if self._prepared_physical_write_start is not None
-                    else self._logical_write_start
-                )
-            self._write_end = self._write_start + incoming_len
-            return_length = max(
-                self._logical_write_start + incoming_len,
-                self._write_end,
-            )
-            if self._prepared_return_length is not None:
-                return_length = max(return_length, self._prepared_return_length)
-            if return_length > self.max_cache_len:
-                raise ValueError(
-                    "SetDLMStaticCache capacity exceeded: "
-                    f"{return_length} > {self.max_cache_len}"
-                )
-            self._seq_length = self._logical_write_start + incoming_len
-            self._return_length = return_length
-            if logical_bucket_write:
-                self._pending_physical_write_start = None
-                self._pending_logical_write_start = None
-            else:
-                self._pending_physical_write_start = self._write_start
-                self._pending_logical_write_start = self._logical_write_start
-        self.key_cache[layer_idx][..., self._write_start : self._write_end, :].copy_(
-            key_states
-        )
-        self.value_cache[layer_idx][
-            ..., self._write_start : self._write_end, :
-        ].copy_(value_states)
-        return self[layer_idx]
-
-
-
 class SetDLM(BD3LM):
     """Denoiser class for SetDLM models."""
 
@@ -371,76 +176,15 @@ class SetDLM(BD3LM):
     def _new_generation_cache(
         self, batch_size: int, device: torch.device | str
     ) -> Dict[str, Any]:
-        if getattr(self, "_setdlm_static_compile_cache", False):
-            cache = SetDLMStaticCache(self.config.length)
-            backbone = getattr(self.backbone, "_orig_mod", self.backbone)
-            if all(
-                hasattr(backbone, attr)
-                for attr in ("blocks", "n_heads", "vocab_embed")
-            ):
-                embedding = getattr(backbone.vocab_embed, "embedding", None)
-                if embedding is not None:
-                    hidden_size = int(embedding.shape[-1])
-                    num_heads = int(backbone.n_heads)
-                    cache.initialize(
-                        batch_size=batch_size,
-                        num_layers=len(backbone.blocks),
-                        num_heads=num_heads,
-                        head_dim=hidden_size // num_heads,
-                        device=device,
-                        dtype=embedding.dtype,
-                    )
-            return {"past_key_values": cache}
         del batch_size, device
         return {"past_key_values": DynamicCache()}
-
-    @staticmethod
-    def _clone_dynamic_cache_tensors(cache: Cache | None) -> Cache | None:
-        if cache is None or not hasattr(cache, "key_cache"):
-            return cache
-        for cache_list_name in ("key_cache", "value_cache"):
-            cache_list = getattr(cache, cache_list_name, None)
-            if cache_list is None:
-                continue
-            for idx, tensor in enumerate(cache_list):
-                if isinstance(tensor, torch.Tensor):
-                    cache_list[idx] = tensor.clone()
-        return cache
-
-    def _should_clone_compile_cache(self) -> bool:
-        return (
-            hasattr(self.backbone, "_orig_mod")
-            and getattr(self, "_setdlm_clone_compile_cache", False)
-            and not getattr(self, "_setdlm_static_compile_cache", False)
-        )
-
-    def _clone_compile_cache_if_needed(self, cache: Dict[str, Any] | None) -> None:
-        if self._should_clone_compile_cache() and cache is not None:
-            self._clone_dynamic_cache_tensors(cache.get("past_key_values"))
 
     def _backbone_forward(
         self,
         denoiser_inputs: DenoiserInput,
         **backbone_kwargs: Any,
     ):
-        compiled_backbone = hasattr(self.backbone, "_orig_mod")
-        clone_compile_cache = getattr(self, "_setdlm_clone_compile_cache", False)
-        static_compile_cache = getattr(self, "_setdlm_static_compile_cache", False)
-        if compiled_backbone and (clone_compile_cache or static_compile_cache):
-            mark_step_begin = getattr(
-                getattr(torch, "compiler", None), "cudagraph_mark_step_begin", None
-            )
-            if mark_step_begin is not None:
-                mark_step_begin()
-        backbone_output = super()._backbone_forward(denoiser_inputs, **backbone_kwargs)
-        return_updated_cache = denoiser_inputs.backbone_kwargs.get(
-            "return_updated_cache", False
-        ) or backbone_kwargs.get("return_updated_cache", False)
-        if self._should_clone_compile_cache() and not return_updated_cache:
-            self._clone_dynamic_cache_tensors(
-                getattr(backbone_output, "past_key_values", None)
-            )
-        return backbone_output
+        return super()._backbone_forward(denoiser_inputs, **backbone_kwargs)
 
     def _compute_loss(
         self,
@@ -710,7 +454,6 @@ class SetDLM(BD3LM):
             prepared_position_ids = context_input.backbone_kwargs.get("position_ids")
             if prepared_position_ids is not None:
                 cache[self._KV_CACHE_POSITION_IDS_KEY] = prepared_position_ids.clone()
-        self._clone_compile_cache_if_needed(cache)
         return cache
 
     @staticmethod
@@ -1026,29 +769,6 @@ class SetDLM(BD3LM):
         order = order_values.argsort(dim=-1, stable=True)
         return torch.gather(relative_indices, dim=-1, index=order)
 
-    @staticmethod
-    def _resolve_generation_eos_token_id(
-        generation_config: SetDiffusionGenerationConfig,
-        tokenizer: PreTrainedTokenizer | None,
-    ) -> int | None:
-        eos_token_id = getattr(generation_config, "eos_token_id", None)
-        if eos_token_id is None and tokenizer is not None:
-            eos_token_id = getattr(tokenizer, "eos_token_id", None)
-        if torch.is_tensor(eos_token_id):
-            if eos_token_id.numel() == 0:
-                return None
-            eos_token_id = eos_token_id.flatten()[0].item()
-        elif isinstance(eos_token_id, (list, tuple)):
-            if not eos_token_id:
-                return None
-            eos_token_id = eos_token_id[0]
-        if eos_token_id is None:
-            return None
-        try:
-            return int(eos_token_id)
-        except (TypeError, ValueError):
-            return None
-
     def _sample_prior(
         self,
         inputs: torch.LongTensor,
@@ -1162,39 +882,17 @@ class SetDLM(BD3LM):
         if input_length > 0 and not is_infill_task:
             cache_flag[:, :first_mask_token_idx] = True
         infill_cache_promotion_order = getattr(
-            generation_config, "setdlm_infill_cache_promotion_order", "legacy"
+            generation_config, "setdlm_infill_cache_promotion_order", "l2r"
         )
-        if infill_cache_promotion_order not in {"legacy", "l2r", "first_hitting"}:
+        if infill_cache_promotion_order not in {"l2r", "first_hitting"}:
             raise ValueError(
                 "setdlm_infill_cache_promotion_order must be one of "
-                "['first_hitting', 'l2r', 'legacy'], got "
+                "['first_hitting', 'l2r'], got "
                 f"{infill_cache_promotion_order!r}"
             )
-        explicit_infill_cache_promotion_order = (
-            infill_cache_promotion_order != "legacy"
-        )
-        decode_eos_token_id = self._resolve_generation_eos_token_id(
-            generation_config, tokenizer
-        )
-        l2r_eos_frontier_constraint_requested = bool(
-            getattr(generation_config, "setdlm_l2r_eos_frontier_constraint", False)
-        )
-        l2r_eos_frontier_constraint = (
-            (not is_infill_task)
-            and l2r_eos_frontier_constraint_requested
-            and decode_eos_token_id is not None
-        )
         use_first_hitting_order_in_decode = not is_infill_task and getattr(
             generation_config, "use_first_hitting_order_in_decode", False
         )
-        legacy_active_window_order = not is_infill_task and bool(
-            getattr(generation_config, "setdlm_legacy_active_window_order", False)
-        )
-        if legacy_active_window_order and use_first_hitting_order_in_decode:
-            raise ValueError(
-                "setdlm_legacy_active_window_order cannot be combined with "
-                "use_first_hitting_order_in_decode."
-            )
         decode_first_hitting_length = None
         # Keep the 1D timestep schedule separate from the per-example decode-order
         # tensor; _sample_generation_timesteps expects a vector, not [batch, length].
@@ -1243,7 +941,7 @@ class SetDLM(BD3LM):
             decode_order_first_hitting_times = decode_order_scores[
                 :, inputs_offset : inputs_offset + max_new_tokens
             ]
-        if legacy_active_window_order or use_fht_cache_order:
+        if use_fht_cache_order:
             decode_first_hitting_length = self._value_to_int(num_mask_tokens)
             decode_order_first_hitting_times = (
                 self.noise_schedule.compute_first_hitting_times(
@@ -1299,10 +997,8 @@ class SetDLM(BD3LM):
             infill_cache_first_hitting_length = accumulated_samples.shape[-1]
             # Cache-promotion order should be a property of this generation, not
             # resampled every decode step. Reusing it also avoids repeated RNG
-            # calls and allocations in the hottest infilling loop. Existing eval
-            # rows keep the historical behavior unless the explicit order flag is
-            # set.
-            if infill_cache_promotion_order in {"first_hitting", "legacy"}:
+            # calls and allocations in the hottest infilling loop.
+            if infill_cache_promotion_order == "first_hitting":
                 infill_cache_first_hitting_times = (
                     self.noise_schedule.compute_first_hitting_times(
                         batch_size=batch_size,
@@ -1402,11 +1098,7 @@ class SetDLM(BD3LM):
             unpadded_masked_position_ids = masked_position_ids
             masked_first_hitting_times = None
             if (
-                (
-                    use_first_hitting_order_in_decode
-                    or legacy_active_window_order
-                    or use_fht_cache_order
-                )
+                (use_first_hitting_order_in_decode or use_fht_cache_order)
                 and decode_order_first_hitting_times is not None
             ):
                 masked_first_hitting_times = torch.gather(
@@ -1458,37 +1150,16 @@ class SetDLM(BD3LM):
             else:
                 running_generation = accumulated_samples[cache_flag].unsqueeze(0)
             repetition_penalty_context = None
-            infill_context_no_repeat_ngram_context = None
-            infill_context_ngram_size = int(
-                getattr(
-                    generation_config,
-                    "infill_context_no_repeat_ngram_size",
-                    0,
-                )
-                or 0
-            )
-            needs_visible_infill_context = is_infill_task and (
-                getattr(
-                    generation_config,
-                    "infill_repetition_penalty_include_right_context",
-                    False,
-                )
-                or infill_context_ngram_size > 0
-            )
-            if needs_visible_infill_context:
-                visible_infill_context = self._visible_infill_context(
+            if is_infill_task and getattr(
+                generation_config,
+                "infill_repetition_penalty_include_right_context",
+                False,
+            ):
+                repetition_penalty_context = self._visible_infill_context(
                     accumulated_samples=accumulated_samples,
                     mask_token_id=self.mask_token_id,
                     pad_token_id=self.pad_token_id,
                 )
-                if getattr(
-                    generation_config,
-                    "infill_repetition_penalty_include_right_context",
-                    False,
-                ):
-                    repetition_penalty_context = visible_infill_context
-                if infill_context_ngram_size > 0:
-                    infill_context_no_repeat_ngram_context = accumulated_samples
             length_penalty_prefix_lengths = None
             if logits_processor is not None and len(logits_processor) > 0:
                 length_penalty_prefix_lengths = self._length_penalty_prefix_lengths(
@@ -1498,25 +1169,6 @@ class SetDLM(BD3LM):
                     mask_token_id=self.mask_token_id,
                     pad_token_id=self.pad_token_id,
                 )
-            eos_frontier_prefix_lengths = None
-            eos_allowed_mask = None
-            eos_constraints_active = (
-                (not is_infill_task)
-                and decode_eos_token_id is not None
-                and l2r_eos_frontier_constraint
-            )
-            if eos_constraints_active:
-                if l2r_eos_frontier_constraint:
-                    eos_frontier_prefix_lengths, eos_allowed_mask = (
-                        self._l2r_eos_frontier_mask(
-                            accumulated_samples=accumulated_samples,
-                            sample_indices=sample_indices,
-                            target_start_idx=first_mask_token_idx,
-                            mask_token_id=self.mask_token_id,
-                            pad_token_id=self.pad_token_id,
-                        )
-                    )
-
             generation_output = self._generate_unconditional(
                 generation_config=generation_config,
                 t=t[0],
@@ -1526,15 +1178,8 @@ class SetDLM(BD3LM):
                 xt=xt,
                 running_generation=running_generation,
                 repetition_penalty_context=repetition_penalty_context,
-                infill_context_no_repeat_ngram_context=infill_context_no_repeat_ngram_context,
                 inputs_offset=inputs_offset,
                 length_penalty_prefix_lengths=length_penalty_prefix_lengths,
-                eos_allowed_mask=eos_allowed_mask,
-                eos_token_id=(
-                    decode_eos_token_id
-                    if eos_allowed_mask is not None
-                    else None
-                ),
                 logits_processor=logits_processor,
                 return_updated_cache=return_updated_cache,
                 cache_len=clean_len,
@@ -1564,7 +1209,6 @@ class SetDLM(BD3LM):
                         ),
                         dim=-1,
                     )
-                self._clone_compile_cache_if_needed(cache)
                 clean_len = (
                     (
                         torch.gather(
