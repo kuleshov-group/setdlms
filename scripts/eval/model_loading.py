@@ -16,7 +16,7 @@ from scripts.utils import (
 from src.denoiser.ar import AR, ARConfig
 from src.denoiser.bd3lm import BD3LM, BD3LMConfig
 from src.denoiser.setdlm import SetDLM
-from src.denoiser.mdlm import MDLM, SEDD, MDLMConfig
+from src.denoiser.mdlm import MDLM, MDLMConfig
 from src.noise_schedule.noise_schedules import LinearNoise, StaggeredNoise
 from src.utils import fsspec_exists
 
@@ -440,10 +440,6 @@ def _normalize_hf_model_load_result(
     return load_result, None
 
 
-def _is_sedd_model_path(pretrained_model_name_or_path: str) -> bool:
-    return "sedd" in str(pretrained_model_name_or_path).lower()
-
-
 def _legacy_backbone_config_name(pretrained_model_name_or_path: str) -> str:
     return "dit_legacy.yaml"
 
@@ -691,10 +687,7 @@ def _load_legacy_denoiser(
         "length": length,
         "backbone_config": OmegaConf.to_container(backbone_config, resolve=True),
     }
-    if _is_sedd_model_path(model_type_key):
-        denoiser_config = MDLMConfig(**common_config_kwargs)
-        denoiser_cls = SEDD
-    elif "mdlm" in model_type_key:
+    if "mdlm" in model_type_key:
         denoiser_config = MDLMConfig(**common_config_kwargs)
         denoiser_cls = MDLM
     elif "ar-" in model_type_key or "/ar" in model_type_key:
@@ -812,14 +805,7 @@ def load_eval_model(
         "setdlm" in os.path.basename(str(pretrained_model_name_or_path)).lower()
         and model is not None
     )
-    is_sedd_path = _is_sedd_model_path(pretrained_model_name_or_path)
-    if is_sedd_path and isinstance(model, SEDD):
-        return model.to(device)
-
     if force_local_wrapper_for_hf_backbone or model is None or (
-        is_sedd_path
-        and not isinstance(model, SEDD)
-    ) or (
         force_legacy_if_no_generate and not hasattr(model, "generate")
     ):
         model = _load_legacy_denoiser(

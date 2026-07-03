@@ -1275,13 +1275,13 @@ class SetDLM(BD3LM):
                         last_potential_position_id - first_masked_position_id,
                         device=device,
                     )[None, :]
-                    l2r_frontier = torch.where(
+                    last_newly_unmasked_idx = torch.where(
                         just_unmasked_slice,
                         position_ids,
                         torch.full_like(position_ids, -1),
                     ).max(dim=-1).values[:, None]
                     new_cache_positions = (
-                        (position_ids <= l2r_frontier)
+                        (position_ids <= last_newly_unmasked_idx)
                         & (accumulated_slice != self.mask_token_id)
                         & ~cache_flag_slice
                         & ~masked_positions_slice

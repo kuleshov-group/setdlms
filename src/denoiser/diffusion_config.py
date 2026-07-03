@@ -24,9 +24,7 @@ class DiffusionGenerationConfig(GenerationConfig):
         min_t: float = 1e-5,
         block_size: Optional[int] = None,
         first_hitting: bool = True,
-        sampling_strategy: Literal[
-            "posterior", "predict_and_noise", "analytic"
-        ] = "posterior",
+        sampling_strategy: Literal["posterior", "predict_and_noise"] = "posterior",
         noise_removal: bool = True,
         confidence_based_noising: bool = False,
         confidence_margin_based_noising: bool = False,
@@ -65,11 +63,8 @@ class DiffusionGenerationConfig(GenerationConfig):
                     - "predict_and_noise" - Sample from the denoising model x_theta,
                         then add back noise to produce x_s.
                         Only implemented for absorbing diffusion.
-                    - "analytic" - Use the analytic SEDD sampler from
-                        `kuleshov-group/mdlm`.
                 Defaults to "posterior".
-            noise_removal (bool): Whether to run the final denoiser-only cleanup step
-                used by the upstream SEDD sampler after the main reverse-time updates.
+            noise_removal (bool): Whether to run a final denoiser-only cleanup step.
                 Defaults to True.
             confidence_based_noising (bool): When using the "predict_and_noise"
                 strategy, whether to add noise to random positions or to those that have

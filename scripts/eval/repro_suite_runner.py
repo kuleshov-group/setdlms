@@ -471,15 +471,6 @@ def build_lm1b_uncond_env(target: Target) -> dict[str, str]:
         "NUCLEUS_P": "0.95",
         "NUM_VISIBLE_DEVICES": target.num_visible_devices,
     }
-    if target.variant == "SEDD":
-        env.update(
-            {
-                "MODEL_FAMILY": "SEDD",
-                "GENERATION_CONFIG_NAME": "sedd_generation_config",
-                "SAMPLING_STRATEGY": "analytic",
-                "NOISE_REMOVAL": "true",
-            }
-        )
     return env
 
 
@@ -839,15 +830,6 @@ def build_mauve_env(target: Target) -> dict[str, str]:
         "NUCLEUS_P": "0.95",
         "NUM_VISIBLE_DEVICES": target.num_visible_devices,
     }
-    if target.variant == "SEDD":
-        env.update(
-            {
-                "MODEL_FAMILY": "SEDD",
-                "GENERATION_CONFIG_NAME": "sedd_generation_config",
-                "SAMPLING_STRATEGY": "analytic",
-                "NOISE_REMOVAL": "true",
-            }
-        )
     return env
 
 
@@ -1198,8 +1180,8 @@ def build_mauve_output(target: Target) -> str:
     suffix = (
         "owt-L-1024-NUM_SAMPLES1000/"
         f"block_size-{target.eval_block_size}-T{target.eval_block_size}-"
-        f"sampling_strategy-{'analytic' if target.variant == 'SEDD' else 'predict_and_noise'}-"
-        f"noise_removal-{'true' if target.variant == 'SEDD' else 'false'}-"
+        "sampling_strategy-predict_and_noise-"
+        "noise_removal-false-"
         "do_sample-true-first_hitting-false-"
         f"align_inputs_to_blocks{target.align_inputs_to_blocks}-"
         f"ckpt{target.ckpt_file}-ema{target.use_ema}-"
@@ -1211,15 +1193,13 @@ def build_mauve_output(target: Target) -> str:
 
 
 def build_owt_uncond_output_for_env(target: Target, env: dict[str, str]) -> str:
-    sampling_strategy = "analytic" if target.variant == "SEDD" else "predict_and_noise"
-    noise_removal = "true" if target.variant == "SEDD" else "false"
     output_num_samples = env.get("OUTPUT_NUM_SAMPLES", env.get("NUM_SAMPLES", "1000"))
     suffix = (
         f"owt-L-1024-NUM_SAMPLES{output_num_samples}/"
         f"block_size-{env.get('BLOCK_SIZE', target.eval_block_size)}-"
         f"T{env.get('GENERATION_NUM_STEPS', env.get('BLOCK_SIZE', target.eval_block_size))}-"
-        f"sampling_strategy-{env.get('SAMPLING_STRATEGY', sampling_strategy)}-"
-        f"noise_removal-{env.get('NOISE_REMOVAL', noise_removal)}-"
+        f"sampling_strategy-{env.get('SAMPLING_STRATEGY', 'predict_and_noise')}-"
+        f"noise_removal-{env.get('NOISE_REMOVAL', 'false')}-"
         "do_sample-true-first_hitting-false-"
         f"align_inputs_to_blocks{env.get('ALIGN_INPUTS_TO_BLOCKS', target.align_inputs_to_blocks)}-"
         f"ckpt{env.get('CKPT_FILE', target.ckpt_file)}-ema{env.get('USE_EMA', target.use_ema)}-"
@@ -1255,35 +1235,6 @@ def build_mauve_owt_table4_output(target: Target) -> str:
 
 def build_throughput_owt_table4_output(target: Target) -> str:
     return build_owt_uncond_output_for_env(target, build_throughput_owt_table4_env(target))
-
-
-def sedd_owt_target() -> Target:
-    return Target(
-        variant="SEDD",
-        model_path="kuleshov-group/sedd-noeos-owt",
-        ckpt_file="none",
-        use_ema="false",
-        eval_block_size="1024",
-        max_window_size="1024",
-        kv_caching="false",
-        align_inputs_to_blocks="false",
-    )
-
-
-def missing_sedd() -> Target:
-    return Target(
-        variant="SEDD",
-        model_path="N/A",
-        ckpt_file="N/A",
-        use_ema="N/A",
-        eval_block_size="N/A",
-        max_window_size="N/A",
-        status="missing checkpoint/config",
-        reason=(
-            "No compatible SEDD checkpoint/config found; configs/model/sedd.yaml is "
-            "absent and no sedd-* eval checkpoint was discovered."
-        ),
-    )
 
 
 def owt_targets() -> list[Target]:
@@ -1348,7 +1299,6 @@ def owt_targets() -> list[Target]:
             )
             for size in (4, 8, 16)
         ],
-        sedd_owt_target(),
     ]
 
 
@@ -1491,7 +1441,6 @@ def lm1b_targets() -> list[Target]:
             )
             for size in (4, 8, 16)
         ],
-        missing_sedd(),
     ]
 
 
@@ -1550,7 +1499,6 @@ def cnndm_targets() -> list[Target]:
             )
             for size in (4, 8, 16)
         ],
-        missing_sedd(),
     ]
 
 
@@ -1602,7 +1550,6 @@ def gsm8k_targets() -> list[Target]:
             )
             for size in (4, 8, 16)
         ],
-        missing_sedd(),
     ]
 
 
@@ -2251,7 +2198,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--suite-id", default=dt.datetime.now().strftime("repro_%Y%m%d_%H%M%S"))
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--tasks", nargs="*", choices=[task.name for task in TASKS])
-    parser.add_argument("--variants", nargs="*", choices=["AR", "MDLM", "BD3LM", "SetDLM", "SEDD"])
+    parser.add_argument("--variants", nargs="*", choices=["AR", "MDLM", "BD3LM", "SetDLM"])
     parser.add_argument("--row-ids", nargs="*", help="Limit matrix to exact row_id values after task/variant filters.")
     parser.add_argument("--execute", action="store_true", help="Submit or run ready rows. Default is dry-run only.")
     parser.add_argument("--max-jobs", type=int, default=None, help="Limit launched ready rows when --execute is set.")

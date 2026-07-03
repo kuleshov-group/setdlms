@@ -7,7 +7,7 @@ from src.denoiser.diffusion_config import (
     SetDiffusionGenerationConfig,
     create_attn_mask,
 )
-from src.denoiser.mdlm import MDLM, SEDD, MDLMConfig
+from src.denoiser.mdlm import MDLM, MDLMConfig
 from src.denoiser.setdlm import SetDLM
 
 __all__ = [
@@ -17,7 +17,6 @@ __all__ = [
     "DiffusionGenerationOutput",
     "MDLM",
     "MDLMConfig",
-    "SEDD",
     "SetDLM",
     "SetDiffusionGenerationConfig",
     "create_attn_mask",
