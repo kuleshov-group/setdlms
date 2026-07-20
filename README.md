@@ -197,10 +197,9 @@ normalizes legacy checkpoint config and eval-time SetDLM noise/cache-order setti
 ## Citation
 ```
 @article{arriola2026setdiffusion,
-  title={Set Diffusion: Interpolating Token Orderings between Autoregression and Diffusion for Fast and Flexible Decoding},
-  author={Marianne Arriola and Volodymyr Kuleshov},
-  journal={arXix},
-  year={2026},
-  url={...}
+  title={Set Diffusion: Interpolating token orderings between autoregression and diffusion for fast and flexible decoding},
+  author={Arriola, Marianne and Kuleshov, Volodymyr},
+  booktitle={The Forty-Third International Conference on Machine Learning},
+  year={2026}
 }
 ```
